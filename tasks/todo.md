@@ -81,7 +81,7 @@
 - [x] `src/cmd/scenario/npu.rs` — model_load, inference_loop, model_switch, sustained, concurrent (13 tests)
 
 ### `feat/scenario-camera`
-- [ ] `src/cmd/scenario/camera.rs` — preview, capture, switch, multi_stream
+- [x] `src/cmd/scenario/camera.rs` — preview, capture, switch, multi_stream (10 tests)
 
 ### `feat/scenario-display`
 - [ ] `src/cmd/scenario/display.rs` — flip, rotation, multi_layer
