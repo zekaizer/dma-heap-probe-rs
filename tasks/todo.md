@@ -113,9 +113,9 @@
 
 ## Review Checklist
 
-- [ ] All `cargo test --all-targets` pass
-- [ ] `cargo fmt --check` clean
-- [ ] `cargo clippy --all-targets -- -D warnings` clean
+- [x] All `cargo test --all-targets` pass
+- [x] `cargo fmt --check` clean
+- [x] `cargo clippy --all-targets -- -D warnings` clean
 - [ ] Device test on aarch64-linux-android (system heap)
 - [ ] Perfetto trace integration verified
 - [ ] JSON output format validated
