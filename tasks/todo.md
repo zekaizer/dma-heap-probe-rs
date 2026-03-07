@@ -87,7 +87,7 @@
 - [x] `src/cmd/scenario/display.rs` — flip, rotation, multi_layer (8 tests)
 
 ### `feat/scenario-codec`
-- [ ] `src/cmd/scenario/codec.rs` — decode, adaptive, transcode
+- [x] `src/cmd/scenario/codec.rs` — decode, adaptive, transcode (8 tests)
 
 ### `feat/scenario-gpu`
 - [ ] `src/cmd/scenario/gpu.rs` — app_launch, app_switch, game_texture
