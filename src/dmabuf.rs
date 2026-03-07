@@ -13,7 +13,7 @@ pub struct DmaBuf<'a, D: DmaBufBackend> {
     backend: &'a D,
     fd: RawFd,
     len: usize,
-    mapped: Option<(*mut u8, usize)>,
+    mapped: Option<*mut u8>,
 }
 
 impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
@@ -36,12 +36,12 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// - `EBADF` if fd is invalid
     /// - `EINVAL` if len exceeds buffer size
     pub fn mmap(&mut self) -> nix::Result<*mut u8> {
-        if let Some((ptr, _)) = self.mapped {
+        if let Some(ptr) = self.mapped {
             return Ok(ptr);
         }
         let ptr = self.backend.mmap(self.fd, self.len)?;
         tracing::debug!(fd = self.fd, len = self.len, "buffer mapped");
-        self.mapped = Some((ptr, self.len));
+        self.mapped = Some(ptr);
         Ok(ptr)
     }
 
@@ -149,9 +149,9 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
 
 impl<D: DmaBufBackend> Drop for DmaBuf<'_, D> {
     fn drop(&mut self) {
-        if let Some((addr, len)) = self.mapped.take() {
+        if let Some(addr) = self.mapped.take() {
             tracing::trace!(fd = self.fd, "unmapping buffer");
-            let _ = self.backend.munmap(addr, len);
+            let _ = self.backend.munmap(addr, self.len);
         }
         tracing::trace!(fd = self.fd, "buffer closing");
         let _ = self.backend.close(self.fd);
@@ -161,23 +161,19 @@ impl<D: DmaBufBackend> Drop for DmaBuf<'_, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::HeapBackend;
     use crate::backend::mock::MockBackend;
+    use crate::heap::DmaHeap;
     use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW};
     use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
     fn alloc_buf(backend: &MockBackend, size: usize) -> RawFd {
-        let heap_fd = backend.open("system").unwrap();
-        let mut data = crate::ioctl::dma_heap::DmaHeapAllocationData {
-            len: size as u64,
-            fd: 0,
-            fd_flags: DMA_HEAP_VALID_FD_FLAGS,
-            heap_flags: DMA_HEAP_VALID_HEAP_FLAGS,
-        };
-        backend.alloc(heap_fd, &mut data).unwrap();
-        #[allow(clippy::cast_possible_wrap)]
-        let buf_fd = data.fd as RawFd;
-        buf_fd
+        let heap = DmaHeap::open(backend, "system").unwrap();
+        heap.alloc(
+            size as u64,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )
+        .unwrap()
     }
 
     #[test]

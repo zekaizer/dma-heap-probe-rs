@@ -18,7 +18,6 @@ impl<'a, H: HeapBackend> DmaHeap<'a, H> {
     /// # Errors
     /// - `ENOENT` if the heap does not exist
     /// - `EACCES` if permission is denied
-    #[must_use = "returns a heap handle that should be used"]
     pub fn open(backend: &'a H, name: &str) -> nix::Result<Self> {
         let fd = backend.open(name)?;
         tracing::debug!(heap = name, fd, "heap opened");
