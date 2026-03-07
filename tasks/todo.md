@@ -103,11 +103,11 @@
 
 ## Phase 10: `feat/runner-output` — runner + JSON output
 
-- [ ] `src/runner.rs` — test execution engine + result aggregation
-- [ ] JSON output format + `--output` path writing
-- [ ] `all` command implementation (sequential full run)
-- [ ] `sysfs-dump` standalone command
-- [ ] Integration tests for runner + JSON serialization
+- [x] `src/runner.rs` — test execution engine + result aggregation (RunResult, StageResult, run_stage)
+- [x] JSON output format + `--output` path writing (write_json with serde_json)
+- [x] `all` command implementation (sequential full run of all stages)
+- [x] `sysfs-dump` standalone command (sysfs + meminfo + vmstat JSON dump)
+- [x] Unit tests for runner + JSON serialization (6 tests)
 
 ---
 
