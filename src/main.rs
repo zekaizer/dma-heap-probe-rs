@@ -10,6 +10,8 @@ mod heap;
 mod ioctl;
 #[allow(dead_code)]
 mod procfs;
+#[allow(dead_code)]
+mod sysfs;
 
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
