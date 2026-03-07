@@ -69,10 +69,10 @@
 
 ## Phase 8: `feat/cmd-pressure-frag-pool` — pressure + fragmentation + pool
 
-- [ ] `src/cmd/pressure.rs` — gradual_exhaust, recovery, pressure_concurrent
-- [ ] `src/cmd/fragmentation.rs` — buddyinfo_track, interleave_pattern, pagetypeinfo_track
-- [ ] `src/cmd/pool.rs` — pool_warmup, pool_drain, size_switch, release_order, deferred_free
-- [ ] Unit tests for pressure/fragmentation/pool logic
+- [x] `src/cmd/pressure.rs` — gradual_exhaust, recovery, pressure_concurrent
+- [x] `src/cmd/fragmentation.rs` — buddyinfo_track, interleave_pattern, pagetypeinfo_track
+- [x] `src/cmd/pool.rs` — pool_warmup, pool_drain (merged into deferred_free), size_switch, release_order, deferred_free
+- [x] Unit tests for pressure/fragmentation/pool logic (21 tests)
 
 ## Phase 9: Scenarios
 
