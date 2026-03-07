@@ -5,6 +5,7 @@ pub mod codec;
 pub mod display;
 pub mod gpu;
 pub mod npu;
+pub mod pipeline;
 
 use std::time::Instant;
 
