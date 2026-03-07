@@ -39,12 +39,12 @@
 
 ## Phase 5: `feat/cmd-sync-edge` — stage 2 tests
 
-- [ ] `src/cmd/sync_file.rs::test_export_sync_file()` — export + poll signaled
-- [ ] `src/cmd/sync_file.rs::test_import_sync_file()` — import + poll state
-- [ ] `src/cmd/edge.rs::test_concurrent_alloc()` — 100 threads concurrent alloc/sync/close
-- [ ] `src/cmd/edge.rs::test_dup_fd()` — dup → close original → verify dup works
-- [ ] `src/cmd/edge.rs::test_set_name()` — DMA_BUF_SET_NAME_B + fdinfo verify
-- [ ] Unit tests for sync_file and edge logic
+- [x] `src/cmd/sync_file.rs::test_export_sync_file()` — export with READ/WRITE/RW flags
+- [x] `src/cmd/sync_file.rs::test_import_sync_file()` — export→import roundtrip
+- [x] `src/cmd/edge.rs::test_concurrent_alloc()` — N threads concurrent alloc/sync/close
+- [x] `src/cmd/edge.rs::test_dup_fd()` — dup → close original → verify dup works
+- [x] `src/cmd/edge.rs::test_set_name()` — short name + max length validation
+- [x] Unit tests for sync_file (4) and edge (6) logic
 
 ## Phase 6: `feat/cmd-negative` — negative tests
 
