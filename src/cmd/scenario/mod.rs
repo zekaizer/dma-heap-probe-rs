@@ -3,6 +3,7 @@
 pub mod camera;
 pub mod codec;
 pub mod display;
+pub mod gpu;
 pub mod npu;
 
 use std::time::Instant;
