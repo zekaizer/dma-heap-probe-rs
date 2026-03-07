@@ -79,6 +79,11 @@ cargo ndk -t arm64-v8a -p 35 build --release
 
 Each feature branch is based on `main` and merged back via PR after review.
 
+## Task Management
+
+- `tasks/todo.md` — implementation checklist with checkable items per phase. Update progress as tasks are completed.
+- `tasks/lessons.md` — patterns and corrections discovered during development. Record mistakes and fixes here to avoid repeating them.
+
 ## Deploy
 
 ```sh
