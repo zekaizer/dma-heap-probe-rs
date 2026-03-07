@@ -1,0 +1,88 @@
+# dma-heap-probe-rs (dhp)
+
+Android 16+ (kernel 6.12+) dma-heap userspace test tool written in Rust.
+
+## Build
+
+```sh
+# Host (for testing with mock backend)
+cargo build
+cargo test
+
+# Android target (requires NDK)
+rustup target add aarch64-linux-android
+cargo install cargo-ndk
+cargo ndk -t arm64-v8a -p 35 build --release
+```
+
+## Project Structure
+
+- `src/main.rs` — CLI entry point (clap)
+- `src/cli.rs` — subcommand definitions
+- `src/ioctl/` — DMA_HEAP_IOCTL_ALLOC, DMA_BUF_IOCTL_SYNC, etc.
+- `src/heap.rs` — /dev/dma_heap/<name> open + alloc
+- `src/dmabuf.rs` — mmap, sync, llseek, sync_file, set_name
+- `src/backend/` — HeapBackend / DmaBufBackend trait (real.rs + mock.rs)
+- `src/trace.rs` — Perfetto atrace marker
+- `src/sysfs.rs` — /sys/kernel/dmabuf/buffers/ parsing
+- `src/procfs.rs` — buddyinfo, pagetypeinfo, meminfo, vmstat parsing
+- `src/runner.rs` — test runner + result aggregation
+- `src/cmd/` — subcommand implementations (basic, sync_file, edge, perf, negative, pressure, fragmentation, pool)
+- `src/cmd/scenario/` — workload simulations (npu, camera, display, codec, gpu, pipeline)
+
+## Conventions
+
+- Code comments, variable names, and commit messages in English
+- Suppress warnings with `-w` for simple builds; review warnings when fixing them
+- Backend abstraction: `cfg(target_os = "android")` for real, `cfg(test)` for mock
+- ioctl definitions via `nix` crate macros (ioctl_readwrite!, ioctl_write_ptr!)
+- No external C library dependencies — pure Rust + syscall wrappers
+
+## Testing Policy
+
+- Every new module/function MUST have unit tests (mock backend for ioctl/mmap paths)
+- `cargo test` must pass before every commit
+- PR merge to `main` requires ALL tests passing (`cargo test --all-targets`)
+- Integration tests go in `tests/` directory (mock backend based)
+- Test coverage targets: ioctl struct validation, errno branching, CLI parsing, procfs/sysfs parsing, scenario buffer calculations, latency statistics
+
+## Dependencies
+
+| Crate | Purpose |
+|---|---|
+| nix (0.29+) | ioctl, mmap, close, lseek, dup |
+| clap (4.x, derive) | CLI parsing |
+| serde + serde_json | JSON result output |
+| libc | auxiliary constants (O_CLOEXEC, etc.) |
+
+## Branching Strategy
+
+- `main` — stable, always builds. Merge via PR only.
+- `feat/<name>` — feature branches, one per implementation phase:
+  - `feat/ioctl-backend` — ioctl definitions + backend trait + real/mock
+  - `feat/cli-core` — clap CLI + heap.rs + dmabuf.rs
+  - `feat/cmd-basic` — cmd/basic.rs (stage 1 tests)
+  - `feat/infra` — trace.rs + sysfs.rs + procfs.rs
+  - `feat/cmd-sync-edge` — cmd/sync_file.rs + cmd/edge.rs (stage 2)
+  - `feat/cmd-negative` — cmd/negative.rs
+  - `feat/cmd-perf` — cmd/perf.rs (stage 3)
+  - `feat/cmd-pressure-frag-pool` — pressure.rs + fragmentation.rs + pool.rs
+  - `feat/scenario-npu` — cmd/scenario/npu.rs
+  - `feat/scenario-camera` — cmd/scenario/camera.rs
+  - `feat/scenario-display` — cmd/scenario/display.rs
+  - `feat/scenario-codec` — cmd/scenario/codec.rs
+  - `feat/scenario-gpu` — cmd/scenario/gpu.rs
+  - `feat/scenario-pipeline` — cmd/scenario/pipeline.rs
+  - `feat/runner-output` — runner.rs + JSON output integration
+- `fix/<name>` — bug fixes
+- `refactor/<name>` — refactoring without behavior change
+
+Each feature branch is based on `main` and merged back via PR after review.
+
+## Deploy
+
+```sh
+adb push target/aarch64-linux-android/release/dhp /data/local/tmp/
+adb shell chmod +x /data/local/tmp/dhp
+adb shell su -c /data/local/tmp/dhp all --heap system --trace --sysfs --procfs
+```
