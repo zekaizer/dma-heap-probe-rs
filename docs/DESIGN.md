@@ -208,8 +208,59 @@ COMMANDS:
 | `clap` (4.x, derive) | CLI 파싱 |
 | `serde` + `serde_json` | 결과 JSON 출력 |
 | `libc` | 보조 상수 (O_CLOEXEC 등) |
+| `tracing` (0.1) | 구조화 로깅 |
+| `tracing-subscriber` (0.3) | 로그 출력 포맷터 |
 
 외부 C 라이브러리 의존 없음. pure Rust + syscall wrapper.
+
+---
+
+## 구조화 트레이싱 (Structured Tracing)
+
+`tracing` 크레이트 기반 구조화 로깅. `--verbose` / `-v` 로 레벨 제어.
+
+### 레벨 기준
+
+| 레벨 | 용도 | 예시 |
+|------|------|------|
+| `ERROR` | 복구 불가능한 실패 | ioctl errno, 힙 open 실패 |
+| `WARN` | 예상 가능한 이상 | 비정상 크기 할당, 리소스 누수 의심 |
+| `INFO` | 주요 동작 마일스톤 | 테스트 시작/완료, 결과 요약 |
+| `DEBUG` | 상세 동작 추적 | alloc/mmap/sync/close 개별 호출, fd 값, 크기 |
+| `TRACE` | 최저 수준 세부사항 | Drop 경로, sync flags 비트값 |
+
+### CLI 플래그
+
+| 플래그 | 레벨 |
+|--------|------|
+| (없음) | `WARN` |
+| `-v` | `INFO` |
+| `-vv` | `DEBUG` |
+| `-vvv` | `TRACE` |
+
+`--trace`는 Perfetto atrace marker 전용 (`trace.rs`). `tracing` 크레이트와 독립.
+
+### 필드 컨벤션
+
+| 필드명 | 타입 | 설명 |
+|--------|------|------|
+| `heap` | `&str` | 힙 이름 |
+| `fd` | `RawFd` | 파일 디스크립터 |
+| `size` / `len` | `u64` / `usize` | 바이트 단위 크기 |
+| `flags` | `u64` / `u32` | ioctl 플래그 (hex 포맷) |
+| `name` | `&str` | dma-buf 디버그 이름 |
+| `elapsed_us` | `u64` | 경과 시간 (마이크로초, perf 전용) |
+
+### span 컨벤션
+
+- 테스트 함수 단위: `#[tracing::instrument]` 또는 수동 `info_span!("test_name")`
+- cmd 모듈 진입: `info_span!("basic")`, `info_span!("edge")` 등
+- 개별 ioctl 호출: span 없이 event만 (오버헤드 최소화)
+
+### 테스트에서의 tracing
+
+- 단위 테스트에서 subscriber 초기화 불필요 (이벤트 무시됨)
+- 필요 시 `tracing_subscriber::fmt().with_test_writer().init()` 사용
 
 ---
 
