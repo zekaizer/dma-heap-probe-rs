@@ -107,10 +107,7 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// - `EINVAL` if flags are invalid or `sync_fd` is not a valid `sync_file`
     /// - `EBADF` if fd is invalid
     pub fn import_sync_file(&self, flags: u32, sync_fd: RawFd) -> nix::Result<()> {
-        let data = DmaBufImportSyncFile {
-            flags,
-            fd: sync_fd,
-        };
+        let data = DmaBufImportSyncFile { flags, fd: sync_fd };
         self.backend.import_sync_file(self.fd, data)
     }
 
@@ -164,8 +161,8 @@ impl<D: DmaBufBackend> Drop for DmaBuf<'_, D> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::backend::mock::MockBackend;
     use crate::backend::HeapBackend;
+    use crate::backend::mock::MockBackend;
     use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW};
     use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 

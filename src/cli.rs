@@ -155,7 +155,14 @@ mod tests {
     #[test]
     fn global_options_all() {
         let cli = parse(&[
-            "dhp", "basic", "--trace", "--sysfs", "--procfs", "--output", "/tmp/out.json", "-vv",
+            "dhp",
+            "basic",
+            "--trace",
+            "--sysfs",
+            "--procfs",
+            "--output",
+            "/tmp/out.json",
+            "-vv",
         ]);
         assert!(cli.trace);
         assert!(cli.sysfs);
