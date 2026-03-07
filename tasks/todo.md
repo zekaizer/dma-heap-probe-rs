@@ -77,8 +77,8 @@
 ## Phase 9: Scenarios
 
 ### `feat/scenario-npu`
-- [ ] `src/cmd/scenario/mod.rs` — common patterns (BufferPool, BulkAlloc, SizeSwitch, MixedAlloc, LongHold)
-- [ ] `src/cmd/scenario/npu.rs` — model_load, inference_loop, model_switch, sustained, concurrent, pressure
+- [x] `src/cmd/scenario/mod.rs` — common patterns (BufferPool, bulk_alloc, fill_buffer, read_sync)
+- [x] `src/cmd/scenario/npu.rs` — model_load, inference_loop, model_switch, sustained, concurrent (13 tests)
 
 ### `feat/scenario-camera`
 - [ ] `src/cmd/scenario/camera.rs` — preview, capture, switch, multi_stream
