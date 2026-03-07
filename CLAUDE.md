@@ -33,6 +33,10 @@ cargo ndk -t arm64-v8a -p 35 build --release
 ## Conventions
 
 - Code comments, variable names, and commit messages in English
+- Commit messages use [Conventional Commits](https://www.conventionalcommits.org/) format: `type(scope): description`
+  - Types: `feat`, `fix`, `refactor`, `test`, `docs`, `chore`, `style`, `ci`
+  - Scope is optional but encouraged (e.g., `feat(ioctl)`, `fix(mock)`, `refactor(backend)`)
+- Commits must be atomic — one logical change per commit. Do not bundle unrelated changes.
 - Suppress warnings with `-w` for simple builds; review warnings when fixing them
 - Backend abstraction: `cfg(target_os = "android")` for real, `cfg(test)` for mock
 - ioctl definitions via `nix` crate macros (ioctl_readwrite!, ioctl_write_ptr!)
