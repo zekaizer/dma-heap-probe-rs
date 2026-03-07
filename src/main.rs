@@ -49,6 +49,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Edge { threads } => {
+            if let Err(e) = cmd::edge::run(&backend, &cli.heap, threads) {
+                tracing::error!(error = %e, "edge tests failed");
+                std::process::exit(1);
+            }
+        }
         _ => {
             tracing::info!(command = ?cli.command, "not implemented");
         }
