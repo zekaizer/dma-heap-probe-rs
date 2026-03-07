@@ -94,6 +94,14 @@ impl MockBackend {
             state: Mutex::new(MockState::new()),
         }
     }
+
+    /// Return the number of active buffer file descriptors.
+    ///
+    /// Test-only utility for leak detection in repeated alloc/close loops.
+    #[must_use]
+    pub fn buffer_count(&self) -> usize {
+        self.state.lock().unwrap().buffers.len()
+    }
 }
 
 impl Default for MockBackend {

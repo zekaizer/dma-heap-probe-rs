@@ -1,7 +1,7 @@
-// Infrastructure modules — used by subsequent phases (cmd/, runner, etc.)
 #[allow(dead_code)]
 mod backend;
 mod cli;
+mod cmd;
 #[allow(dead_code)]
 mod dmabuf;
 #[allow(dead_code)]
@@ -12,7 +12,7 @@ mod ioctl;
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
 
-use cli::Cli;
+use cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
@@ -25,5 +25,20 @@ fn main() {
     };
     tracing_subscriber::fmt().with_max_level(level).init();
 
-    tracing::info!(heap = %cli.heap, command = ?cli.command, "not implemented");
+    #[cfg(target_os = "android")]
+    let backend = backend::real::RealBackend::new();
+    #[cfg(not(target_os = "android"))]
+    let backend = backend::mock::MockBackend::new();
+
+    match cli.command {
+        Command::Basic { sizes, repeat } => {
+            if let Err(e) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat) {
+                tracing::error!(error = %e, "basic tests failed");
+                std::process::exit(1);
+            }
+        }
+        _ => {
+            tracing::info!(command = ?cli.command, "not implemented");
+        }
+    }
 }

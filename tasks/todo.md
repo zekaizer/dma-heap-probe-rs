@@ -13,21 +13,21 @@
 
 ## Phase 2: `feat/cli-core` — clap CLI + heap.rs + dmabuf.rs
 
-- [ ] `src/cli.rs` — clap derive subcommand definitions (all commands + global options)
-- [ ] `src/main.rs` — CLI entry point wiring
-- [ ] `src/heap.rs` — `/dev/dma_heap/<name>` open + alloc wrapper (trait-based)
-- [ ] `src/dmabuf.rs` — mmap, sync, llseek, sync_file, set_name wrappers (trait-based)
-- [ ] Unit tests for CLI parsing
-- [ ] Unit tests for heap/dmabuf wrappers with mock backend
+- [x] `src/cli.rs` — clap derive subcommand definitions (all commands + global options)
+- [x] `src/main.rs` — CLI entry point wiring
+- [x] `src/heap.rs` — `/dev/dma_heap/<name>` open + alloc wrapper (trait-based)
+- [x] `src/dmabuf.rs` — mmap, sync, llseek, sync_file, set_name wrappers (trait-based)
+- [x] Unit tests for CLI parsing
+- [x] Unit tests for heap/dmabuf wrappers with mock backend
 
 ## Phase 3: `feat/cmd-basic` — stage 1 tests
 
-- [ ] `src/cmd/mod.rs` — module declarations
-- [ ] `src/cmd/basic.rs::test_alloc_and_map()` — size-based alloc → mmap → sync → verify → close
-- [ ] `src/cmd/basic.rs::test_alloc_zeroed()` — 16 fd pattern write → realloc → zero check
-- [ ] `src/cmd/basic.rs::test_repeated_alloc()` — 1024x alloc/close loop + leak detection
-- [ ] `src/cmd/basic.rs::test_llseek_size()` — llseek(SEEK_END) size verification
-- [ ] Unit tests with mock backend for all basic tests
+- [x] `src/cmd/mod.rs` — module declarations
+- [x] `src/cmd/basic.rs::test_alloc_and_map()` — size-based alloc → mmap → sync → verify → close
+- [x] `src/cmd/basic.rs::test_alloc_zeroed()` — 16 fd pattern write → realloc → zero check
+- [x] `src/cmd/basic.rs::test_repeated_alloc()` — 1024x alloc/close loop + leak detection
+- [x] `src/cmd/basic.rs::test_llseek_size()` — llseek(SEEK_END) size verification
+- [x] Unit tests with mock backend for all basic tests
 
 ## Phase 4: `feat/infra` — trace + sysfs + procfs
 
