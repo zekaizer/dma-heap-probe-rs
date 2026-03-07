@@ -90,7 +90,7 @@
 - [x] `src/cmd/scenario/codec.rs` — decode, adaptive, transcode (8 tests)
 
 ### `feat/scenario-gpu`
-- [ ] `src/cmd/scenario/gpu.rs` — app_launch, app_switch, game_texture
+- [x] `src/cmd/scenario/gpu.rs` — app_launch, app_switch, game_texture (7 tests)
 
 ### `feat/scenario-pipeline`
 - [ ] `src/cmd/scenario/pipeline.rs` — camera_preview, video_call, ai_camera, heavy
