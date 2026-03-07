@@ -43,6 +43,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::SyncFile => {
+            if let Err(e) = cmd::sync_file::run(&backend, &cli.heap) {
+                tracing::error!(error = %e, "sync_file tests failed");
+                std::process::exit(1);
+            }
+        }
         _ => {
             tracing::info!(command = ?cli.command, "not implemented");
         }
