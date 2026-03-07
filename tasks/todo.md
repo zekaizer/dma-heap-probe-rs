@@ -59,13 +59,13 @@
 
 ## Phase 7: `feat/cmd-perf` — stage 3 performance
 
-- [ ] `src/cmd/perf.rs::bench_alloc_only()` — alloc latency p50/p95/p99
-- [ ] `src/cmd/perf.rs::bench_full_pipeline()` — full path latency
-- [ ] `src/cmd/perf.rs::bench_close()` — close/release latency
-- [ ] `src/cmd/perf.rs::bench_order_boundary()` — size sweep around 64K boundary
-- [ ] `src/cmd/perf.rs::bench_fallback_path()` — pool exhaustion + fallback
-- [ ] `src/cmd/perf.rs::bench_internal_frag()` — unaligned size → actual size ratio
-- [ ] Unit tests for latency statistics calculation (p50/p95/p99)
+- [x] `src/cmd/perf.rs::bench_alloc_only()` — alloc latency p50/p95/p99
+- [x] `src/cmd/perf.rs::bench_full_pipeline()` — full path latency
+- [x] `src/cmd/perf.rs::bench_close()` — close/release latency
+- [x] `src/cmd/perf.rs::bench_order_boundary()` — size sweep 4K-8M around 64K boundary
+- [ ] `src/cmd/perf.rs::bench_fallback_path()` — pool exhaustion + fallback (deferred to device testing)
+- [x] `src/cmd/perf.rs::bench_internal_frag()` — unaligned size → actual size ratio
+- [x] Unit tests for latency statistics calculation (p50/p95/p99) — 12 tests
 
 ## Phase 8: `feat/cmd-pressure-frag-pool` — pressure + fragmentation + pool
 
