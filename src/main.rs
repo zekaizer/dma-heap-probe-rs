@@ -61,6 +61,18 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Perf {
+            sizes,
+            iterations,
+            warmup,
+        } => {
+            if let Err(e) =
+                cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup)
+            {
+                tracing::error!(error = %e, "perf tests failed");
+                std::process::exit(1);
+            }
+        }
         _ => {
             tracing::info!(command = ?cli.command, "not implemented");
         }
