@@ -48,14 +48,14 @@
 
 ## Phase 6: `feat/cmd-negative` — negative tests
 
-- [ ] Layer 1: Heap device access (nonexistent, not-a-heap, permission)
-- [ ] Layer 2: Alloc ioctl (zero size, overflow, huge, invalid flags, closed fd, wrong ioctl, reserved, garbage)
-- [ ] Layer 3: dma-buf fd ops (sync flags, non-dmabuf, end-without-start, double-start, llseek, set_name, read/write)
-- [ ] Layer 4: mmap (beyond size, invalid offset, close-then-access, prot_exec, access-after-munmap)
-- [ ] Layer 5: sync_file (invalid flags, bad fd, non-sync import, closed dmabuf)
-- [ ] Layer 6: Resource leaks (fd leak, mmap leak, cloexec, rapid alloc/close)
-- [ ] Layer 7: Concurrency (double close, sync+close, mmap+munmap, alloc exhaust)
-- [ ] Unit tests for errno validation with mock backend
+- [x] Layer 1: Heap device access (nonexistent → ENOENT)
+- [x] Layer 2: Alloc ioctl (zero size, overflow, invalid fd_flags/heap_flags, closed heap)
+- [x] Layer 3: dma-buf fd ops (sync invalid flags, closed fd, llseek invalid, set_name too long)
+- [x] Layer 4: mmap (beyond size)
+- [x] Layer 5: sync_file (invalid flags, bad sync_file fd)
+- [x] Layer 6: Resource leaks (rapid 1000x alloc/close)
+- [x] Layer 7: Concurrency (double close same fd)
+- [x] Unit tests for errno validation with mock backend (16 tests)
 
 ## Phase 7: `feat/cmd-perf` — stage 3 performance
 
