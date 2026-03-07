@@ -73,6 +73,24 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Pressure { alloc_size } => {
+            if let Err(e) = cmd::pressure::run(&backend, &cli.heap, alloc_size) {
+                tracing::error!(error = %e, "pressure tests failed");
+                std::process::exit(1);
+            }
+        }
+        Command::Fragmentation { pattern } => {
+            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, &pattern) {
+                tracing::error!(error = %e, "fragmentation tests failed");
+                std::process::exit(1);
+            }
+        }
+        Command::Pool => {
+            if let Err(e) = cmd::pool::run(&backend, &cli.heap) {
+                tracing::error!(error = %e, "pool tests failed");
+                std::process::exit(1);
+            }
+        }
         _ => {
             tracing::info!(command = ?cli.command, "not implemented");
         }
