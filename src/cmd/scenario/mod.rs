@@ -1,6 +1,7 @@
 // Common scenario patterns for workload simulations.
 
 pub mod camera;
+pub mod codec;
 pub mod display;
 pub mod npu;
 
