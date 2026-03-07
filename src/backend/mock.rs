@@ -5,8 +5,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::os::unix::io::RawFd;
-use std::pin::Pin;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use nix::errno::Errno;
 
@@ -35,16 +34,12 @@ enum SyncState {
 
 #[derive(Debug)]
 struct BufferState {
-    /// Pinned buffer data (won't move in memory).
-    data: Pin<Box<[u8]>>,
-    /// Page-aligned allocation size.
-    alloc_size: u64,
+    /// Shared buffer data (allows zero-copy dup).
+    data: Arc<[u8]>,
     /// Debug name set via `SET_NAME`.
     name: Option<String>,
     /// Current sync state.
     sync_state: SyncState,
-    /// Reference count (incremented by dup, decremented by close).
-    ref_count: u32,
 }
 
 #[derive(Debug)]
@@ -73,6 +68,15 @@ impl MockState {
     }
 }
 
+/// Validate sync direction flags (used by sync, export, import).
+/// Returns `Err(EINVAL)` if no READ/WRITE bit is set.
+fn validate_sync_direction(flags: u64) -> nix::Result<()> {
+    if flags & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) == 0 {
+        return Err(Errno::EINVAL);
+    }
+    Ok(())
+}
+
 /// Mock backend that simulates dma-heap and dma-buf operations in memory.
 ///
 /// Thread-safe via internal `Mutex`. All buffers are zero-initialized
@@ -99,8 +103,7 @@ impl Default for MockBackend {
 }
 
 fn page_align(size: u64) -> Option<u64> {
-    size.checked_add(PAGE_SIZE - 1)
-        .map(|v| v & !(PAGE_SIZE - 1))
+    size.checked_next_multiple_of(PAGE_SIZE)
 }
 
 impl HeapBackend for MockBackend {
@@ -143,18 +146,15 @@ impl HeapBackend for MockBackend {
 
         // Allocate zero-filled buffer
         #[allow(clippy::cast_possible_truncation)]
-        let buf = vec![0u8; aligned_size as usize];
-        let pinned = Pin::new(buf.into_boxed_slice());
+        let buf: Arc<[u8]> = vec![0u8; aligned_size as usize].into();
 
         let fd = state.alloc_fd();
         state.buffers.insert(
             fd,
             BufferState {
-                data: pinned,
-                alloc_size: aligned_size,
+                data: buf,
                 name: None,
                 sync_state: SyncState::None,
-                ref_count: 1,
             },
         );
 
@@ -180,13 +180,13 @@ impl DmaBufBackend for MockBackend {
         let state = self.state.lock().unwrap();
         let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
-        if len as u64 > buf.alloc_size {
+        if len > buf.data.len() {
             return Err(Errno::EINVAL);
         }
 
-        // Return raw pointer to the pinned buffer.
-        // Safe because Pin guarantees the buffer won't move, and the buffer
-        // lives as long as the fd is open.
+        // Return raw pointer to the Arc buffer.
+        // Safe for mock: the Arc keeps data alive as long as any fd references it,
+        // and buffer data is immovable once allocated.
         let ptr = buf.data.as_ptr().cast_mut();
         Ok(ptr)
     }
@@ -206,9 +206,7 @@ impl DmaBufBackend for MockBackend {
         }
 
         // Must specify at least READ or WRITE
-        if flags & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) == 0 {
-            return Err(Errno::EINVAL);
-        }
+        validate_sync_direction(flags)?;
 
         if flags & DMA_BUF_SYNC_END != 0 {
             // END
@@ -233,7 +231,7 @@ impl DmaBufBackend for MockBackend {
                     return Err(Errno::EINVAL);
                 }
                 #[allow(clippy::cast_possible_wrap)]
-                Ok(buf.alloc_size as i64)
+                Ok(buf.data.len() as i64)
             }
             libc::SEEK_SET => {
                 if offset != 0 {
@@ -265,10 +263,7 @@ impl DmaBufBackend for MockBackend {
         }
 
         // Flags must have at least READ or WRITE
-        let flags_u64 = u64::from(data.flags);
-        if flags_u64 & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) == 0 {
-            return Err(Errno::EINVAL);
-        }
+        validate_sync_direction(u64::from(data.flags))?;
 
         // Return a mock sync_file fd
         let sync_fd = state.alloc_fd();
@@ -285,10 +280,7 @@ impl DmaBufBackend for MockBackend {
         }
 
         // Flags must have at least READ or WRITE
-        let flags_u64 = u64::from(data.flags);
-        if flags_u64 & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE) == 0 {
-            return Err(Errno::EINVAL);
-        }
+        validate_sync_direction(u64::from(data.flags))?;
 
         // Validate the sync_file fd
         if !state.sync_file_fds.contains(&data.fd) {
@@ -300,39 +292,16 @@ impl DmaBufBackend for MockBackend {
 
     fn dup(&self, fd: RawFd) -> nix::Result<RawFd> {
         let mut state = self.state.lock().unwrap();
-        let buf = state.buffers.get_mut(&fd).ok_or(Errno::EBADF)?;
-        buf.ref_count += 1;
 
-        // Return a new fd that maps to the same buffer.
-        // For simplicity, we increment ref_count and return a new fd number,
-        // but we need to create a new entry pointing to the same data.
-        // Instead, we use the ref_count on the original and track the alias.
-        buf.ref_count -= 1; // undo, we'll use a different approach
-
-        // Clone the buffer entry with a new fd (shared ref semantics via separate entries).
-        let new_fd = state.alloc_fd();
         let original = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+        let new_buf = BufferState {
+            data: Arc::clone(&original.data),
+            name: original.name.clone(),
+            sync_state: SyncState::None,
+        };
 
-        // For mock purposes, create an independent copy of buffer metadata
-        // but share the same data pointer (Pin guarantees no move).
-        // Since we can't share Pin<Box<[u8]>>, we create a new buffer with the
-        // same size. The dup semantics in mock are simplified: the dup'd fd
-        // gets its own buffer copy for data isolation in tests.
-        let size = original.alloc_size;
-        let data_copy = original.data.to_vec();
-        let name = original.name.clone();
-
-        state.buffers.insert(
-            new_fd,
-            BufferState {
-                data: Pin::new(data_copy.into_boxed_slice()),
-                alloc_size: size,
-                name,
-                sync_state: SyncState::None,
-                ref_count: 1,
-            },
-        );
-
+        let new_fd = state.alloc_fd();
+        state.buffers.insert(new_fd, new_buf);
         Ok(new_fd)
     }
 
@@ -632,6 +601,21 @@ mod tests {
         assert_eq!(size, 4096);
 
         b.close(dup_fd).unwrap();
+    }
+
+    #[test]
+    fn dup_shares_data() {
+        let b = setup();
+        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
+
+        // Write through original
+        let ptr = b.mmap(buf_fd, 4096).unwrap();
+        unsafe { *ptr = 0xAB };
+
+        // Dup and verify shared data
+        let dup_fd = b.dup(buf_fd).unwrap();
+        let dup_ptr = b.mmap(dup_fd, 4096).unwrap();
+        assert_eq!(unsafe { *dup_ptr }, 0xAB);
     }
 
     // ── export/import sync_file tests ──
