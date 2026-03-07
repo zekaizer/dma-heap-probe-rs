@@ -37,7 +37,7 @@ pub struct DmaBufImportSyncFile {
 
 // Sync direction flags
 pub const DMA_BUF_SYNC_READ: u64 = 1 << 0;
-pub const DMA_BUF_SYNC_WRITE: u64 = 2;
+pub const DMA_BUF_SYNC_WRITE: u64 = 1 << 1;
 pub const DMA_BUF_SYNC_RW: u64 = DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE;
 
 // Sync start/end flags

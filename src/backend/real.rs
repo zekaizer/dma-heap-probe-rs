@@ -104,8 +104,9 @@ impl DmaBufBackend for RealDmaBufBackend {
     }
 
     fn import_sync_file(&self, fd: RawFd, data: DmaBufImportSyncFile) -> nix::Result<()> {
+        let mut data = data;
         // SAFETY: fd is a valid dma-buf fd, data contains a valid sync_file fd.
-        unsafe { dma_buf::dma_buf_ioctl_import_sync_file(fd, &data as *const _ as *mut _) }?;
+        unsafe { dma_buf::dma_buf_ioctl_import_sync_file(fd, &mut data) }?;
         Ok(())
     }
 
