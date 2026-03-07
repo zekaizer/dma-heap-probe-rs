@@ -85,14 +85,17 @@ fn test_pool_warmup<B: HeapBackend + DmaBufBackend>(
 
     // Warm: alloc/close cycle to fill pool, then measure.
     for _ in 0..POOL_COUNT {
-        let fd = heap.alloc(POOL_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(
+            POOL_SIZE,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )?;
         let buf = DmaBuf::new(backend, fd, POOL_SIZE as usize);
         drop(buf);
     }
     let warm_samples = measure_alloc_latency(backend, &heap, POOL_SIZE, MEASURE_ITERS)?;
 
-    if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples))
-    {
+    if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples)) {
         tracing::info!(
             cold_p50_us = cold.p50_us,
             cold_p95_us = cold.p95_us,
@@ -176,8 +179,11 @@ fn test_release_order<B: HeapBackend + DmaBufBackend>(
     let test_order = |order: &str| -> nix::Result<Vec<u64>> {
         let mut buffers: Vec<DmaBuf<'_, B>> = Vec::with_capacity(count as usize);
         for _ in 0..count {
-            let fd =
-                heap.alloc(POOL_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(
+                POOL_SIZE,
+                DMA_HEAP_VALID_FD_FLAGS,
+                DMA_HEAP_VALID_HEAP_FLAGS,
+            )?;
             buffers.push(DmaBuf::new(backend, fd, POOL_SIZE as usize));
         }
 
@@ -195,8 +201,7 @@ fn test_release_order<B: HeapBackend + DmaBufBackend>(
             }
             _ => {
                 // Random-ish: close odd indices first, then even.
-                let mut temp: Vec<Option<DmaBuf<'_, B>>> =
-                    buffers.into_iter().map(Some).collect();
+                let mut temp: Vec<Option<DmaBuf<'_, B>>> = buffers.into_iter().map(Some).collect();
                 for i in (1..temp.len()).step_by(2) {
                     temp[i].take();
                 }
@@ -273,11 +278,7 @@ fn test_deferred_free<B: HeapBackend + DmaBufBackend>(
             "deferred_free"
         );
     } else {
-        tracing::info!(
-            count,
-            size,
-            "deferred_free (meminfo unavailable on host)"
-        );
+        tracing::info!(count, size, "deferred_free (meminfo unavailable on host)");
     }
 
     Ok(())

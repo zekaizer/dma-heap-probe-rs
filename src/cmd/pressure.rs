@@ -22,10 +22,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             "gradual_exhaust",
             test_gradual_exhaust(backend, heap_name, alloc_size),
         ),
-        (
-            "recovery",
-            test_recovery(backend, heap_name, alloc_size),
-        ),
+        ("recovery", test_recovery(backend, heap_name, alloc_size)),
         (
             "pressure_concurrent",
             test_pressure_concurrent(backend, heap_name, alloc_size),
@@ -75,7 +72,11 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
             break;
         }
         let start = Instant::now();
-        match heap.alloc(alloc_size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
+        match heap.alloc(
+            alloc_size,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        ) {
             Ok(fd) => {
                 let elapsed = start.elapsed().as_micros() as u64;
                 latencies_us.push(elapsed);
@@ -120,7 +121,11 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
         if buffers.len() >= MAX_EXHAUST_ALLOCS {
             break;
         }
-        match heap.alloc(alloc_size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
+        match heap.alloc(
+            alloc_size,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        ) {
             Ok(fd) => buffers.push(DmaBuf::new(backend, fd, alloc_size as usize)),
             Err(Errno::ENOMEM) => break,
             Err(e) => return Err(e),
@@ -145,7 +150,11 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
 
     for _ in 0..release_count {
         let start = Instant::now();
-        match heap.alloc(alloc_size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
+        match heap.alloc(
+            alloc_size,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        ) {
             Ok(fd) => {
                 let elapsed = start.elapsed().as_micros() as u64;
                 recovery_latencies.push(elapsed);

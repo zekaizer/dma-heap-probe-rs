@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, fill_buffer, BufferPool};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer};
 use crate::heap::DmaHeap;
 
 /// Camera scenario configuration.
@@ -37,9 +37,9 @@ impl CameraFormat {
     pub fn buffer_size(self, width: u32, height: u32) -> u64 {
         let pixels = u64::from(width) * u64::from(height);
         match self {
-            Self::Nv12 => pixels * 3 / 2,   // 1.5 bpp
-            Self::Raw10 => pixels * 5 / 4,  // 1.25 bpp
-            Self::Raw16 => pixels * 2,       // 2.0 bpp
+            Self::Nv12 => pixels * 3 / 2,  // 1.5 bpp
+            Self::Raw10 => pixels * 5 / 4, // 1.25 bpp
+            Self::Raw16 => pixels * 2,     // 2.0 bpp
         }
     }
 }
@@ -175,7 +175,8 @@ fn camera_capture<B: HeapBackend + DmaBufBackend>(
     // Use RAW16 at high resolution for burst.
     let capture_size = CameraFormat::Raw16.buffer_size(4000, 3000);
 
-    let (buffers, latencies) = bulk_alloc(backend, &heap, capture_size, config.burst_count as usize)?;
+    let (buffers, latencies) =
+        bulk_alloc(backend, &heap, capture_size, config.burst_count as usize)?;
 
     if let Some(stats) = compute_stats(&latencies) {
         tracing::info!(
@@ -250,7 +251,8 @@ fn camera_multi_stream<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 };
                 let buf_size = stream.format.buffer_size(stream.width, stream.height);
 
-                let Ok(mut pool) = BufferPool::new(backend, &heap, buf_size, stream.pool_size) else {
+                let Ok(mut pool) = BufferPool::new(backend, &heap, buf_size, stream.pool_size)
+                else {
                     fail_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     return;
                 };

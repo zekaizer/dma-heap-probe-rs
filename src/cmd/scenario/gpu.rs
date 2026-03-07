@@ -35,12 +35,12 @@ impl Default for GpuConfig {
 
 /// Preset buffer sizes for app launch simulation (textures, render targets, etc.).
 const APP_LAUNCH_SIZES: &[u64] = &[
-    4096,      // small uniform/constant buffer
-    16384,     // vertex buffer
-    65536,     // index buffer
-    262_144,   // small texture (256 KB)
-    1_048_576, // medium texture (1 MB)
-    4_194_304, // large texture (4 MB)
+    4096,       // small uniform/constant buffer
+    16384,      // vertex buffer
+    65536,      // index buffer
+    262_144,    // small texture (256 KB)
+    1_048_576,  // medium texture (1 MB)
+    4_194_304,  // large texture (4 MB)
     16_777_216, // render target (16 MB)
 ];
 
@@ -53,10 +53,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("app_launch", gpu_app_launch(backend, heap_name, config)),
         ("app_switch", gpu_app_switch(backend, heap_name, config)),
-        (
-            "game_texture",
-            gpu_game_texture(backend, heap_name, config),
-        ),
+        ("game_texture", gpu_game_texture(backend, heap_name, config)),
     ];
 
     let mut first_error: Option<(&str, nix::Error)> = None;
@@ -168,11 +165,7 @@ fn gpu_game_texture<B: HeapBackend + DmaBufBackend>(
             DMA_HEAP_VALID_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
-        pool.push(Some(DmaBuf::new(
-            backend,
-            fd,
-            config.texture_size as usize,
-        )));
+        pool.push(Some(DmaBuf::new(backend, fd, config.texture_size as usize)));
     }
 
     let evict_count = (config.pool_size as u64 * u64::from(config.evict_pct) / 100) as usize;

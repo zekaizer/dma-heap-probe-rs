@@ -105,10 +105,7 @@ fn main() {
 }
 
 /// Run all test stages sequentially with result tracking.
-fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
-    backend: &B,
-    cli: &Cli,
-) {
+fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
     let mut results = runner::RunResult::new(&cli.heap);
     let heap = cli.heap.clone();
 
@@ -118,9 +115,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     runner::run_stage(&mut results, "sync_file", || {
         cmd::sync_file::run(backend, &heap)
     });
-    runner::run_stage(&mut results, "edge", || {
-        cmd::edge::run(backend, &heap, 100)
-    });
+    runner::run_stage(&mut results, "edge", || cmd::edge::run(backend, &heap, 100));
     runner::run_stage(&mut results, "negative", || {
         cmd::negative::run(backend, &heap)
     });
@@ -133,9 +128,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     runner::run_stage(&mut results, "fragmentation", || {
         cmd::fragmentation::run(backend, &heap, "interleave")
     });
-    runner::run_stage(&mut results, "pool", || {
-        cmd::pool::run(backend, &heap)
-    });
+    runner::run_stage(&mut results, "pool", || cmd::pool::run(backend, &heap));
 
     tracing::info!(
         passed = results.total_passed,

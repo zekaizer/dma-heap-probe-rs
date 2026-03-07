@@ -7,7 +7,7 @@ use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{fill_buffer, read_sync, BufferPool};
+use crate::cmd::scenario::{BufferPool, fill_buffer, read_sync};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -63,10 +63,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             "video_call",
             pipeline_video_call(backend, heap_name, config),
         ),
-        (
-            "ai_camera",
-            pipeline_ai_camera(backend, heap_name, config),
-        ),
+        ("ai_camera", pipeline_ai_camera(backend, heap_name, config)),
         ("heavy", pipeline_heavy(backend, heap_name, config)),
     ];
 
@@ -108,15 +105,36 @@ fn pipeline_camera_preview<B: HeapBackend + DmaBufBackend + Send + Sync>(
     std::thread::scope(|s| {
         // Camera thread: 1080p NV12 pool.
         s.spawn(move || {
-            run_pool_worker(backend, cam_heap, nv12_size(1920, 1080), 4, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                cam_heap,
+                nv12_size(1920, 1080),
+                4,
+                frames,
+                fail_ref,
+            );
         });
         // Display thread: 1080p ARGB flip.
         s.spawn(move || {
-            run_pool_worker(backend, disp_heap, argb_size(1080, 1920), 3, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                disp_heap,
+                argb_size(1080, 1920),
+                3,
+                frames,
+                fail_ref,
+            );
         });
         // GPU thread: composition buffers.
         s.spawn(move || {
-            run_pool_worker(backend, gpu_heap, argb_size(1080, 1920), 2, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                gpu_heap,
+                argb_size(1080, 1920),
+                2,
+                frames,
+                fail_ref,
+            );
         });
     });
 
@@ -145,15 +163,36 @@ fn pipeline_video_call<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
         // Encoder: 720p NV12.
         s.spawn(move || {
-            run_pool_worker(backend, codec_heap, nv12_size(1280, 720), 4, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                codec_heap,
+                nv12_size(1280, 720),
+                4,
+                frames,
+                fail_ref,
+            );
         });
         // Decoder: 720p NV12.
         s.spawn(move || {
-            run_pool_worker(backend, codec_heap, nv12_size(1280, 720), 8, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                codec_heap,
+                nv12_size(1280, 720),
+                8,
+                frames,
+                fail_ref,
+            );
         });
         // Display: 720p ARGB.
         s.spawn(move || {
-            run_pool_worker(backend, disp_heap, argb_size(720, 1280), 3, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                disp_heap,
+                argb_size(720, 1280),
+                3,
+                frames,
+                fail_ref,
+            );
         });
     });
 
@@ -178,7 +217,14 @@ fn pipeline_ai_camera<B: HeapBackend + DmaBufBackend + Send + Sync>(
     std::thread::scope(|s| {
         // Camera: 1080p NV12.
         s.spawn(move || {
-            run_pool_worker(backend, cam_heap, nv12_size(1920, 1080), 4, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                cam_heap,
+                nv12_size(1920, 1080),
+                4,
+                frames,
+                fail_ref,
+            );
         });
         // NPU: per-frame input/output alloc/free.
         s.spawn(move || {
@@ -186,7 +232,14 @@ fn pipeline_ai_camera<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
         // Display: 1080p ARGB.
         s.spawn(move || {
-            run_pool_worker(backend, disp_heap, argb_size(1080, 1920), 3, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                disp_heap,
+                argb_size(1080, 1920),
+                3,
+                frames,
+                fail_ref,
+            );
         });
     });
 
@@ -212,19 +265,47 @@ fn pipeline_heavy<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     std::thread::scope(|s| {
         s.spawn(move || {
-            run_pool_worker(backend, cam_heap, nv12_size(1920, 1080), 4, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                cam_heap,
+                nv12_size(1920, 1080),
+                4,
+                frames,
+                fail_ref,
+            );
         });
         s.spawn(move || {
-            run_pool_worker(backend, codec_heap, nv12_size(1920, 1080), 8, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                codec_heap,
+                nv12_size(1920, 1080),
+                8,
+                frames,
+                fail_ref,
+            );
         });
         s.spawn(move || {
-            run_pool_worker(backend, gpu_heap, argb_size(1080, 1920), 3, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                gpu_heap,
+                argb_size(1080, 1920),
+                3,
+                frames,
+                fail_ref,
+            );
         });
         s.spawn(move || {
             run_alloc_free_worker(backend, npu_heap, 602_112, frames, fail_ref);
         });
         s.spawn(move || {
-            run_pool_worker(backend, disp_heap, argb_size(1080, 1920), 3, frames, fail_ref);
+            run_pool_worker(
+                backend,
+                disp_heap,
+                argb_size(1080, 1920),
+                3,
+                frames,
+                fail_ref,
+            );
         });
     });
 

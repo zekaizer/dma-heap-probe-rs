@@ -76,9 +76,8 @@ fn test_concurrent_alloc<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     // Write thread-unique pattern
                     buf.sync_start(DMA_BUF_SYNC_WRITE)?;
                     let pattern = (tid % 256) as u8;
-                    let slice = unsafe {
-                        std::slice::from_raw_parts_mut(ptr, EDGE_ALLOC_SIZE as usize)
-                    };
+                    let slice =
+                        unsafe { std::slice::from_raw_parts_mut(ptr, EDGE_ALLOC_SIZE as usize) };
                     slice.fill(pattern);
                     buf.sync_end(DMA_BUF_SYNC_WRITE)?;
 
@@ -114,10 +113,7 @@ fn test_concurrent_alloc<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
 /// Dup a dma-buf fd, close the original, and verify the dup still works.
 #[allow(clippy::cast_possible_truncation)]
-fn test_dup_fd<B: HeapBackend + DmaBufBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
+fn test_dup_fd<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         EDGE_ALLOC_SIZE,
@@ -157,10 +153,7 @@ fn test_dup_fd<B: HeapBackend + DmaBufBackend>(
 }
 
 /// Set a debug name on a dma-buf and verify it succeeds.
-fn test_set_name<B: HeapBackend + DmaBufBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
+fn test_set_name<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         EDGE_ALLOC_SIZE,

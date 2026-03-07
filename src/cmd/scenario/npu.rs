@@ -73,18 +73,9 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             "inference_loop",
             npu_inference_loop(backend, heap_name, config),
         ),
-        (
-            "model_switch",
-            npu_model_switch(backend, heap_name, config),
-        ),
-        (
-            "sustained",
-            npu_sustained(backend, heap_name, config),
-        ),
-        (
-            "concurrent",
-            npu_concurrent(backend, heap_name, config),
-        ),
+        ("model_switch", npu_model_switch(backend, heap_name, config)),
+        ("sustained", npu_sustained(backend, heap_name, config)),
+        ("concurrent", npu_concurrent(backend, heap_name, config)),
     ];
 
     let mut first_error: Option<(&str, nix::Error)> = None;
@@ -141,7 +132,11 @@ fn npu_model_load<B: HeapBackend + DmaBufBackend>(
     // Test additional small allocs while model is held.
     for &probe_size in &[4096u64, 65536, 1_048_576] {
         let probe_start = Instant::now();
-        match heap.alloc(probe_size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
+        match heap.alloc(
+            probe_size,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        ) {
             Ok(fd) => {
                 let probe_us = probe_start.elapsed().as_micros() as u64;
                 tracing::info!(probe_size, probe_us, "model_load_probe_ok");
@@ -402,8 +397,8 @@ mod tests {
     /// Small config that fits in mock's 1 GiB limit without OOM.
     fn test_config() -> NpuConfig {
         NpuConfig {
-            model_size: 4096 * 4,   // 16 KB
-            chunk_size: 4096,        // 4 KB chunks
+            model_size: 4096 * 4, // 16 KB
+            chunk_size: 4096,     // 4 KB chunks
             input_size: 4096,
             output_size: 4096,
             iterations: 20,

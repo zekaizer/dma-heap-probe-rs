@@ -6,7 +6,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, fill_buffer, read_sync, BufferPool};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer, read_sync};
 use crate::heap::DmaHeap;
 
 /// Codec scenario configuration.

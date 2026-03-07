@@ -23,10 +23,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     pattern: &str,
 ) -> Result<(), Box<dyn Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
-        (
-            "buddyinfo_track",
-            test_buddyinfo_track(backend, heap_name),
-        ),
+        ("buddyinfo_track", test_buddyinfo_track(backend, heap_name)),
         (
             "interleave_pattern",
             test_interleave_pattern(backend, heap_name, pattern),
@@ -97,7 +94,11 @@ fn test_buddyinfo_track<B: HeapBackend + DmaBufBackend>(
     // Alloc/free cycle: 100x 1MB.
     let mut buffers = Vec::with_capacity(100);
     for _ in 0..100 {
-        let fd = heap.alloc(1_048_576, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(
+            1_048_576,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )?;
         buffers.push(DmaBuf::new(backend, fd, 1_048_576));
     }
     drop(buffers);
@@ -197,7 +198,11 @@ fn test_pagetypeinfo_track<B: HeapBackend + DmaBufBackend>(
     // Alloc cycle: 50x 1MB.
     let mut buffers = Vec::with_capacity(50);
     for _ in 0..50 {
-        let fd = heap.alloc(1_048_576, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(
+            1_048_576,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )?;
         buffers.push(DmaBuf::new(backend, fd, 1_048_576));
     }
 

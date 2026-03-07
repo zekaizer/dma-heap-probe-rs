@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, fill_buffer, BufferPool};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer};
 use crate::heap::DmaHeap;
 
 /// ARGB8888 bytes per pixel.
@@ -185,11 +185,7 @@ fn display_multi_layer<B: HeapBackend + DmaBufBackend>(
     }
     let total_alloc_us = start.elapsed().as_micros() as u64;
 
-    tracing::info!(
-        layers = config.layers,
-        total_alloc_us,
-        "multi_layer"
-    );
+    tracing::info!(layers = config.layers, total_alloc_us, "multi_layer");
 
     if let Some(stats) = compute_stats(&alloc_latencies) {
         tracing::info!(

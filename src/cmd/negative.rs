@@ -27,7 +27,10 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         // Layer 1: Heap device access
         ("neg_open_nonexistent", neg_open_nonexistent(backend)),
         // Layer 2: Alloc ioctl
-        ("neg_alloc_zero_size", neg_alloc_zero_size(backend, heap_name)),
+        (
+            "neg_alloc_zero_size",
+            neg_alloc_zero_size(backend, heap_name),
+        ),
         (
             "neg_alloc_overflow_size",
             neg_alloc_overflow_size(backend, heap_name),
@@ -53,10 +56,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             "neg_sync_on_closed_fd",
             neg_sync_on_closed_fd(backend, heap_name),
         ),
-        (
-            "neg_llseek_invalid",
-            neg_llseek_invalid(backend, heap_name),
-        ),
+        ("neg_llseek_invalid", neg_llseek_invalid(backend, heap_name)),
         (
             "neg_set_name_too_long",
             neg_set_name_too_long(backend, heap_name),
@@ -144,7 +144,11 @@ fn neg_alloc_invalid_fd_flags<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     #[allow(clippy::cast_sign_loss)]
-    let result = heap.alloc(NEG_ALLOC_SIZE, libc::O_APPEND as u32, DMA_HEAP_VALID_HEAP_FLAGS);
+    let result = heap.alloc(
+        NEG_ALLOC_SIZE,
+        libc::O_APPEND as u32,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    );
     expect_errno(result, Errno::EINVAL, "alloc invalid fd_flags")
 }
 
@@ -186,7 +190,11 @@ fn neg_sync_invalid_flags<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
 
     // Zero flags
@@ -207,7 +215,11 @@ fn neg_sync_on_closed_fd<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
     let raw_fd = buf.fd();
     drop(buf);
@@ -224,7 +236,11 @@ fn neg_llseek_invalid<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
 
     // SEEK_CUR not supported
@@ -249,7 +265,11 @@ fn neg_set_name_too_long<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
 
     let long_name = "x".repeat(DMA_BUF_NAME_LEN + 1);
@@ -266,7 +286,11 @@ fn neg_mmap_beyond_size<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let mut buf = DmaBuf::new(backend, fd, (NEG_ALLOC_SIZE * 2) as usize);
 
     // DmaBuf.mmap uses self.len which we set to 2x actual size
@@ -283,7 +307,11 @@ fn neg_export_sync_file_invalid_flags<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
 
     let result = buf.export_sync_file(0);
@@ -297,7 +325,11 @@ fn neg_import_sync_file_bad_fd<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
 
     #[allow(clippy::cast_possible_truncation)]
@@ -316,7 +348,11 @@ fn neg_rapid_alloc_close_no_leak<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for _ in 0..1000 {
-        let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(
+            NEG_ALLOC_SIZE,
+            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )?;
         let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
         drop(buf); // close
     }
@@ -335,7 +371,11 @@ fn neg_concurrent_close_same_fd<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let fd = heap.alloc(
+        NEG_ALLOC_SIZE,
+        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_VALID_HEAP_FLAGS,
+    )?;
 
     let ok_count = AtomicUsize::new(0);
     let ebadf_count = AtomicUsize::new(0);
@@ -374,11 +414,7 @@ fn neg_concurrent_close_same_fd<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
 /// Verify that `result` is `Err(expected_errno)`.
 #[allow(clippy::needless_pass_by_value)]
-fn expect_errno<T>(
-    result: nix::Result<T>,
-    expected: Errno,
-    context: &str,
-) -> nix::Result<()> {
+fn expect_errno<T>(result: nix::Result<T>, expected: Errno, context: &str) -> nix::Result<()> {
     match result {
         Err(e) if e == expected => Ok(()),
         Err(e) => {
