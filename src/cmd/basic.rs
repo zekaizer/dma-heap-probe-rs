@@ -18,10 +18,7 @@ const PAGE_SIZE: u64 = 4096;
 
 /// Round `size` up to the nearest page boundary.
 fn page_align(size: u64) -> u64 {
-    match size {
-        0 => 0,
-        s => ((s - 1) / PAGE_SIZE + 1) * PAGE_SIZE,
-    }
+    size.next_multiple_of(PAGE_SIZE)
 }
 
 /// Run all stage 1 basic tests. Executes all tests even if some fail;
@@ -83,7 +80,6 @@ fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
         // Write pattern
         buf.sync_start(DMA_BUF_SYNC_WRITE)?;
         let slice = unsafe { std::slice::from_raw_parts_mut(ptr, size as usize) };
-        #[allow(clippy::cast_possible_truncation)]
         for (i, byte) in slice.iter_mut().enumerate() {
             *byte = (i % 256) as u8;
         }
@@ -92,7 +88,6 @@ fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
         // Read and verify
         buf.sync_start(DMA_BUF_SYNC_READ)?;
         let slice = unsafe { std::slice::from_raw_parts(ptr, size as usize) };
-        #[allow(clippy::cast_possible_truncation)]
         for (i, &byte) in slice.iter().enumerate() {
             if byte != (i % 256) as u8 {
                 tracing::error!(
