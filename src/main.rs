@@ -55,6 +55,12 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Negative => {
+            if let Err(e) = cmd::negative::run(&backend, &cli.heap) {
+                tracing::error!(error = %e, "negative tests failed");
+                std::process::exit(1);
+            }
+        }
         _ => {
             tracing::info!(command = ?cli.command, "not implemented");
         }
