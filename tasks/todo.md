@@ -84,7 +84,7 @@
 - [x] `src/cmd/scenario/camera.rs` — preview, capture, switch, multi_stream (10 tests)
 
 ### `feat/scenario-display`
-- [ ] `src/cmd/scenario/display.rs` — flip, rotation, multi_layer
+- [x] `src/cmd/scenario/display.rs` — flip, rotation, multi_layer (8 tests)
 
 ### `feat/scenario-codec`
 - [ ] `src/cmd/scenario/codec.rs` — decode, adaptive, transcode
