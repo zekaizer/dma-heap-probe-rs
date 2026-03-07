@@ -1,5 +1,6 @@
 // Common scenario patterns for workload simulations.
 
+pub mod camera;
 pub mod npu;
 
 use std::time::Instant;
