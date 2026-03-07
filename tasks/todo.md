@@ -31,11 +31,11 @@
 
 ## Phase 4: `feat/infra` — trace + sysfs + procfs
 
-- [ ] `src/trace.rs` — Perfetto atrace marker (trace_marker write, no-op when disabled)
-- [ ] `src/sysfs.rs` — `/sys/kernel/dmabuf/buffers/` parsing
-- [ ] `src/procfs.rs` — buddyinfo, pagetypeinfo, meminfo, vmstat parsing
-- [ ] Unit tests for procfs/sysfs parsers with sample data
-- [ ] Unit tests for trace marker format generation
+- [x] `src/trace.rs` — Perfetto atrace marker (trace_marker write, no-op when disabled)
+- [x] `src/sysfs.rs` — `/sys/kernel/dmabuf/buffers/` parsing
+- [x] `src/procfs.rs` — buddyinfo, pagetypeinfo, meminfo, vmstat parsing
+- [x] Unit tests for procfs/sysfs parsers with sample data (22 tests)
+- [x] Unit tests for trace marker format generation (5 tests)
 
 ## Phase 5: `feat/cmd-sync-edge` — stage 2 tests
 

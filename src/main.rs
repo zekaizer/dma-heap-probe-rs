@@ -8,6 +8,12 @@ mod dmabuf;
 mod heap;
 #[allow(dead_code)]
 mod ioctl;
+#[allow(dead_code)]
+mod procfs;
+#[allow(dead_code)]
+mod sysfs;
+#[allow(dead_code)]
+mod trace;
 
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
