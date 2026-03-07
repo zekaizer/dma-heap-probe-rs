@@ -3,6 +3,8 @@
 mod backend;
 mod cli;
 #[allow(dead_code)]
+mod heap;
+#[allow(dead_code)]
 mod ioctl;
 
 fn main() {
