@@ -171,8 +171,9 @@ pub fn parse_pagetypeinfo(content: &str) -> Result<Vec<PageTypeInfoEntry>, Box<d
     Ok(entries)
 }
 
-/// Selected fields from `/proc/meminfo`.
+/// Selected fields from `/proc/meminfo`. All values in kB.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[allow(clippy::struct_field_names)]
 pub struct MemInfo {
     pub mem_total_kb: u64,
     pub mem_free_kb: u64,
@@ -242,7 +243,7 @@ pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
 }
 
 /// Parse `/proc/vmstat` content. Extracts selected compaction and allocation fields.
-pub fn parse_vmstat(content: &str) -> Result<VmStat, Box<dyn Error>> {
+pub fn parse_vmstat(content: &str) -> VmStat {
     let mut compact_stall = None;
     let mut compact_success = None;
     let mut compact_fail = None;
@@ -264,13 +265,13 @@ pub fn parse_vmstat(content: &str) -> Result<VmStat, Box<dyn Error>> {
         }
     }
 
-    Ok(VmStat {
+    VmStat {
         compact_stall,
         compact_success,
         compact_fail,
         pgalloc_normal,
         pgfree,
-    })
+    }
 }
 
 /// Read and parse `/proc/meminfo`.
@@ -282,7 +283,7 @@ pub fn read_meminfo() -> Result<MemInfo, Box<dyn Error>> {
 /// Read and parse `/proc/vmstat`.
 pub fn read_vmstat() -> Result<VmStat, Box<dyn Error>> {
     let content = std::fs::read_to_string("/proc/vmstat")?;
-    parse_vmstat(&content)
+    Ok(parse_vmstat(&content))
 }
 
 /// Collect a full procfs snapshot (buddyinfo + pagetypeinfo + meminfo + vmstat).
@@ -464,7 +465,7 @@ nr_dirty 100
 
     #[test]
     fn parse_vmstat_selected_keys() {
-        let stat = parse_vmstat(VMSTAT_FIXTURE).unwrap();
+        let stat = parse_vmstat(VMSTAT_FIXTURE);
         assert_eq!(stat.compact_stall, Some(42));
         assert_eq!(stat.compact_success, Some(30));
         assert_eq!(stat.compact_fail, Some(12));
@@ -475,7 +476,7 @@ nr_dirty 100
     #[test]
     fn parse_vmstat_missing_keys() {
         let input = "nr_free_pages 100\npgfree 200\n";
-        let stat = parse_vmstat(input).unwrap();
+        let stat = parse_vmstat(input);
         assert_eq!(stat.compact_stall, None);
         assert_eq!(stat.compact_success, None);
         assert_eq!(stat.pgfree, Some(200));
@@ -483,7 +484,7 @@ nr_dirty 100
 
     #[test]
     fn parse_vmstat_empty() {
-        let stat = parse_vmstat("").unwrap();
+        let stat = parse_vmstat("");
         assert_eq!(stat.compact_stall, None);
         assert_eq!(stat.pgalloc_normal, None);
     }
