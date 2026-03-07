@@ -93,13 +93,13 @@
 - [x] `src/cmd/scenario/gpu.rs` — app_launch, app_switch, game_texture (7 tests)
 
 ### `feat/scenario-pipeline`
-- [ ] `src/cmd/scenario/pipeline.rs` — camera_preview, video_call, ai_camera, heavy
-- [ ] `--workload <role>:<heap>` multi-heap support
+- [x] `src/cmd/scenario/pipeline.rs` — camera_preview, video_call, ai_camera, heavy (8 tests)
+- [x] `--workload <role>:<heap>` multi-heap support (via PipelineConfig)
 
 ### Scenario unit tests
-- [ ] Buffer size calculations
-- [ ] Pool rotation logic
-- [ ] Scenario parameter validation
+- [x] Buffer size calculations (CameraFormat, NV12, ARGB in respective modules)
+- [x] Pool rotation logic (BufferPool round-robin in scenario/mod.rs)
+- [x] Scenario parameter validation (heap_for_role override tests)
 
 ## Phase 10: `feat/runner-output` — runner + JSON output
 
