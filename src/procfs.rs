@@ -171,6 +171,130 @@ pub fn parse_pagetypeinfo(content: &str) -> Result<Vec<PageTypeInfoEntry>, Box<d
     Ok(entries)
 }
 
+/// Selected fields from `/proc/meminfo`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MemInfo {
+    pub mem_total_kb: u64,
+    pub mem_free_kb: u64,
+    pub mem_available_kb: u64,
+    pub cma_total_kb: Option<u64>,
+    pub cma_free_kb: Option<u64>,
+}
+
+/// Selected fields from `/proc/vmstat`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct VmStat {
+    pub compact_stall: Option<u64>,
+    pub compact_success: Option<u64>,
+    pub compact_fail: Option<u64>,
+    pub pgalloc_normal: Option<u64>,
+    pub pgfree: Option<u64>,
+}
+
+/// Combined procfs snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProcfsSnapshot {
+    pub buddyinfo: Vec<BuddyInfoEntry>,
+    pub pagetypeinfo: Vec<PageTypeInfoEntry>,
+    pub meminfo: MemInfo,
+    pub vmstat: VmStat,
+}
+
+/// Parse `/proc/meminfo` content. Extracts selected fields.
+///
+/// Required: `MemTotal`, `MemFree`, `MemAvailable`.
+/// Optional: `CmaTotal`, `CmaFree`.
+pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
+    let mut mem_total_kb = None;
+    let mut mem_free_kb = None;
+    let mut mem_available_kb = None;
+    let mut cma_total_kb = None;
+    let mut cma_free_kb = None;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if let Some((key, val)) = line.split_once(':') {
+            let val_kb = val
+                .trim()
+                .strip_suffix("kB")
+                .unwrap_or(val.trim())
+                .trim()
+                .parse::<u64>();
+
+            match key {
+                "MemTotal" => mem_total_kb = val_kb.ok(),
+                "MemFree" => mem_free_kb = val_kb.ok(),
+                "MemAvailable" => mem_available_kb = val_kb.ok(),
+                "CmaTotal" => cma_total_kb = val_kb.ok(),
+                "CmaFree" => cma_free_kb = val_kb.ok(),
+                _ => {}
+            }
+        }
+    }
+
+    Ok(MemInfo {
+        mem_total_kb: mem_total_kb.ok_or("meminfo: MemTotal not found")?,
+        mem_free_kb: mem_free_kb.ok_or("meminfo: MemFree not found")?,
+        mem_available_kb: mem_available_kb.ok_or("meminfo: MemAvailable not found")?,
+        cma_total_kb,
+        cma_free_kb,
+    })
+}
+
+/// Parse `/proc/vmstat` content. Extracts selected compaction and allocation fields.
+pub fn parse_vmstat(content: &str) -> Result<VmStat, Box<dyn Error>> {
+    let mut compact_stall = None;
+    let mut compact_success = None;
+    let mut compact_fail = None;
+    let mut pgalloc_normal = None;
+    let mut pgfree = None;
+
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(key), Some(val_str)) = (parts.next(), parts.next()) {
+            let val = val_str.parse::<u64>().ok();
+            match key {
+                "compact_stall" => compact_stall = val,
+                "compact_success" => compact_success = val,
+                "compact_fail" => compact_fail = val,
+                "pgalloc_normal" => pgalloc_normal = val,
+                "pgfree" => pgfree = val,
+                _ => {}
+            }
+        }
+    }
+
+    Ok(VmStat {
+        compact_stall,
+        compact_success,
+        compact_fail,
+        pgalloc_normal,
+        pgfree,
+    })
+}
+
+/// Read and parse `/proc/meminfo`.
+pub fn read_meminfo() -> Result<MemInfo, Box<dyn Error>> {
+    let content = std::fs::read_to_string("/proc/meminfo")?;
+    parse_meminfo(&content)
+}
+
+/// Read and parse `/proc/vmstat`.
+pub fn read_vmstat() -> Result<VmStat, Box<dyn Error>> {
+    let content = std::fs::read_to_string("/proc/vmstat")?;
+    parse_vmstat(&content)
+}
+
+/// Collect a full procfs snapshot (buddyinfo + pagetypeinfo + meminfo + vmstat).
+pub fn snapshot() -> Result<ProcfsSnapshot, Box<dyn Error>> {
+    Ok(ProcfsSnapshot {
+        buddyinfo: read_buddyinfo()?,
+        pagetypeinfo: read_pagetypeinfo()?,
+        meminfo: read_meminfo()?,
+        vmstat: read_vmstat()?,
+    })
+}
+
 /// Read and parse `/proc/buddyinfo`.
 pub fn read_buddyinfo() -> Result<Vec<BuddyInfoEntry>, Box<dyn Error>> {
     let content = std::fs::read_to_string("/proc/buddyinfo")?;
@@ -287,5 +411,96 @@ Node 0, zone      DMA            1            7            0            0       
         let entries = parse_pagetypeinfo(PAGETYPEINFO_FIXTURE).unwrap();
         // All entries should be from the free pages section (6 entries, not 8+).
         assert_eq!(entries.len(), 6);
+    }
+
+    const MEMINFO_FIXTURE: &str = "\
+MemTotal:        8052444 kB
+MemFree:         3145728 kB
+MemAvailable:    5242880 kB
+Buffers:          123456 kB
+Cached:          1234567 kB
+SwapCached:            0 kB
+CmaTotal:         262144 kB
+CmaFree:          131072 kB
+";
+
+    #[test]
+    fn parse_meminfo_all_fields() {
+        let info = parse_meminfo(MEMINFO_FIXTURE).unwrap();
+        assert_eq!(info.mem_total_kb, 8_052_444);
+        assert_eq!(info.mem_free_kb, 3_145_728);
+        assert_eq!(info.mem_available_kb, 5_242_880);
+        assert_eq!(info.cma_total_kb, Some(262_144));
+        assert_eq!(info.cma_free_kb, Some(131_072));
+    }
+
+    #[test]
+    fn parse_meminfo_no_cma() {
+        let input = "\
+MemTotal:        8052444 kB
+MemFree:         3145728 kB
+MemAvailable:    5242880 kB
+";
+        let info = parse_meminfo(input).unwrap();
+        assert_eq!(info.cma_total_kb, None);
+        assert_eq!(info.cma_free_kb, None);
+    }
+
+    #[test]
+    fn parse_meminfo_missing_required() {
+        let input = "MemFree:   1234 kB\n";
+        assert!(parse_meminfo(input).is_err());
+    }
+
+    const VMSTAT_FIXTURE: &str = "\
+nr_free_pages 789012
+compact_stall 42
+compact_success 30
+compact_fail 12
+pgalloc_normal 123456
+pgfree 234567
+nr_dirty 100
+";
+
+    #[test]
+    fn parse_vmstat_selected_keys() {
+        let stat = parse_vmstat(VMSTAT_FIXTURE).unwrap();
+        assert_eq!(stat.compact_stall, Some(42));
+        assert_eq!(stat.compact_success, Some(30));
+        assert_eq!(stat.compact_fail, Some(12));
+        assert_eq!(stat.pgalloc_normal, Some(123_456));
+        assert_eq!(stat.pgfree, Some(234_567));
+    }
+
+    #[test]
+    fn parse_vmstat_missing_keys() {
+        let input = "nr_free_pages 100\npgfree 200\n";
+        let stat = parse_vmstat(input).unwrap();
+        assert_eq!(stat.compact_stall, None);
+        assert_eq!(stat.compact_success, None);
+        assert_eq!(stat.pgfree, Some(200));
+    }
+
+    #[test]
+    fn parse_vmstat_empty() {
+        let stat = parse_vmstat("").unwrap();
+        assert_eq!(stat.compact_stall, None);
+        assert_eq!(stat.pgalloc_normal, None);
+    }
+
+    #[test]
+    fn meminfo_serde_roundtrip() {
+        let info = parse_meminfo(MEMINFO_FIXTURE).unwrap();
+        let json = serde_json::to_string(&info).unwrap();
+        let deserialized: MemInfo = serde_json::from_str(&json).unwrap();
+        assert_eq!(info, deserialized);
+    }
+
+    #[test]
+    fn buddyinfo_serde_roundtrip() {
+        let entries = parse_buddyinfo(BUDDYINFO_FIXTURE).unwrap();
+        let json = serde_json::to_string(&entries).unwrap();
+        let deserialized: Vec<BuddyInfoEntry> = serde_json::from_str(&json).unwrap();
+        assert_eq!(entries, deserialized);
     }
 }
