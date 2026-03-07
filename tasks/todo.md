@@ -2,14 +2,14 @@
 
 ## Phase 1: `feat/ioctl-backend` — ioctl definitions + backend trait + real/mock
 
-- [ ] `src/ioctl/mod.rs` — module declarations
-- [ ] `src/ioctl/dma_heap.rs` — `dma_heap_allocation_data` struct + `DMA_HEAP_IOCTL_ALLOC`
-- [ ] `src/ioctl/dma_buf.rs` — `dma_buf_sync`, `dma_buf_export_sync_file`, `dma_buf_import_sync_file` structs + ioctl macros
-- [ ] `src/backend/mod.rs` — `HeapBackend` + `DmaBufBackend` trait definitions
-- [ ] `src/backend/real.rs` — real ioctl/mmap implementation (`cfg(target_os = "android")`)
-- [ ] `src/backend/mock.rs` — mock implementation for host `cargo test`
-- [ ] Unit tests for ioctl struct layout/size validation
-- [ ] Unit tests for mock backend (alloc, sync flags, errno paths)
+- [x] `src/ioctl/mod.rs` — module declarations
+- [x] `src/ioctl/dma_heap.rs` — `DmaHeapAllocationData` struct + `DMA_HEAP_IOCTL_ALLOC`
+- [x] `src/ioctl/dma_buf.rs` — `DmaBufSync`, `DmaBufExportSyncFile`, `DmaBufImportSyncFile` structs + ioctl macros
+- [x] `src/backend/mod.rs` — `HeapBackend` + `DmaBufBackend` trait definitions
+- [x] `src/backend/real.rs` — real ioctl/mmap implementation (`cfg(target_os = "android")`)
+- [x] `src/backend/mock.rs` — mock implementation for host `cargo test`
+- [x] Unit tests for ioctl struct layout/size validation (15 tests)
+- [x] Unit tests for mock backend: alloc, sync flags, errno paths (29 tests)
 
 ## Phase 2: `feat/cli-core` — clap CLI + heap.rs + dmabuf.rs
 
