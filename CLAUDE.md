@@ -135,19 +135,25 @@ Config file supports partial specification — omitted fields use defaults:
   - `android` job: cross-compile `aarch64-linux-android` via `cargo ndk`
 - **Release** (`.github/workflows/release.yml`): prerelease creation triggers workflow
   - Builds Android binary → uploads to release → promotes to full release
-  - Changelog: `--generate-notes` auto-generated + manual additions, no separate CHANGELOG file
+  - Changelog: manually written in release notes, no separate CHANGELOG file
 
 ### Release Process
 
 ```sh
 # 1. Create prerelease (triggers build workflow)
-#    --generate-notes auto-generates commit-based notes
-#    --notes-start-tag sets the base tag for diff
-#    -n prepends manual changelog above auto-generated notes
-gh release create v<VERSION> --prerelease --generate-notes \
-  --notes-start-tag v<PREV_VERSION> \
-  -n "## Highlights
-- summary of key changes"
+#    --title: tag name, --notes: changelog
+gh release create v<VERSION> --prerelease \
+  --title "v<VERSION>" \
+  --notes "## Changes
+
+### Added
+- new feature description
+
+### Fixed
+- bug fix description
+
+### Changed
+- behavior change description"
 
 # 2. release.yml auto-runs: build → upload binary → promote to full release
 ```
