@@ -4,9 +4,9 @@ use std::path::PathBuf;
 
 use clap::{ArgAction, Parser, Subcommand};
 
-/// DMA-Heap probe tool for Android 16+ (kernel 6.12+).
+/// dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+).
 #[derive(Parser, Debug)]
-#[command(name = "dhp", version, about)]
+#[command(name = "dhp", version, about = "dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)")]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -38,7 +38,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Stage 1 basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
+    /// Basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
     Basic {
         /// Allocation sizes (comma-separated).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
@@ -49,17 +49,17 @@ pub enum Command {
         repeat: u32,
     },
 
-    /// Stage 2 `sync_file` export/import tests.
+    /// `sync_file` export/import tests.
     SyncFile,
 
-    /// Stage 2 boundary conditions (concurrent, dup, `set_name`).
+    /// Boundary condition tests (concurrent, dup, `set_name`).
     Edge {
         /// Concurrent alloc threads.
         #[arg(long, default_value_t = 100)]
         threads: u32,
     },
 
-    /// Stage 3 performance measurement.
+    /// Performance measurement.
     Perf {
         /// Measurement sizes (comma-separated).
         #[arg(long, value_delimiter = ',')]
