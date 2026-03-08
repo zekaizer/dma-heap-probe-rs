@@ -1,14 +1,15 @@
 // NPU workload simulation: model load, inference loop, model switch,
 // sustained inference, concurrent clients, pressure inference.
 
-use std::error::Error;
 use std::time::Instant;
 
 use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, fill_buffer, read_sync};
+use crate::cmd::scenario::{
+    bulk_alloc, check_thread_failures, fill_buffer, read_sync, report_results,
+};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -66,7 +67,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &NpuConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("model_load", npu_model_load(backend, heap_name, config)),
         (
@@ -77,25 +78,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("sustained", npu_sustained(backend, heap_name, config)),
         ("concurrent", npu_concurrent(backend, heap_name, config)),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("npu scenario '{name}' failed: {e}").into()),
-    }
+    report_results("npu", &tests)
 }
 
 /// Simulate NPU model loading: bulk alloc chunks, mmap, write pattern.
@@ -382,11 +365,7 @@ fn npu_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
         }
     });
 
-    let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
-    if failures > 0 {
-        return Err(Errno::EIO);
-    }
-    Ok(())
+    check_thread_failures(&fail_count)
 }
 
 #[cfg(test)]

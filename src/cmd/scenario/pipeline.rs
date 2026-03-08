@@ -1,13 +1,14 @@
 // Composite pipeline simulations: multiple subsystems sharing dma-heap concurrently.
 
-use std::error::Error;
 use std::time::Instant;
 
 use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{BufferPool, fill_buffer, read_sync};
+use crate::cmd::scenario::{
+    BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync, report_results,
+};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -38,10 +39,8 @@ impl PipelineConfig {
     }
 }
 
-/// NV12 buffer size.
-fn nv12_size(width: u32, height: u32) -> u64 {
-    u64::from(width) * u64::from(height) * 3 / 2
-}
+/// Default NPU input buffer size (~600 KB, simulating 224×224×3×fp32).
+const NPU_INPUT_SIZE: u64 = 602_112;
 
 /// ARGB8888 buffer size.
 fn argb_size(width: u32, height: u32) -> u64 {
@@ -53,7 +52,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &PipelineConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "camera_preview",
@@ -66,25 +65,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("ai_camera", pipeline_ai_camera(backend, heap_name, config)),
         ("heavy", pipeline_heavy(backend, heap_name, config)),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("pipeline scenario '{name}' failed: {e}").into()),
-    }
+    report_results("pipeline", &tests)
 }
 
 /// Camera preview + display flip + GPU composition.
@@ -138,7 +119,7 @@ fn pipeline_camera_preview<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
     });
 
-    check_failures(&fail_count)
+    check_thread_failures(&fail_count)
 }
 
 /// Video call: camera + encode + decode + display.
@@ -196,7 +177,7 @@ fn pipeline_video_call<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
     });
 
-    check_failures(&fail_count)
+    check_thread_failures(&fail_count)
 }
 
 /// AI camera: camera preview + NPU inference + display.
@@ -228,7 +209,7 @@ fn pipeline_ai_camera<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
         // NPU: per-frame input/output alloc/free.
         s.spawn(move || {
-            run_alloc_free_worker(backend, npu_heap, 602_112, frames, fail_ref);
+            run_alloc_free_worker(backend, npu_heap, NPU_INPUT_SIZE, frames, fail_ref);
         });
         // Display: 1080p ARGB.
         s.spawn(move || {
@@ -243,7 +224,7 @@ fn pipeline_ai_camera<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
     });
 
-    check_failures(&fail_count)
+    check_thread_failures(&fail_count)
 }
 
 /// Heavy: all subsystems simultaneously.
@@ -295,7 +276,7 @@ fn pipeline_heavy<B: HeapBackend + DmaBufBackend + Send + Sync>(
             );
         });
         s.spawn(move || {
-            run_alloc_free_worker(backend, npu_heap, 602_112, frames, fail_ref);
+            run_alloc_free_worker(backend, npu_heap, NPU_INPUT_SIZE, frames, fail_ref);
         });
         s.spawn(move || {
             run_pool_worker(
@@ -309,7 +290,7 @@ fn pipeline_heavy<B: HeapBackend + DmaBufBackend + Send + Sync>(
         });
     });
 
-    check_failures(&fail_count)
+    check_thread_failures(&fail_count)
 }
 
 /// Worker: allocate a buffer pool and cycle through it.
@@ -394,16 +375,6 @@ fn run_alloc_free_worker<B: HeapBackend + DmaBufBackend>(
             "alloc_free_worker"
         );
     }
-}
-
-/// Check if any workers reported failures.
-fn check_failures(fail_count: &std::sync::atomic::AtomicUsize) -> nix::Result<()> {
-    let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
-    if failures > 0 {
-        tracing::error!(failures, "pipeline worker failures");
-        return Err(Errno::EIO);
-    }
-    Ok(())
 }
 
 #[cfg(test)]

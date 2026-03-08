@@ -1,11 +1,10 @@
 // Display workload simulation: buffer flip, rotation switch, multi-layer.
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer, report_results};
 use crate::heap::DmaHeap;
 
 /// ARGB8888 bytes per pixel.
@@ -46,7 +45,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &DisplayConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("flip", display_flip(backend, heap_name, config)),
         ("rotation", display_rotation(backend, heap_name, config)),
@@ -55,25 +54,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             display_multi_layer(backend, heap_name, config),
         ),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("display scenario '{name}' failed: {e}").into()),
-    }
+    report_results("display", &tests)
 }
 
 /// Double/triple buffer flip: allocate pool, cycle with frame writes.

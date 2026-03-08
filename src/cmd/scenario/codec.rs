@@ -1,12 +1,13 @@
 // Video codec workload simulation: DPB decode pool, adaptive streaming,
 // transcode (concurrent decode + encode).
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer, read_sync};
+use crate::cmd::scenario::{
+    BufferPool, bulk_alloc, fill_buffer, nv12_size, read_sync, report_results,
+};
 use crate::heap::DmaHeap;
 
 /// Codec scenario configuration.
@@ -32,41 +33,18 @@ impl Default for CodecConfig {
     }
 }
 
-/// NV12 buffer size: W * H * 1.5.
-fn nv12_size(width: u32, height: u32) -> u64 {
-    u64::from(width) * u64::from(height) * 3 / 2
-}
-
 /// Run all codec scenario tests.
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &CodecConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("decode", codec_decode(backend, heap_name, config)),
         ("adaptive", codec_adaptive(backend, heap_name, config)),
         ("transcode", codec_transcode(backend, heap_name, config)),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("codec scenario '{name}' failed: {e}").into()),
-    }
+    report_results("codec", &tests)
 }
 
 /// DPB pool decode: allocate DPB, cycle through frames.
