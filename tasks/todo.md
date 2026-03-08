@@ -113,9 +113,13 @@
 
 ## Review Checklist
 
-- [x] All `cargo test --all-targets` pass
+- [x] All `cargo test --all-targets` pass (295 tests)
 - [x] `cargo fmt --check` clean
 - [x] `cargo clippy --all-targets -- -D warnings` clean
+- [x] `cargo clippy --target aarch64-linux-android -- -D warnings` clean
+- [x] `cargo check --target aarch64-linux-android` pass
+- [x] nix crate updated to 0.31
+- [x] Documentation consistency verified (CLAUDE.md, README.md)
 - [ ] Device test on aarch64-linux-android (system heap)
 - [ ] Perfetto trace integration verified
 - [ ] JSON output format validated

@@ -21,7 +21,7 @@ A comprehensive userspace testing tool for DMA-Heap on Android 16+ (kernel 6.12+
 # Build for Android
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
-cargo ndk -t arm64-v8a -p 35 build --release
+cargo ndk -t arm64-v8a -P 35 build --release
 
 # Deploy
 adb push target/aarch64-linux-android/release/dhp /data/local/tmp/
@@ -30,7 +30,7 @@ adb shell chmod +x /data/local/tmp/dhp
 # Run
 adb shell su -c /data/local/tmp/dhp basic --heap system
 adb shell su -c /data/local/tmp/dhp perf --heap system --trace
-adb shell su -c /data/local/tmp/dhp scenario npu inference --heap system
+adb shell su -c /data/local/tmp/dhp scenario npu --heap system
 adb shell su -c /data/local/tmp/dhp all --heap system --sysfs --procfs --output /data/local/tmp/results.json
 ```
 

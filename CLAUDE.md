@@ -12,7 +12,7 @@ cargo test
 # Android target (requires NDK)
 rustup target add aarch64-linux-android
 cargo install cargo-ndk
-cargo ndk -t arm64-v8a -p 35 build --release
+cargo ndk -t arm64-v8a -P 35 build --release
 ```
 
 ## Project Structure
@@ -59,10 +59,12 @@ cargo ndk -t arm64-v8a -p 35 build --release
 
 | Crate | Purpose |
 |---|---|
-| nix (0.29+) | ioctl, mmap, close, lseek, dup |
+| nix (0.31+) | ioctl, mmap, close, lseek, dup |
 | clap (4.x, derive) | CLI parsing |
 | serde + serde_json | JSON result output + config loading |
 | libc | auxiliary constants (O_CLOEXEC, etc.) |
+| tracing (0.1) | structured logging |
+| tracing-subscriber (0.3) | log output formatting |
 | assert_cmd (2.x) | CLI integration test runner (dev) |
 | predicates (3.x) | Output assertion matchers (dev) |
 | tempfile (3.x) | Temporary file for --output tests (dev) |
