@@ -1,0 +1,7 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc d414d4555dfc62a33fd9d9c8d0ad8e7348740ade4699e01878e70c04eba73974 # shrinks to global = [], subcmd = ["sysfs-dump"]
