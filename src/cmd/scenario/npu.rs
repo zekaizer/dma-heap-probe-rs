@@ -40,6 +40,8 @@ fn chunk_params(model_size: u64, chunk_size: u64) -> (usize, u64) {
 }
 
 /// NPU scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct NpuConfig {
     pub model_size: u64,
     pub chunk_size: u64,

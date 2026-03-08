@@ -11,6 +11,8 @@ use crate::cmd::scenario::{
 use crate::heap::DmaHeap;
 
 /// Camera scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct CameraConfig {
     pub width: u32,
     pub height: u32,
@@ -25,7 +27,8 @@ pub struct CameraConfig {
 }
 
 /// Camera pixel format with bytes-per-pixel multiplier.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CameraFormat {
     Nv12,
     Raw10,
@@ -47,12 +50,26 @@ impl CameraFormat {
 }
 
 /// Configuration for a single camera stream.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct StreamConfig {
     pub width: u32,
     pub height: u32,
     pub format: CameraFormat,
     pub pool_size: usize,
     pub frames: u32,
+}
+
+impl Default for StreamConfig {
+    fn default() -> Self {
+        Self {
+            width: 1920,
+            height: 1080,
+            format: CameraFormat::Nv12,
+            pool_size: 8,
+            frames: 30,
+        }
+    }
 }
 
 impl Default for CameraConfig {

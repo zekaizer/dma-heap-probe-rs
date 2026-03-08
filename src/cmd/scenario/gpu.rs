@@ -10,6 +10,8 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// GPU scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct GpuConfig {
     pub buffer_count: usize,
     pub switch_count: u32,

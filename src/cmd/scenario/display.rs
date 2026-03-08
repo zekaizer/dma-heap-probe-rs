@@ -11,6 +11,8 @@ use crate::heap::DmaHeap;
 const BPP_ARGB8888: u64 = 4;
 
 /// Display scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DisplayConfig {
     pub width: u32,
     pub height: u32,

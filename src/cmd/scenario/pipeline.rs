@@ -1,5 +1,6 @@
 // Composite pipeline simulations: multiple subsystems sharing dma-heap concurrently.
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use nix::errno::Errno;
@@ -14,17 +15,19 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// Pipeline scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct PipelineConfig {
     pub frames: u32,
     /// Heap name overrides per role. Falls back to default heap.
-    pub workloads: Vec<(String, String)>,
+    pub workloads: HashMap<String, String>,
 }
 
 impl Default for PipelineConfig {
     fn default() -> Self {
         Self {
             frames: 30,
-            workloads: Vec::new(),
+            workloads: HashMap::new(),
         }
     }
 }
@@ -33,9 +36,8 @@ impl PipelineConfig {
     /// Get the heap name for a given role, falling back to `default_heap`.
     fn heap_for_role<'a>(&'a self, role: &str, default_heap: &'a str) -> &'a str {
         self.workloads
-            .iter()
-            .find(|(r, _)| r == role)
-            .map_or(default_heap, |(_, h)| h.as_str())
+            .get(role)
+            .map_or(default_heap, |h| h.as_str())
     }
 }
 
@@ -385,7 +387,7 @@ mod tests {
     fn test_config() -> PipelineConfig {
         PipelineConfig {
             frames: 10,
-            workloads: Vec::new(),
+            workloads: HashMap::new(),
         }
     }
 
@@ -431,7 +433,7 @@ mod tests {
     fn heap_for_role_override() {
         let cfg = PipelineConfig {
             frames: 10,
-            workloads: vec![("camera".into(), "camera_heap".into())],
+            workloads: HashMap::from([("camera".into(), "camera_heap".into())]),
         };
         assert_eq!(cfg.heap_for_role("camera", "system"), "camera_heap");
         assert_eq!(cfg.heap_for_role("display", "system"), "system");

@@ -11,6 +11,8 @@ use crate::cmd::scenario::{
 use crate::heap::DmaHeap;
 
 /// Codec scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct CodecConfig {
     pub width: u32,
     pub height: u32,
