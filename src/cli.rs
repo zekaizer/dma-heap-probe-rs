@@ -44,19 +44,19 @@ pub struct Cli {
 pub enum Command {
     /// Basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
     Basic {
-        /// Allocation sizes (comma-separated).
+        /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
         sizes: Vec<u64>,
 
-        /// Repeat count for `test_repeated_alloc`.
+        /// Repeat count for repeated alloc test.
         #[arg(long, default_value_t = 1024)]
         repeat: u32,
     },
 
-    /// `sync_file` export/import tests.
+    /// Sync-file export/import tests.
     SyncFile,
 
-    /// Boundary condition tests (concurrent, dup, `set_name`).
+    /// Boundary condition tests (concurrent, dup, naming).
     Edge {
         /// Concurrent alloc threads.
         #[arg(long, default_value_t = 100)]
@@ -65,7 +65,7 @@ pub enum Command {
 
     /// Performance measurement.
     Perf {
-        /// Measurement sizes (comma-separated).
+        /// Measurement sizes, comma-separated (default: 4096,65536,1048576).
         #[arg(long, value_delimiter = ',')]
         sizes: Option<Vec<u64>>,
 
@@ -104,7 +104,7 @@ pub enum Command {
         scenario: ScenarioCommand,
     },
 
-    /// Run all tests sequentially.
+    /// Run all tests including scenarios.
     All,
 
     /// Standalone sysfs/procfs snapshot.
@@ -180,7 +180,7 @@ pub enum ScenarioCommand {
         texture_size: u64,
     },
 
-    /// Composite multi-subsystem pipeline simulation.
+    /// Combined camera+display+codec+npu pipeline simulation.
     Pipeline {
         /// Number of frames to simulate.
         #[arg(long, default_value_t = 30)]
