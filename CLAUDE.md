@@ -29,6 +29,8 @@ cargo ndk -t arm64-v8a -p 35 build --release
 - `src/runner.rs` — test runner + result aggregation
 - `src/cmd/` — subcommand implementations (basic, sync_file, edge, perf, negative, pressure, fragmentation, pool)
 - `src/cmd/scenario/` — workload simulations (npu, camera, display, codec, gpu, pipeline)
+- `tests/cli_smoke.rs` — CLI end-to-end smoke tests (assert_cmd)
+- `tests/cli_fuzz.rs` — CLI argument combination fuzzing (proptest)
 
 ## Conventions
 
@@ -48,6 +50,8 @@ cargo ndk -t arm64-v8a -p 35 build --release
 - `cargo test` must pass before every commit
 - PR merge to `main` requires ALL tests passing (`cargo test --all-targets`)
 - Integration tests go in `tests/` directory (mock backend based)
+  - `tests/cli_smoke.rs` — end-to-end smoke tests for all subcommands, JSON output, error cases
+  - `tests/cli_fuzz.rs` — proptest-based argument combination fuzzing (448 iterations)
 - Test coverage targets: ioctl struct validation, errno branching, CLI parsing, procfs/sysfs parsing, scenario buffer calculations, latency statistics
 
 ## Dependencies
@@ -58,6 +62,10 @@ cargo ndk -t arm64-v8a -p 35 build --release
 | clap (4.x, derive) | CLI parsing |
 | serde + serde_json | JSON result output |
 | libc | auxiliary constants (O_CLOEXEC, etc.) |
+| assert_cmd (2.x) | CLI integration test runner (dev) |
+| predicates (3.x) | Output assertion matchers (dev) |
+| tempfile (3.x) | Temporary file for --output tests (dev) |
+| proptest (1.x) | Property-based / fuzz testing (dev) |
 
 ## Branching Strategy
 
@@ -78,6 +86,7 @@ cargo ndk -t arm64-v8a -p 35 build --release
   - `feat/scenario-gpu` — cmd/scenario/gpu.rs
   - `feat/scenario-pipeline` — cmd/scenario/pipeline.rs
   - `feat/runner-output` — runner.rs + JSON output integration
+  - `feat/cli-integration-test` — CLI smoke + proptest fuzz tests
 - `fix/<name>` — bug fixes
 - `refactor/<name>` — refactoring without behavior change
 
