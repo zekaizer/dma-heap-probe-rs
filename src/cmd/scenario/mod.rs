@@ -7,7 +7,10 @@ pub mod gpu;
 pub mod npu;
 pub mod pipeline;
 
+use std::error::Error;
 use std::time::Instant;
+
+use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
@@ -103,6 +106,44 @@ pub fn fill_buffer<B: DmaBufBackend>(
 pub fn read_sync<B: DmaBufBackend>(buf: &DmaBuf<'_, B>) -> nix::Result<()> {
     buf.sync_start(DMA_BUF_SYNC_READ)?;
     buf.sync_end(DMA_BUF_SYNC_READ)?;
+    Ok(())
+}
+
+/// NV12 buffer size: W × H × 1.5.
+pub fn nv12_size(width: u32, height: u32) -> u64 {
+    u64::from(width) * u64::from(height) * 3 / 2
+}
+
+/// Run scenario tests and report the first failure.
+pub fn report_results(
+    scenario: &str,
+    tests: &[(&str, nix::Result<()>)],
+) -> Result<(), Box<dyn Error>> {
+    let mut first_error: Option<(&str, nix::Error)> = None;
+    for (name, result) in tests {
+        match result {
+            Ok(()) => tracing::info!(name, "PASS"),
+            Err(e) => {
+                tracing::error!(name, error = %e, "FAIL");
+                if first_error.is_none() {
+                    first_error = Some((name, *e));
+                }
+            }
+        }
+    }
+    match first_error {
+        None => Ok(()),
+        Some((name, e)) => Err(format!("{scenario} scenario '{name}' failed: {e}").into()),
+    }
+}
+
+/// Check if any threaded workers reported failures via an `AtomicUsize` counter.
+pub fn check_thread_failures(fail_count: &std::sync::atomic::AtomicUsize) -> nix::Result<()> {
+    let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
+    if failures > 0 {
+        tracing::error!(failures, "worker failures");
+        return Err(Errno::EIO);
+    }
     Ok(())
 }
 

@@ -1,11 +1,10 @@
 // GPU rendering workload simulation: app launch burst, app switch, game texture streaming.
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::bulk_alloc;
+use crate::cmd::scenario::{bulk_alloc, report_results};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -49,31 +48,13 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &GpuConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("app_launch", gpu_app_launch(backend, heap_name, config)),
         ("app_switch", gpu_app_switch(backend, heap_name, config)),
         ("game_texture", gpu_game_texture(backend, heap_name, config)),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("gpu scenario '{name}' failed: {e}").into()),
-    }
+    report_results("gpu", &tests)
 }
 
 /// App launch: burst allocation of mixed-size buffers.

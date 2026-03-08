@@ -1,12 +1,13 @@
 // Camera workload simulation: preview buffer pool, burst capture,
 // resolution switch, multi-stream.
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer};
+use crate::cmd::scenario::{
+    BufferPool, bulk_alloc, check_thread_failures, fill_buffer, report_results,
+};
 use crate::heap::DmaHeap;
 
 /// Camera scenario configuration.
@@ -96,7 +97,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &CameraConfig,
-) -> Result<(), Box<dyn Error>> {
+) -> Result<(), Box<dyn std::error::Error>> {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("preview", camera_preview(backend, heap_name, config)),
         ("capture", camera_capture(backend, heap_name, config)),
@@ -106,25 +107,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             camera_multi_stream(backend, heap_name, config),
         ),
     ];
-
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("camera scenario '{name}' failed: {e}").into()),
-    }
+    report_results("camera", &tests)
 }
 
 /// Preview buffer pool: allocate pool, cycle through buffers writing frames.
@@ -282,11 +265,7 @@ fn camera_multi_stream<B: HeapBackend + DmaBufBackend + Send + Sync>(
         }
     });
 
-    let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
-    if failures > 0 {
-        return Err(nix::errno::Errno::EIO);
-    }
-    Ok(())
+    check_thread_failures(&fail_count)
 }
 
 #[cfg(test)]
