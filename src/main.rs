@@ -276,19 +276,22 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
 
     let mut all_results = Vec::with_capacity(36);
 
-    for (sub, err) in [
-        npu::run(backend, heap, &npu_cfg),
-        camera::run(backend, heap, &cam_cfg),
-        display::run(backend, heap, &dsp_cfg),
-        codec::run(backend, heap, &cod_cfg),
-        gpu::run(backend, heap, &gpu_cfg),
-        pipeline::run(backend, heap, &pip_cfg),
-    ] {
-        all_results.extend(sub);
-        if err.is_some() {
-            return (all_results, err);
-        }
+    macro_rules! run_scenario {
+        ($run:expr) => {{
+            let (sub, err) = $run;
+            all_results.extend(sub);
+            if err.is_some() {
+                return (all_results, err);
+            }
+        }};
     }
+
+    run_scenario!(npu::run(backend, heap, &npu_cfg));
+    run_scenario!(camera::run(backend, heap, &cam_cfg));
+    run_scenario!(display::run(backend, heap, &dsp_cfg));
+    run_scenario!(codec::run(backend, heap, &cod_cfg));
+    run_scenario!(gpu::run(backend, heap, &gpu_cfg));
+    run_scenario!(pipeline::run(backend, heap, &pip_cfg));
 
     (all_results, None)
 }
