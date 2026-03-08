@@ -13,16 +13,17 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_NAME_LEN, DMA_BUF_SYNC_READ};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Allocation size for negative tests.
 const NEG_ALLOC_SIZE: u64 = 4096;
 
 /// Run all negative tests. Executes all tests even if some fail;
-/// returns the first error encountered.
+/// returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         // Layer 1: Heap device access
         ("neg_open_nonexistent", neg_open_nonexistent(backend)),
@@ -87,24 +88,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("negative test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("negative", &tests)
 }
 
 // ── Layer 1: Heap device access ──
@@ -562,6 +546,9 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system").unwrap();
+        let (results, err) = run(&b, "system");
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 15);
     }
 }

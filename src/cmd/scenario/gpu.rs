@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, report_results};
+use crate::cmd::scenario::bulk_alloc;
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -48,13 +48,13 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &GpuConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("app_launch", gpu_app_launch(backend, heap_name, config)),
         ("app_switch", gpu_app_switch(backend, heap_name, config)),
         ("game_texture", gpu_game_texture(backend, heap_name, config)),
     ];
-    report_results("gpu", &tests)
+    crate::runner::collect_test_results("gpu", &tests)
 }
 
 /// App launch: burst allocation of mixed-size buffers.
@@ -235,7 +235,9 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", &test_config()).unwrap();
+        let (results, err) = run(&b, "system", &test_config());
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

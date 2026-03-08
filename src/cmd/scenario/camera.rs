@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    BufferPool, bulk_alloc, check_thread_failures, fill_buffer, report_results,
+    BufferPool, bulk_alloc, check_thread_failures, fill_buffer,
 };
 use crate::heap::DmaHeap;
 
@@ -99,7 +99,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &CameraConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("preview", camera_preview(backend, heap_name, config)),
         ("capture", camera_capture(backend, heap_name, config)),
@@ -109,7 +109,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             camera_multi_stream(backend, heap_name, config),
         ),
     ];
-    report_results("camera", &tests)
+    crate::runner::collect_test_results("camera", &tests)
 }
 
 /// Preview buffer pool: allocate pool, cycle through buffers writing frames.
@@ -352,7 +352,9 @@ mod tests {
     fn run_passes() {
         let b = MockBackend::new();
         let cfg = test_config();
-        run(&b, "system", &cfg).unwrap();
+        let (results, err) = run(&b, "system", &cfg);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

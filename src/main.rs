@@ -16,6 +16,9 @@ mod sysfs;
 #[allow(dead_code)]
 mod trace;
 
+use std::path::PathBuf;
+use std::time::Instant;
+
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
 
@@ -39,58 +42,50 @@ fn main() {
 
     match cli.command {
         Command::Basic { sizes, repeat } => {
-            if let Err(e) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat) {
-                tracing::error!(error = %e, "basic tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat);
+            handle_cmd_output("basic", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::SyncFile => {
-            if let Err(e) = cmd::sync_file::run(&backend, &cli.heap) {
-                tracing::error!(error = %e, "sync_file tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::sync_file::run(&backend, &cli.heap);
+            handle_cmd_output("sync_file", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Edge { threads } => {
-            if let Err(e) = cmd::edge::run(&backend, &cli.heap, threads) {
-                tracing::error!(error = %e, "edge tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::edge::run(&backend, &cli.heap, threads);
+            handle_cmd_output("edge", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Negative => {
-            if let Err(e) = cmd::negative::run(&backend, &cli.heap) {
-                tracing::error!(error = %e, "negative tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::negative::run(&backend, &cli.heap);
+            handle_cmd_output("negative", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Perf {
             sizes,
             iterations,
             warmup,
         } => {
-            if let Err(e) =
-                cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup)
-            {
-                tracing::error!(error = %e, "perf tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) =
+                cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup);
+            handle_cmd_output("perf", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Pressure { alloc_size } => {
-            if let Err(e) = cmd::pressure::run(&backend, &cli.heap, alloc_size) {
-                tracing::error!(error = %e, "pressure tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size);
+            handle_cmd_output("pressure", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Fragmentation { pattern } => {
-            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str()) {
-                tracing::error!(error = %e, "fragmentation tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) =
+                cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str());
+            handle_cmd_output("fragmentation", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::Pool => {
-            if let Err(e) = cmd::pool::run(&backend, &cli.heap) {
-                tracing::error!(error = %e, "pool tests failed");
-                std::process::exit(1);
-            }
+            let start = Instant::now();
+            let (sub, err) = cmd::pool::run(&backend, &cli.heap);
+            handle_cmd_output("pool", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
         }
         Command::All => {
             run_all(&backend, &cli);
@@ -99,7 +94,7 @@ fn main() {
             run_sysfs_dump();
         }
         Command::Scenario { ref scenario } => {
-            run_scenario(&backend, &cli.heap, scenario);
+            run_scenario(&backend, &cli, scenario);
         }
     }
 }
@@ -107,18 +102,29 @@ fn main() {
 /// Dispatch a scenario subcommand.
 fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
-    heap: &str,
+    cli: &Cli,
     scenario: &ScenarioCommand,
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
-    let result = match *scenario {
+    let stage_name = match *scenario {
+        ScenarioCommand::Npu { .. } => "scenario_npu",
+        ScenarioCommand::Camera { .. } => "scenario_camera",
+        ScenarioCommand::Display { .. } => "scenario_display",
+        ScenarioCommand::Codec { .. } => "scenario_codec",
+        ScenarioCommand::Gpu { .. } => "scenario_gpu",
+        ScenarioCommand::Pipeline { .. } => "scenario_pipeline",
+        ScenarioCommand::All => "scenario_all",
+    };
+
+    let start = Instant::now();
+    let (sub, err) = match *scenario {
         ScenarioCommand::Npu {
             iterations,
             clients,
         } => npu::run(
             backend,
-            heap,
+            &cli.heap,
             &npu::NpuConfig {
                 iterations,
                 clients,
@@ -131,7 +137,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             frames,
         } => camera::run(
             backend,
-            heap,
+            &cli.heap,
             &camera::CameraConfig {
                 width,
                 height,
@@ -145,7 +151,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             frames,
         } => display::run(
             backend,
-            heap,
+            &cli.heap,
             &display::DisplayConfig {
                 width,
                 height,
@@ -159,7 +165,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             frames,
         } => codec::run(
             backend,
-            heap,
+            &cli.heap,
             &codec::CodecConfig {
                 width,
                 height,
@@ -172,7 +178,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             texture_size,
         } => gpu::run(
             backend,
-            heap,
+            &cli.heap,
             &gpu::GpuConfig {
                 buffer_count,
                 texture_size,
@@ -181,95 +187,110 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ),
         ScenarioCommand::Pipeline { frames } => pipeline::run(
             backend,
-            heap,
+            &cli.heap,
             &pipeline::PipelineConfig {
                 frames,
                 ..Default::default()
             },
         ),
-        ScenarioCommand::All => run_all_scenarios(backend, heap),
+        ScenarioCommand::All => run_all_scenarios(backend, &cli.heap),
     };
 
-    if let Err(e) = result {
-        tracing::error!(error = %e, "scenario tests failed");
-        std::process::exit(1);
-    }
+    handle_cmd_output(stage_name, &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
 }
 
 /// Run all scenario simulations with default configs.
 fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     heap: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
-    npu::run(backend, heap, &npu::NpuConfig::default())?;
-    camera::run(backend, heap, &camera::CameraConfig::default())?;
-    display::run(backend, heap, &display::DisplayConfig::default())?;
-    codec::run(backend, heap, &codec::CodecConfig::default())?;
-    gpu::run(backend, heap, &gpu::GpuConfig::default())?;
-    pipeline::run(backend, heap, &pipeline::PipelineConfig::default())?;
-    Ok(())
+    let mut all_results = Vec::with_capacity(36);
+
+    for (sub, err) in [
+        npu::run(backend, heap, &npu::NpuConfig::default()),
+        camera::run(backend, heap, &camera::CameraConfig::default()),
+        display::run(backend, heap, &display::DisplayConfig::default()),
+        codec::run(backend, heap, &codec::CodecConfig::default()),
+        gpu::run(backend, heap, &gpu::GpuConfig::default()),
+        pipeline::run(backend, heap, &pipeline::PipelineConfig::default()),
+    ] {
+        all_results.extend(sub);
+        if err.is_some() {
+            return (all_results, err);
+        }
+    }
+
+    (all_results, None)
 }
 
 /// Run all test stages sequentially with result tracking.
 fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
+    /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
+    fn stage_result(
+        r: (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>),
+    ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
+        let (sub, err) = r;
+        let details = Some(runner::sub_tests_to_details(&sub));
+        match err {
+            Some(e) => Err(e),
+            None => Ok(details),
+        }
+    }
+
     let mut results = runner::RunResult::new(&cli.heap);
     let heap = cli.heap.clone();
 
     runner::run_stage(&mut results, "basic", || {
-        cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024)
+        stage_result(cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024))
     });
     runner::run_stage(&mut results, "sync_file", || {
-        cmd::sync_file::run(backend, &heap)
+        stage_result(cmd::sync_file::run(backend, &heap))
     });
-    runner::run_stage(&mut results, "edge", || cmd::edge::run(backend, &heap, 100));
+    runner::run_stage(&mut results, "edge", || {
+        stage_result(cmd::edge::run(backend, &heap, 100))
+    });
     runner::run_stage(&mut results, "negative", || {
-        cmd::negative::run(backend, &heap)
+        stage_result(cmd::negative::run(backend, &heap))
     });
     runner::run_stage(&mut results, "perf", || {
-        cmd::perf::run(backend, &heap, None, 100, 10)
+        stage_result(cmd::perf::run(backend, &heap, None, 100, 10))
     });
     runner::run_stage(&mut results, "pressure", || {
-        cmd::pressure::run(backend, &heap, 1_048_576)
+        stage_result(cmd::pressure::run(backend, &heap, 1_048_576))
     });
     runner::run_stage(&mut results, "fragmentation", || {
-        cmd::fragmentation::run(backend, &heap, "interleave")
+        stage_result(cmd::fragmentation::run(backend, &heap, "interleave"))
     });
-    runner::run_stage(&mut results, "pool", || cmd::pool::run(backend, &heap));
+    runner::run_stage(&mut results, "pool", || {
+        stage_result(cmd::pool::run(backend, &heap))
+    });
     runner::run_stage(&mut results, "scenario_npu", || {
-        cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default())
+        stage_result(cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default()))
     });
     runner::run_stage(&mut results, "scenario_camera", || {
-        cmd::scenario::camera::run(
-            backend,
-            &heap,
-            &cmd::scenario::camera::CameraConfig::default(),
-        )
+        stage_result(cmd::scenario::camera::run(
+            backend, &heap, &cmd::scenario::camera::CameraConfig::default(),
+        ))
     });
     runner::run_stage(&mut results, "scenario_display", || {
-        cmd::scenario::display::run(
-            backend,
-            &heap,
-            &cmd::scenario::display::DisplayConfig::default(),
-        )
+        stage_result(cmd::scenario::display::run(
+            backend, &heap, &cmd::scenario::display::DisplayConfig::default(),
+        ))
     });
     runner::run_stage(&mut results, "scenario_codec", || {
-        cmd::scenario::codec::run(
-            backend,
-            &heap,
-            &cmd::scenario::codec::CodecConfig::default(),
-        )
+        stage_result(cmd::scenario::codec::run(
+            backend, &heap, &cmd::scenario::codec::CodecConfig::default(),
+        ))
     });
     runner::run_stage(&mut results, "scenario_gpu", || {
-        cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default())
+        stage_result(cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default()))
     });
     runner::run_stage(&mut results, "scenario_pipeline", || {
-        cmd::scenario::pipeline::run(
-            backend,
-            &heap,
-            &cmd::scenario::pipeline::PipelineConfig::default(),
-        )
+        stage_result(cmd::scenario::pipeline::run(
+            backend, &heap, &cmd::scenario::pipeline::PipelineConfig::default(),
+        ))
     });
 
     tracing::info!(
@@ -286,6 +307,39 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     }
 
     if !results.all_passed() {
+        std::process::exit(1);
+    }
+}
+
+/// Handle a single subcommand's output: write JSON if --output, exit(1) on failure.
+fn handle_cmd_output(
+    stage_name: &str,
+    heap: &str,
+    output: Option<&PathBuf>,
+    sub_tests: &[runner::SubTestResult],
+    err: Option<Box<dyn std::error::Error>>,
+    duration: std::time::Duration,
+) {
+    let has_failure = err.is_some();
+
+    if let Some(output_path) = output {
+        let details = Some(runner::sub_tests_to_details(sub_tests));
+        let mut results = runner::RunResult::new(heap);
+        #[allow(clippy::cast_possible_truncation)]
+        let duration_ms = duration.as_millis() as u64;
+        let mapped = match err {
+            Some(e) => Err(e),
+            None => Ok(()),
+        };
+        results.record(stage_name, mapped, duration_ms, details);
+        if let Err(e) = results.write_json(output_path) {
+            tracing::error!(error = %e, "failed to write JSON output");
+        }
+    } else if let Some(e) = err {
+        tracing::error!(error = %e, "{stage_name} tests failed");
+    }
+
+    if has_failure {
         std::process::exit(1);
     }
 }

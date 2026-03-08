@@ -7,7 +7,6 @@ pub mod gpu;
 pub mod npu;
 pub mod pipeline;
 
-use std::error::Error;
 use std::time::Instant;
 
 use nix::errno::Errno;
@@ -115,29 +114,6 @@ pub fn read_sync<B: DmaBufBackend>(buf: &DmaBuf<'_, B>) -> nix::Result<()> {
 /// NV12 buffer size: W × H × 1.5.
 pub fn nv12_size(width: u32, height: u32) -> u64 {
     u64::from(width) * u64::from(height) * 3 / 2
-}
-
-/// Run scenario tests and report the first failure.
-pub fn report_results(
-    scenario: &str,
-    tests: &[(&str, nix::Result<()>)],
-) -> Result<(), Box<dyn Error>> {
-    let mut first_error: Option<(&str, nix::Error)> = None;
-    for (name, result) in tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("{scenario} scenario '{name}' failed: {e}").into()),
-    }
 }
 
 /// Check if any threaded workers reported failures via an `AtomicUsize` counter.

@@ -8,7 +8,7 @@ use nix::errno::Errno;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    bulk_alloc, check_thread_failures, fill_buffer, read_sync, report_results,
+    bulk_alloc, check_thread_failures, fill_buffer, read_sync,
 };
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -67,7 +67,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &NpuConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("model_load", npu_model_load(backend, heap_name, config)),
         (
@@ -78,7 +78,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("sustained", npu_sustained(backend, heap_name, config)),
         ("concurrent", npu_concurrent(backend, heap_name, config)),
     ];
-    report_results("npu", &tests)
+    crate::runner::collect_test_results("npu", &tests)
 }
 
 /// Simulate NPU model loading: bulk alloc chunks, mmap, write pattern.
@@ -424,7 +424,9 @@ mod tests {
     fn run_passes() {
         let b = MockBackend::new();
         let cfg = test_config();
-        run(&b, "system", &cfg).unwrap();
+        let (results, err) = run(&b, "system", &cfg);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

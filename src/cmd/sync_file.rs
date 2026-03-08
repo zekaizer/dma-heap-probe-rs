@@ -7,13 +7,14 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Run all stage 2 `sync_file` tests. Executes all tests even if some fail;
-/// returns the first error encountered.
+/// returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: [(&str, nix::Result<()>); 2] = [
         (
             "export_sync_file",
@@ -25,24 +26,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("sync_file test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("sync_file", &tests)
 }
 
 /// Export `sync_file` with each valid flag combination and verify returned fd.
@@ -125,6 +109,8 @@ mod tests {
     #[test]
     fn run_passes() {
         let backend = MockBackend::new();
-        run(&backend, "system").unwrap();
+        let (results, err) = run(&backend, "system");
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 }
