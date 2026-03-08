@@ -9,7 +9,7 @@ if [[ -z "$FILE_PATH" ]]; then
 fi
 
 if [[ "$FILE_PATH" == *.rs ]]; then
-  cargo fmt 2>/dev/null
+  rustfmt "$FILE_PATH" 2>/dev/null
 fi
 
 exit 0
