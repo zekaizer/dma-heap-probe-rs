@@ -1,0 +1,35 @@
+name: Release
+
+on:
+  release:
+    types: [prereleased]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+      - name: Build for Android
+        run: cargo ndk -t arm64-v8a -P 35 build --release
+      - name: Prepare artifact
+        run: cp target/aarch64-linux-android/release/dhp dhp-aarch64-linux-android
+      - name: Upload artifact
+        run: gh release upload ${{ github.event.release.tag_name }} dhp-aarch64-linux-android --clobber
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Promote to release
+        run: gh release edit ${{ github.event.release.tag_name }} --prerelease=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

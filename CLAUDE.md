@@ -128,10 +128,42 @@ Config file supports partial specification — omitted fields use defaults:
 }
 ```
 
+## CI/CD
+
+- **CI** (`.github/workflows/ci.yml`): push/PR to `main`
+  - `check` job: fmt, clippy, test (host x86_64)
+  - `android` job: cross-compile `aarch64-linux-android` via `cargo ndk`
+- **Release** (`.github/workflows/release.yml`): prerelease creation triggers workflow
+  - Builds Android binary → uploads to release → promotes to full release
+  - Changelog: `--generate-notes` auto-generated + manual additions, no separate CHANGELOG file
+
+### Release Process
+
+```sh
+# 1. Create prerelease (triggers build workflow)
+#    --generate-notes auto-generates commit-based notes
+#    --notes-start-tag sets the base tag for diff
+#    -n prepends manual changelog above auto-generated notes
+gh release create v<VERSION> --prerelease --generate-notes \
+  --notes-start-tag v<PREV_VERSION> \
+  -n "## Highlights
+- summary of key changes"
+
+# 2. release.yml auto-runs: build → upload binary → promote to full release
+```
+
 ## Deploy
 
 ```sh
+# Option 1: Download from GitHub Release
+gh release download v<VERSION> -p 'dhp-aarch64-linux-android'
+adb push dhp-aarch64-linux-android /data/local/tmp/dhp
+
+# Option 2: Build locally
+cargo ndk -t arm64-v8a -P 35 build --release
 adb push target/aarch64-linux-android/release/dhp /data/local/tmp/
+
+# Run on device
 adb shell chmod +x /data/local/tmp/dhp
 adb shell su -c /data/local/tmp/dhp all --heap system --trace --sysfs --procfs
 ```
