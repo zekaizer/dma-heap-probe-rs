@@ -1,8 +1,8 @@
 // Property-based CLI argument fuzzing — verify that arbitrary valid option
 // combinations never crash and that invalid arguments exit gracefully.
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use proptest::prelude::*;
 
 fn dhp() -> Command {
@@ -60,11 +60,7 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             r.to_string(),
         ]),
         Just(vec!["sync-file".into()]),
-        (1..8u32).prop_map(|t| vec![
-            "edge".into(),
-            "--threads".into(),
-            t.to_string(),
-        ]),
+        (1..8u32).prop_map(|t| vec!["edge".into(), "--threads".into(), t.to_string(),]),
         Just(vec!["negative".into()]),
         (1..10u32, 0..3u32).prop_map(|(i, w)| vec![
             "perf".into(),
@@ -73,9 +69,16 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--warmup".into(),
             w.to_string(),
         ]),
-        Just(vec!["pressure".into(), "--alloc-size".into(), "4096".into()]),
-        prop_oneof![Just("interleave"), Just("sequential")]
-            .prop_map(|p| vec!["fragmentation".into(), "--pattern".into(), p.into()]),
+        Just(vec![
+            "pressure".into(),
+            "--alloc-size".into(),
+            "4096".into()
+        ]),
+        prop_oneof![Just("interleave"), Just("sequential")].prop_map(|p| vec![
+            "fragmentation".into(),
+            "--pattern".into(),
+            p.into()
+        ]),
         Just(vec!["pool".into()]),
         Just(vec!["sysfs-dump".into()]),
         (1..5u32, 1..3u32).prop_map(|(i, c)| vec![
@@ -140,7 +143,11 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
 fn arb_invalid_args() -> impl Strategy<Value = Vec<String>> {
     prop_oneof![
         "[a-z]{1,8}".prop_map(|s| vec![s]),
-        Just(vec!["basic".into(), "--sizes".into(), "not_a_number".into()]),
+        Just(vec![
+            "basic".into(),
+            "--sizes".into(),
+            "not_a_number".into()
+        ]),
         Just(vec!["edge".into(), "--threads".into(), "abc".into()]),
         Just(vec!["scenario".into()]),
         Just(vec![

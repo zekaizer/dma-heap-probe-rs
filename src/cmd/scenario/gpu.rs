@@ -50,7 +50,10 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &GpuConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("app_launch", gpu_app_launch(backend, heap_name, config)),
         ("app_switch", gpu_app_switch(backend, heap_name, config)),

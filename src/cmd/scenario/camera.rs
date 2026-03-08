@@ -5,9 +5,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{
-    BufferPool, bulk_alloc, check_thread_failures, fill_buffer,
-};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, check_thread_failures, fill_buffer};
 use crate::heap::DmaHeap;
 
 /// Camera scenario configuration.
@@ -116,7 +114,10 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &CameraConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("preview", camera_preview(backend, heap_name, config)),
         ("capture", camera_capture(backend, heap_name, config)),

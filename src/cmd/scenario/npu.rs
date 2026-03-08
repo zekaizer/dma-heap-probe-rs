@@ -7,9 +7,7 @@ use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{
-    bulk_alloc, check_thread_failures, fill_buffer, read_sync,
-};
+use crate::cmd::scenario::{bulk_alloc, check_thread_failures, fill_buffer, read_sync};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -69,7 +67,10 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &NpuConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("model_load", npu_model_load(backend, heap_name, config)),
         (

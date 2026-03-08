@@ -5,9 +5,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{
-    BufferPool, bulk_alloc, fill_buffer, nv12_size, read_sync,
-};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer, nv12_size, read_sync};
 use crate::heap::DmaHeap;
 
 /// Codec scenario configuration.
@@ -40,7 +38,10 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &CodecConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("decode", codec_decode(backend, heap_name, config)),
         ("adaptive", codec_adaptive(backend, heap_name, config)),

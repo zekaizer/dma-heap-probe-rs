@@ -45,22 +45,50 @@ fn main() {
         Command::Basic { sizes, repeat } => {
             let start = Instant::now();
             let (sub, err) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat);
-            handle_cmd_output("basic", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "basic",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::SyncFile => {
             let start = Instant::now();
             let (sub, err) = cmd::sync_file::run(&backend, &cli.heap);
-            handle_cmd_output("sync_file", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "sync_file",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Edge { threads } => {
             let start = Instant::now();
             let (sub, err) = cmd::edge::run(&backend, &cli.heap, threads);
-            handle_cmd_output("edge", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "edge",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Negative => {
             let start = Instant::now();
             let (sub, err) = cmd::negative::run(&backend, &cli.heap);
-            handle_cmd_output("negative", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "negative",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Perf {
             sizes,
@@ -70,23 +98,50 @@ fn main() {
             let start = Instant::now();
             let (sub, err) =
                 cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup);
-            handle_cmd_output("perf", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "perf",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Pressure { alloc_size } => {
             let start = Instant::now();
             let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size);
-            handle_cmd_output("pressure", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "pressure",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Fragmentation { pattern } => {
             let start = Instant::now();
-            let (sub, err) =
-                cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str());
-            handle_cmd_output("fragmentation", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            let (sub, err) = cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str());
+            handle_cmd_output(
+                "fragmentation",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Pool => {
             let start = Instant::now();
             let (sub, err) = cmd::pool::run(&backend, &cli.heap);
-            handle_cmd_output("pool", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "pool",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::All => {
             run_all(&backend, &cli);
@@ -176,8 +231,11 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             buffer_count,
             texture_size,
         } => {
-            let cfg =
-                config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), buffer_count, texture_size);
+            let cfg = config::resolve_gpu(
+                json.and_then(|c| c.gpu.as_ref()),
+                buffer_count,
+                texture_size,
+            );
             gpu::run(backend, &cli.heap, &cfg)
         }
         ScenarioCommand::Pipeline { frames } => {
@@ -188,7 +246,14 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ScenarioCommand::DumpConfig => unreachable!(),
     };
 
-    handle_cmd_output(stage_name, &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+    handle_cmd_output(
+        stage_name,
+        &cli.heap,
+        cli.output.as_ref(),
+        &sub,
+        err,
+        start.elapsed(),
+    );
 }
 
 /// Run all scenario simulations with optional JSON config.
@@ -196,7 +261,10 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
     backend: &B,
     heap: &str,
     json: Option<&config::ScenarioConfigs>,
-) -> (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
     let npu_cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None);
@@ -229,7 +297,10 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
 fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
-        r: (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>),
+        r: (
+            Vec<runner::SubTestResult>,
+            Option<Box<dyn std::error::Error>>,
+        ),
     ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
         let (sub, err) = r;
         let details = Some(runner::sub_tests_to_details(&sub));
@@ -251,7 +322,12 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     let heap = cli.heap.clone();
 
     runner::run_stage(&mut results, "basic", || {
-        stage_result(cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024))
+        stage_result(cmd::basic::run(
+            backend,
+            &heap,
+            &[4096, 65536, 1_048_576],
+            1024,
+        ))
     });
     runner::run_stage(&mut results, "sync_file", || {
         stage_result(cmd::sync_file::run(backend, &heap))

@@ -328,7 +328,14 @@ mod tests {
     #[test]
     fn scenario_subcommands() {
         for sub in &[
-            "npu", "camera", "display", "codec", "gpu", "pipeline", "dump-config", "all",
+            "npu",
+            "camera",
+            "display",
+            "codec",
+            "gpu",
+            "pipeline",
+            "dump-config",
+            "all",
         ] {
             let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
             assert!(cli.is_ok(), "failed to parse: scenario {sub}");
@@ -366,7 +373,11 @@ mod tests {
         let cli = parse(&["dhp", "scenario", "npu"]);
         match cli.command {
             Command::Scenario {
-                scenario: ScenarioCommand::Npu { iterations, clients },
+                scenario:
+                    ScenarioCommand::Npu {
+                        iterations,
+                        clients,
+                    },
             } => {
                 assert!(iterations.is_none());
                 assert!(clients.is_none());
@@ -386,7 +397,9 @@ mod tests {
         let cli = parse(&["dhp", "scenario", "dump-config"]);
         assert!(matches!(
             cli.command,
-            Command::Scenario { scenario: ScenarioCommand::DumpConfig }
+            Command::Scenario {
+                scenario: ScenarioCommand::DumpConfig
+            }
         ));
     }
 

@@ -7,9 +7,7 @@ use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{
-    BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync,
-};
+use crate::cmd::scenario::{BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -54,7 +52,10 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &PipelineConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "camera_preview",
