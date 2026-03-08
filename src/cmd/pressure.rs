@@ -9,14 +9,15 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
-/// Run all pressure tests.
+/// Run all pressure tests. Returns sub-test results (and the first error, if any).
 #[allow(clippy::cast_possible_truncation)]
 pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     alloc_size: u64,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "gradual_exhaust",
@@ -29,24 +30,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("pressure test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("pressure", &tests)
 }
 
 /// Maximum allocations before giving up (safety limit for host testing).
@@ -266,7 +250,10 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", 4096).unwrap();
+        let (results, err) = run(&b, "system", 4096);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 3);
     }
 
     #[test]

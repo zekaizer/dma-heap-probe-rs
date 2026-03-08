@@ -67,7 +67,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &NpuConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("model_load", npu_model_load(backend, heap_name, config)),
         (
@@ -424,7 +424,9 @@ mod tests {
     fn run_passes() {
         let b = MockBackend::new();
         let cfg = test_config();
-        run(&b, "system", &cfg).unwrap();
+        let (results, err) = run(&b, "system", &cfg);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

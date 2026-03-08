@@ -9,6 +9,7 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::DMA_BUF_SYNC_WRITE;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::procfs::{self, BuddyInfoEntry, PageTypeInfoEntry};
+use crate::runner::{self, SubTestResult};
 
 /// Interleave pattern buffer count.
 const INTERLEAVE_COUNT: usize = 100;
@@ -17,11 +18,12 @@ const INTERLEAVE_COUNT: usize = 100;
 const MIXED_SIZES: &[u64] = &[4096, 65536, 1_048_576];
 
 /// Run all fragmentation observation tests.
+/// Returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     pattern: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("buddyinfo_track", test_buddyinfo_track(backend, heap_name)),
         (
@@ -34,24 +36,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("fragmentation test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("fragmentation", &tests)
 }
 
 /// Try to read `/proc/buddyinfo`. Returns empty on non-Linux hosts.
@@ -270,7 +255,10 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", "interleave").unwrap();
+        let (results, err) = run(&b, "system", "interleave");
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 3);
     }
 
     #[test]

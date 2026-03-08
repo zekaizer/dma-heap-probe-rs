@@ -52,7 +52,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &PipelineConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "camera_preview",
@@ -416,7 +416,9 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", &test_config()).unwrap();
+        let (results, err) = run(&b, "system", &test_config());
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

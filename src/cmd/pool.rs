@@ -9,6 +9,7 @@ use crate::cmd::perf::compute_stats;
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Default buffer count for pool tests.
 const POOL_COUNT: u32 = 100;
@@ -20,11 +21,12 @@ const POOL_SIZE: u64 = 65536; // 64 KB
 const MEASURE_ITERS: u32 = 100;
 
 /// Run all pool/cache behavior tests.
+/// Returns sub-test results (and the first error, if any).
 #[allow(clippy::cast_possible_truncation)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("pool_warmup", test_pool_warmup(backend, heap_name)),
         ("size_switch", test_size_switch(backend, heap_name)),
@@ -32,24 +34,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("deferred_free", test_deferred_free(backend, heap_name)),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("pool test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("pool", &tests)
 }
 
 /// Measure alloc latency and return samples in microseconds.
@@ -316,7 +301,10 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system").unwrap();
+        let (results, err) = run(&b, "system");
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 4);
     }
 
     #[test]

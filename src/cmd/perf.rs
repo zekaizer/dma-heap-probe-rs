@@ -11,6 +11,7 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Page size for alignment calculations.
 const PAGE_SIZE: u64 = 4096;
@@ -78,6 +79,7 @@ fn page_align(size: u64) -> u64 {
 }
 
 /// Run all stage 3 performance tests.
+/// Returns sub-test results (and the first error, if any).
 #[allow(clippy::cast_possible_truncation)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -85,7 +87,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     sizes: Option<&[u64]>,
     iterations: u32,
     warmup: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
@@ -111,24 +113,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in &tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("perf test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("perf", &tests)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
@@ -454,6 +439,9 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", Some(&[4096]), 5, 1).unwrap();
+        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 5);
     }
 }

@@ -9,6 +9,7 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Number of buffers used in the zeroed-page test.
 const ZEROED_TEST_COUNT: usize = 16;
@@ -22,13 +23,13 @@ fn page_align(size: u64) -> u64 {
 }
 
 /// Run all stage 1 basic tests. Executes all tests even if some fail;
-/// returns the first error encountered.
+/// returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     sizes: &[u64],
     repeat: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: [(&str, nix::Result<()>); 4] = [
         (
             "alloc_and_map",
@@ -42,24 +43,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("llseek_size", test_llseek_size(backend, heap_name, sizes)),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("basic test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("basic", &tests)
 }
 
 /// Alloc → mmap → pattern write → read verify for each size.
@@ -311,13 +295,17 @@ mod tests {
     #[test]
     fn run_passes() {
         let backend = MockBackend::new();
-        run(&backend, "system", &[4096, 65536], 10).unwrap();
+        let (results, err) = run(&backend, "system", &[4096, 65536], 10);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 4);
     }
 
     #[test]
     fn run_bad_heap() {
         let backend = MockBackend::new();
-        let result = run(&backend, "", &[4096], 10);
-        assert!(result.is_err());
+        let (results, err) = run(&backend, "", &[4096], 10);
+        assert!(err.is_some());
+        assert!(results.iter().any(|t| !t.passed));
     }
 }

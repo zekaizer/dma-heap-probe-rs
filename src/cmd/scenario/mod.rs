@@ -17,6 +17,7 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// A fixed-size buffer pool that allocates N buffers and cycles through them.
 ///
@@ -118,26 +119,12 @@ pub fn nv12_size(width: u32, height: u32) -> u64 {
 }
 
 /// Run scenario tests and report the first failure.
+/// Returns sub-test results (and the first error, if any).
 pub fn report_results(
     scenario: &str,
     tests: &[(&str, nix::Result<()>)],
-) -> Result<(), Box<dyn Error>> {
-    let mut first_error: Option<(&str, nix::Error)> = None;
-    for (name, result) in tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, *e));
-                }
-            }
-        }
-    }
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("{scenario} scenario '{name}' failed: {e}").into()),
-    }
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    runner::collect_test_results(scenario, tests)
 }
 
 /// Check if any threaded workers reported failures via an `AtomicUsize` counter.

@@ -124,6 +124,43 @@ pub fn sub_tests_to_details(tests: &[SubTestResult]) -> Option<serde_json::Value
     serde_json::to_value(serde_json::json!({ "tests": tests })).ok()
 }
 
+/// Collect nix test results into `SubTestResult` entries, logging each.
+/// Returns the collected results and the first error (if any).
+pub fn collect_test_results(
+    stage: &str,
+    tests: &[(&str, nix::Result<()>)],
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    let mut results = Vec::with_capacity(tests.len());
+    let mut first_error: Option<Box<dyn Error>> = None;
+
+    for (name, result) in tests {
+        match result {
+            Ok(()) => {
+                tracing::info!(name, "PASS");
+                results.push(SubTestResult {
+                    name: (*name).to_string(),
+                    passed: true,
+                    error: None,
+                });
+            }
+            Err(e) => {
+                tracing::error!(name, error = %e, "FAIL");
+                results.push(SubTestResult {
+                    name: (*name).to_string(),
+                    passed: false,
+                    error: Some(e.to_string()),
+                });
+                if first_error.is_none() {
+                    first_error =
+                        Some(format!("{stage} test '{name}' failed: {e}").into());
+                }
+            }
+        }
+    }
+
+    (results, first_error)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

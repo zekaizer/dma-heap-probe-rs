@@ -45,7 +45,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &DisplayConfig,
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("flip", display_flip(backend, heap_name, config)),
         ("rotation", display_rotation(backend, heap_name, config)),
@@ -224,7 +224,9 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        run(&b, "system", &test_config()).unwrap();
+        let (results, err) = run(&b, "system", &test_config());
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
     }
 
     #[test]

@@ -10,17 +10,18 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::runner::{self, SubTestResult};
 
 /// Allocation size used for edge tests.
 const EDGE_ALLOC_SIZE: u64 = 4096;
 
 /// Run all stage 2 edge tests. Executes all tests even if some fail;
-/// returns the first error encountered.
+/// returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     threads: u32,
-) -> Result<(), Box<dyn Error>> {
+) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let tests: [(&str, nix::Result<()>); 3] = [
         (
             "concurrent_alloc",
@@ -30,24 +31,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("set_name", test_set_name(backend, heap_name)),
     ];
 
-    let mut first_error: Option<(&str, nix::Error)> = None;
-
-    for (name, result) in tests {
-        match result {
-            Ok(()) => tracing::info!(name, "PASS"),
-            Err(e) => {
-                tracing::error!(name, error = %e, "FAIL");
-                if first_error.is_none() {
-                    first_error = Some((name, e));
-                }
-            }
-        }
-    }
-
-    match first_error {
-        None => Ok(()),
-        Some((name, e)) => Err(format!("edge test '{name}' failed: {e}").into()),
-    }
+    runner::collect_test_results("edge", &tests)
 }
 
 /// Concurrent alloc → mmap → sync → write → verify → close from N threads.
@@ -209,13 +193,17 @@ mod tests {
     #[test]
     fn run_passes() {
         let backend = MockBackend::new();
-        run(&backend, "system", 10).unwrap();
+        let (results, err) = run(&backend, "system", 10);
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        assert_eq!(results.len(), 3);
     }
 
     #[test]
     fn run_bad_heap() {
         let backend = MockBackend::new();
-        let result = run(&backend, "", 10);
-        assert!(result.is_err());
+        let (results, err) = run(&backend, "", 10);
+        assert!(err.is_some());
+        assert!(results.iter().any(|t| !t.passed));
     }
 }
