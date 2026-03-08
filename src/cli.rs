@@ -6,7 +6,11 @@ use clap::{ArgAction, Parser, Subcommand};
 
 /// dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+).
 #[derive(Parser, Debug)]
-#[command(name = "dhp", version, about = "dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)")]
+#[command(
+    name = "dhp",
+    version,
+    about = "dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -296,7 +300,9 @@ mod tests {
 
     #[test]
     fn scenario_subcommands() {
-        for sub in &["npu", "camera", "display", "codec", "gpu", "pipeline", "all"] {
+        for sub in &[
+            "npu", "camera", "display", "codec", "gpu", "pipeline", "all",
+        ] {
             let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
             assert!(cli.is_ok(), "failed to parse: scenario {sub}");
         }
@@ -304,10 +310,22 @@ mod tests {
 
     #[test]
     fn scenario_npu_custom_args() {
-        let cli = parse(&["dhp", "scenario", "npu", "--iterations", "50", "--clients", "2"]);
+        let cli = parse(&[
+            "dhp",
+            "scenario",
+            "npu",
+            "--iterations",
+            "50",
+            "--clients",
+            "2",
+        ]);
         match cli.command {
             Command::Scenario {
-                scenario: ScenarioCommand::Npu { iterations, clients },
+                scenario:
+                    ScenarioCommand::Npu {
+                        iterations,
+                        clients,
+                    },
             } => {
                 assert_eq!(iterations, 50);
                 assert_eq!(clients, 2);

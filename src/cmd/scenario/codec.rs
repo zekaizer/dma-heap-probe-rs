@@ -78,6 +78,7 @@ fn codec_decode<B: HeapBackend + DmaBufBackend>(
             width = config.width,
             height = config.height,
             dpb_size = config.dpb_size,
+            fps = config.fps,
             frame_size,
             dpb_alloc_us,
             p50_us = stats.p50_us,

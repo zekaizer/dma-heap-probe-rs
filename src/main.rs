@@ -98,7 +98,7 @@ fn main() {
         Command::SysfsDump => {
             run_sysfs_dump();
         }
-        Command::Scenario { scenario } => {
+        Command::Scenario { ref scenario } => {
             run_scenario(&backend, &cli.heap, scenario);
         }
     }
@@ -108,11 +108,11 @@ fn main() {
 fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     heap: &str,
-    scenario: ScenarioCommand,
+    scenario: &ScenarioCommand,
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
-    let result = match scenario {
+    let result = match *scenario {
         ScenarioCommand::Npu {
             iterations,
             clients,

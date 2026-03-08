@@ -18,6 +18,7 @@ pub struct CameraConfig {
     pub pool_size: usize,
     pub fps: u32,
     pub frames: u32,
+    pub burst_format: CameraFormat,
     pub burst_count: u32,
     pub resolutions: Vec<(u32, u32)>,
     pub streams: Vec<StreamConfig>,
@@ -63,6 +64,7 @@ impl Default for CameraConfig {
             pool_size: 8,
             fps: 30,
             frames: 100,
+            burst_format: CameraFormat::Raw16,
             burst_count: 10,
             resolutions: vec![(1920, 1080), (4000, 3000), (1920, 1080)],
             streams: vec![
@@ -83,7 +85,7 @@ impl Default for CameraConfig {
                 StreamConfig {
                     width: 640,
                     height: 480,
-                    format: CameraFormat::Nv12,
+                    format: CameraFormat::Raw10,
                     pool_size: 4,
                     frames: 30,
                 },
@@ -137,6 +139,7 @@ fn camera_preview<B: HeapBackend + DmaBufBackend>(
             height = config.height,
             buf_size,
             pool_size = config.pool_size,
+            fps = config.fps,
             frames = config.frames,
             p50_us = stats.p50_us,
             p95_us = stats.p95_us,
@@ -155,8 +158,7 @@ fn camera_capture<B: HeapBackend + DmaBufBackend>(
     config: &CameraConfig,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    // Use RAW16 at high resolution for burst.
-    let capture_size = CameraFormat::Raw16.buffer_size(4000, 3000);
+    let capture_size = config.burst_format.buffer_size(4000, 3000);
 
     let (buffers, latencies) =
         bulk_alloc(backend, &heap, capture_size, config.burst_count as usize)?;
@@ -281,6 +283,7 @@ mod tests {
             pool_size: 4,
             fps: 30,
             frames: 20,
+            burst_format: CameraFormat::Raw10,
             burst_count: 5,
             resolutions: vec![(320, 240), (640, 480), (320, 240)],
             streams: vec![
