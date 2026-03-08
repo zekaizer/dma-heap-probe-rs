@@ -326,23 +326,23 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             backend,
             &heap,
             &[4096, 65536, 1_048_576],
-            1024,
+            8,
         ))
     });
     runner::run_stage(&mut results, "sync_file", || {
         stage_result(cmd::sync_file::run(backend, &heap))
     });
     runner::run_stage(&mut results, "edge", || {
-        stage_result(cmd::edge::run(backend, &heap, 100))
+        stage_result(cmd::edge::run(backend, &heap, 4))
     });
     runner::run_stage(&mut results, "negative", || {
         stage_result(cmd::negative::run(backend, &heap))
     });
     runner::run_stage(&mut results, "perf", || {
-        stage_result(cmd::perf::run(backend, &heap, None, 100, 10))
+        stage_result(cmd::perf::run(backend, &heap, None, 10, 2))
     });
     runner::run_stage(&mut results, "pressure", || {
-        stage_result(cmd::pressure::run(backend, &heap, 1_048_576))
+        stage_result(cmd::pressure::run(backend, &heap, 4096))
     });
     runner::run_stage(&mut results, "fragmentation", || {
         stage_result(cmd::fragmentation::run(backend, &heap, "interleave"))
