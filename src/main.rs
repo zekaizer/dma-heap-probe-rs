@@ -25,6 +25,7 @@ use tracing_subscriber::filter::LevelFilter;
 
 use cli::{Cli, Command, ScenarioCommand};
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
@@ -144,15 +145,32 @@ fn main() {
             );
         }
         Command::All => {
-            run_all(&backend, &cli);
+            let json_cfg = load_scenario_config(&cli);
+            run_all(&backend, &cli, json_cfg.as_ref());
         }
         Command::SysfsDump => {
             run_sysfs_dump();
         }
+        Command::Scenario {
+            scenario: ScenarioCommand::DumpConfig,
+        } => {
+            println!("{}", config::dump_default_config());
+        }
         Command::Scenario { ref scenario } => {
-            run_scenario(&backend, &cli, scenario);
+            let json_cfg = load_scenario_config(&cli);
+            run_scenario(&backend, &cli, scenario, json_cfg.as_ref());
         }
     }
+}
+
+/// Load scenario config from JSON file if --config is provided.
+fn load_scenario_config(cli: &Cli) -> Option<config::ScenarioConfigs> {
+    cli.config.as_ref().map(|p| {
+        config::load_config(p).unwrap_or_else(|e| {
+            tracing::error!(error = %e, path = %p.display(), "failed to load config");
+            std::process::exit(1);
+        })
+    })
 }
 
 /// Dispatch a scenario subcommand.
@@ -160,21 +178,9 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     cli: &Cli,
     scenario: &ScenarioCommand,
+    json: Option<&config::ScenarioConfigs>,
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
-
-    let json_cfg = cli.config.as_ref().map(|p| {
-        config::load_config(p).unwrap_or_else(|e| {
-            tracing::error!(error = %e, path = %p.display(), "failed to load config");
-            std::process::exit(1);
-        })
-    });
-    let json = json_cfg.as_ref();
-
-    if matches!(scenario, ScenarioCommand::DumpConfig) {
-        println!("{}", config::dump_default_config());
-        return;
-    }
 
     let stage_name = match *scenario {
         ScenarioCommand::Npu { .. } => "scenario_npu",
@@ -297,7 +303,11 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
 }
 
 /// Run all test stages sequentially with result tracking.
-fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
+fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    backend: &B,
+    cli: &Cli,
+    json: Option<&config::ScenarioConfigs>,
+) {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
         r: (
@@ -312,14 +322,6 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             None => Ok(details),
         }
     }
-
-    let json_cfg = cli.config.as_ref().map(|p| {
-        config::load_config(p).unwrap_or_else(|e| {
-            tracing::error!(error = %e, path = %p.display(), "failed to load config");
-            std::process::exit(1);
-        })
-    });
-    let json = json_cfg.as_ref();
 
     let mut results = runner::RunResult::new(&cli.heap);
     let heap = cli.heap.clone();
