@@ -7,7 +7,6 @@ pub mod gpu;
 pub mod npu;
 pub mod pipeline;
 
-use std::error::Error;
 use std::time::Instant;
 
 use nix::errno::Errno;
@@ -17,7 +16,6 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
-use crate::runner::{self, SubTestResult};
 
 /// A fixed-size buffer pool that allocates N buffers and cycles through them.
 ///
@@ -116,15 +114,6 @@ pub fn read_sync<B: DmaBufBackend>(buf: &DmaBuf<'_, B>) -> nix::Result<()> {
 /// NV12 buffer size: W × H × 1.5.
 pub fn nv12_size(width: u32, height: u32) -> u64 {
     u64::from(width) * u64::from(height) * 3 / 2
-}
-
-/// Run scenario tests and report the first failure.
-/// Returns sub-test results (and the first error, if any).
-pub fn report_results(
-    scenario: &str,
-    tests: &[(&str, nix::Result<()>)],
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
-    runner::collect_test_results(scenario, tests)
 }
 
 /// Check if any threaded workers reported failures via an `AtomicUsize` counter.

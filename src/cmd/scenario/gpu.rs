@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{bulk_alloc, report_results};
+use crate::cmd::scenario::bulk_alloc;
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -54,7 +54,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("app_switch", gpu_app_switch(backend, heap_name, config)),
         ("game_texture", gpu_game_texture(backend, heap_name, config)),
     ];
-    report_results("gpu", &tests)
+    crate::runner::collect_test_results("gpu", &tests)
 }
 
 /// App launch: burst allocation of mixed-size buffers.

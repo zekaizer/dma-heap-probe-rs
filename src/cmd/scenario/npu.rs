@@ -8,7 +8,7 @@ use nix::errno::Errno;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    bulk_alloc, check_thread_failures, fill_buffer, read_sync, report_results,
+    bulk_alloc, check_thread_failures, fill_buffer, read_sync,
 };
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -78,7 +78,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("sustained", npu_sustained(backend, heap_name, config)),
         ("concurrent", npu_concurrent(backend, heap_name, config)),
     ];
-    report_results("npu", &tests)
+    crate::runner::collect_test_results("npu", &tests)
 }
 
 /// Simulate NPU model loading: bulk alloc chunks, mmap, write pattern.

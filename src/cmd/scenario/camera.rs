@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    BufferPool, bulk_alloc, check_thread_failures, fill_buffer, report_results,
+    BufferPool, bulk_alloc, check_thread_failures, fill_buffer,
 };
 use crate::heap::DmaHeap;
 
@@ -109,7 +109,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             camera_multi_stream(backend, heap_name, config),
         ),
     ];
-    report_results("camera", &tests)
+    crate::runner::collect_test_results("camera", &tests)
 }
 
 /// Preview buffer pool: allocate pool, cycle through buffers writing frames.

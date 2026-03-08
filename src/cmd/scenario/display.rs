@@ -4,7 +4,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
-use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer, report_results};
+use crate::cmd::scenario::{BufferPool, bulk_alloc, fill_buffer};
 use crate::heap::DmaHeap;
 
 /// ARGB8888 bytes per pixel.
@@ -54,7 +54,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             display_multi_layer(backend, heap_name, config),
         ),
     ];
-    report_results("display", &tests)
+    crate::runner::collect_test_results("display", &tests)
 }
 
 /// Double/triple buffer flip: allocate pool, cycle with frame writes.

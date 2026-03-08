@@ -120,8 +120,8 @@ where
 }
 
 /// Convert sub-test results to a JSON value for stage details.
-pub fn sub_tests_to_details(tests: &[SubTestResult]) -> Option<serde_json::Value> {
-    serde_json::to_value(serde_json::json!({ "tests": tests })).ok()
+pub fn sub_tests_to_details(tests: &[SubTestResult]) -> serde_json::Value {
+    serde_json::json!({ "tests": tests })
 }
 
 /// Collect nix test results into `SubTestResult` entries, logging each.
@@ -267,7 +267,7 @@ mod tests {
                 error: Some("fail".into()),
             },
         ];
-        let details = sub_tests_to_details(&tests).unwrap();
+        let details = sub_tests_to_details(&tests);
         let tests_arr = details["tests"].as_array().unwrap();
         assert_eq!(tests_arr.len(), 2);
         assert_eq!(tests_arr[0]["name"], "t1");

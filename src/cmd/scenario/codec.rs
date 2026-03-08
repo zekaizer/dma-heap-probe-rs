@@ -6,7 +6,7 @@ use std::time::Instant;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    BufferPool, bulk_alloc, fill_buffer, nv12_size, read_sync, report_results,
+    BufferPool, bulk_alloc, fill_buffer, nv12_size, read_sync,
 };
 use crate::heap::DmaHeap;
 
@@ -44,7 +44,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("adaptive", codec_adaptive(backend, heap_name, config)),
         ("transcode", codec_transcode(backend, heap_name, config)),
     ];
-    report_results("codec", &tests)
+    crate::runner::collect_test_results("codec", &tests)
 }
 
 /// DPB pool decode: allocate DPB, cycle through frames.

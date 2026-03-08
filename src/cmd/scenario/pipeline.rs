@@ -7,7 +7,7 @@ use nix::errno::Errno;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{
-    BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync, report_results,
+    BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync,
 };
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -65,7 +65,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("ai_camera", pipeline_ai_camera(backend, heap_name, config)),
         ("heavy", pipeline_heavy(backend, heap_name, config)),
     ];
-    report_results("pipeline", &tests)
+    crate::runner::collect_test_results("pipeline", &tests)
 }
 
 /// Camera preview + display flip + GPU composition.
