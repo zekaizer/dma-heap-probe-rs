@@ -81,7 +81,7 @@ pub enum Command {
         alloc_size: u64,
     },
 
-    /// Fragmentation observation.
+    /// Fragmentation analysis.
     Fragmentation {
         /// Pattern type (interleave / sequential).
         #[arg(long, default_value = "interleave")]
@@ -95,13 +95,96 @@ pub enum Command {
     Negative,
 
     /// Workload scenario simulations.
-    Scenario,
+    Scenario {
+        #[command(subcommand)]
+        scenario: ScenarioCommand,
+    },
 
     /// Run all tests sequentially.
     All,
 
     /// Standalone sysfs/procfs snapshot.
     SysfsDump,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScenarioCommand {
+    /// NPU inference workload simulation.
+    Npu {
+        /// Inference iterations.
+        #[arg(long, default_value_t = 100)]
+        iterations: u32,
+
+        /// Concurrent client threads.
+        #[arg(long, default_value_t = 4)]
+        clients: u32,
+    },
+
+    /// Camera capture/preview workload simulation.
+    Camera {
+        /// Capture width.
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+
+        /// Capture height.
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 100)]
+        frames: u32,
+    },
+
+    /// Display compositor workload simulation.
+    Display {
+        /// Display width.
+        #[arg(long, default_value_t = 1440)]
+        width: u32,
+
+        /// Display height.
+        #[arg(long, default_value_t = 3200)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 120)]
+        frames: u32,
+    },
+
+    /// Video codec (decoder DPB) workload simulation.
+    Codec {
+        /// Video width.
+        #[arg(long, default_value_t = 3840)]
+        width: u32,
+
+        /// Video height.
+        #[arg(long, default_value_t = 2160)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 60)]
+        frames: u32,
+    },
+
+    /// GPU texture/render workload simulation.
+    Gpu {
+        /// Number of buffers.
+        #[arg(long, default_value_t = 50)]
+        buffer_count: usize,
+
+        /// Texture buffer size (bytes).
+        #[arg(long, default_value_t = 1_048_576)]
+        texture_size: u64,
+    },
+
+    /// Composite multi-subsystem pipeline simulation.
+    Pipeline {
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 30)]
+        frames: u32,
+    },
+
+    /// Run all scenario simulations.
+    All,
 }
 
 #[cfg(test)]
@@ -203,13 +286,40 @@ mod tests {
             "fragmentation",
             "pool",
             "negative",
-            "scenario",
             "all",
             "sysfs-dump",
         ] {
             let cli = Cli::try_parse_from(["dhp", cmd]);
             assert!(cli.is_ok(), "failed to parse: {cmd}");
         }
+    }
+
+    #[test]
+    fn scenario_subcommands() {
+        for sub in &["npu", "camera", "display", "codec", "gpu", "pipeline", "all"] {
+            let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
+            assert!(cli.is_ok(), "failed to parse: scenario {sub}");
+        }
+    }
+
+    #[test]
+    fn scenario_npu_custom_args() {
+        let cli = parse(&["dhp", "scenario", "npu", "--iterations", "50", "--clients", "2"]);
+        match cli.command {
+            Command::Scenario {
+                scenario: ScenarioCommand::Npu { iterations, clients },
+            } => {
+                assert_eq!(iterations, 50);
+                assert_eq!(clients, 2);
+            }
+            _ => panic!("expected Scenario::Npu"),
+        }
+    }
+
+    #[test]
+    fn scenario_requires_subcommand() {
+        let result = Cli::try_parse_from(["dhp", "scenario"]);
+        assert!(result.is_err());
     }
 
     #[test]
