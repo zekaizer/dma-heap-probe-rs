@@ -218,27 +218,32 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     let heap = cli.heap.clone();
 
     runner::run_stage(&mut results, "basic", || {
-        cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024)
+        cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024).map(|()| None)
     });
     runner::run_stage(&mut results, "sync_file", || {
-        cmd::sync_file::run(backend, &heap)
+        cmd::sync_file::run(backend, &heap).map(|()| None)
     });
-    runner::run_stage(&mut results, "edge", || cmd::edge::run(backend, &heap, 100));
+    runner::run_stage(&mut results, "edge", || {
+        cmd::edge::run(backend, &heap, 100).map(|()| None)
+    });
     runner::run_stage(&mut results, "negative", || {
-        cmd::negative::run(backend, &heap)
+        cmd::negative::run(backend, &heap).map(|()| None)
     });
     runner::run_stage(&mut results, "perf", || {
-        cmd::perf::run(backend, &heap, None, 100, 10)
+        cmd::perf::run(backend, &heap, None, 100, 10).map(|()| None)
     });
     runner::run_stage(&mut results, "pressure", || {
-        cmd::pressure::run(backend, &heap, 1_048_576)
+        cmd::pressure::run(backend, &heap, 1_048_576).map(|()| None)
     });
     runner::run_stage(&mut results, "fragmentation", || {
-        cmd::fragmentation::run(backend, &heap, "interleave")
+        cmd::fragmentation::run(backend, &heap, "interleave").map(|()| None)
     });
-    runner::run_stage(&mut results, "pool", || cmd::pool::run(backend, &heap));
+    runner::run_stage(&mut results, "pool", || {
+        cmd::pool::run(backend, &heap).map(|()| None)
+    });
     runner::run_stage(&mut results, "scenario_npu", || {
         cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default())
+            .map(|()| None)
     });
     runner::run_stage(&mut results, "scenario_camera", || {
         cmd::scenario::camera::run(
@@ -246,6 +251,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             &heap,
             &cmd::scenario::camera::CameraConfig::default(),
         )
+        .map(|()| None)
     });
     runner::run_stage(&mut results, "scenario_display", || {
         cmd::scenario::display::run(
@@ -253,6 +259,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             &heap,
             &cmd::scenario::display::DisplayConfig::default(),
         )
+        .map(|()| None)
     });
     runner::run_stage(&mut results, "scenario_codec", || {
         cmd::scenario::codec::run(
@@ -260,9 +267,11 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             &heap,
             &cmd::scenario::codec::CodecConfig::default(),
         )
+        .map(|()| None)
     });
     runner::run_stage(&mut results, "scenario_gpu", || {
         cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default())
+            .map(|()| None)
     });
     runner::run_stage(&mut results, "scenario_pipeline", || {
         cmd::scenario::pipeline::run(
@@ -270,6 +279,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             &heap,
             &cmd::scenario::pipeline::PipelineConfig::default(),
         )
+        .map(|()| None)
     });
 
     tracing::info!(
