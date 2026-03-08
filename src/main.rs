@@ -81,7 +81,7 @@ fn main() {
             }
         }
         Command::Fragmentation { pattern } => {
-            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, &pattern) {
+            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str()) {
                 tracing::error!(error = %e, "fragmentation tests failed");
                 std::process::exit(1);
             }

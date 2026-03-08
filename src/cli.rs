@@ -2,7 +2,7 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 /// dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+).
 #[derive(Parser, Debug)]
@@ -87,9 +87,9 @@ pub enum Command {
 
     /// Fragmentation analysis.
     Fragmentation {
-        /// Pattern type (interleave / sequential).
-        #[arg(long, default_value = "interleave")]
-        pattern: String,
+        /// Allocation pattern type.
+        #[arg(long, value_enum, default_value_t = FragPattern::Interleave)]
+        pattern: FragPattern,
     },
 
     /// Pool/cache behavior tests.
@@ -109,6 +109,26 @@ pub enum Command {
 
     /// Standalone sysfs/procfs snapshot.
     SysfsDump,
+}
+
+/// Fragmentation allocation pattern.
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum FragPattern {
+    /// Interleave: free every other buffer.
+    Interleave,
+    /// Sequential: free first half of buffers.
+    Sequential,
+}
+
+impl FragPattern {
+    /// Return the pattern name as a string slice.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Interleave => "interleave",
+            Self::Sequential => "sequential",
+        }
+    }
 }
 
 #[derive(Subcommand, Debug)]
