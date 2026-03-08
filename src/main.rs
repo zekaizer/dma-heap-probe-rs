@@ -2,6 +2,7 @@
 mod backend;
 mod cli;
 mod cmd;
+mod config;
 #[allow(dead_code)]
 mod dmabuf;
 #[allow(dead_code)]
