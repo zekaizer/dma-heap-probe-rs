@@ -99,7 +99,8 @@ fn main() {
             run_sysfs_dump();
         }
         Command::Scenario => {
-            tracing::info!("scenario command requires subcommand (not yet wired)");
+            tracing::error!("scenario command requires a subcommand (not yet wired)");
+            std::process::exit(1);
         }
     }
 }
