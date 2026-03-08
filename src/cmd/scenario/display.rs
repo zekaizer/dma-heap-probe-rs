@@ -84,6 +84,7 @@ fn display_flip<B: HeapBackend + DmaBufBackend>(
             height = config.height,
             buf_size,
             buffers = config.buffers,
+            fps = config.fps,
             frames = config.frames,
             p50_us = stats.p50_us,
             p95_us = stats.p95_us,

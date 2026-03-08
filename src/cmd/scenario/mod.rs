@@ -52,7 +52,10 @@ impl<'a, B: HeapBackend + DmaBufBackend> BufferPool<'a, B> {
         self.index = (idx + 1) % len;
         &mut self.buffers[idx]
     }
+}
 
+#[cfg(test)]
+impl<'a, B: HeapBackend + DmaBufBackend> BufferPool<'a, B> {
     /// Return the number of buffers in the pool.
     #[must_use]
     pub fn len(&self) -> usize {

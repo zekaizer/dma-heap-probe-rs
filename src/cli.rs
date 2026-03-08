@@ -2,11 +2,15 @@
 
 use std::path::PathBuf;
 
-use clap::{ArgAction, Parser, Subcommand};
+use clap::{ArgAction, Parser, Subcommand, ValueEnum};
 
 /// dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+).
 #[derive(Parser, Debug)]
-#[command(name = "dhp", version, about = "dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)")]
+#[command(
+    name = "dhp",
+    version,
+    about = "dma-heap-probe (dhp) — Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)"
+)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
@@ -40,19 +44,19 @@ pub struct Cli {
 pub enum Command {
     /// Basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
     Basic {
-        /// Allocation sizes (comma-separated).
+        /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
         sizes: Vec<u64>,
 
-        /// Repeat count for `test_repeated_alloc`.
+        /// Repeat count for repeated alloc test.
         #[arg(long, default_value_t = 1024)]
         repeat: u32,
     },
 
-    /// `sync_file` export/import tests.
+    /// Sync-file export/import tests.
     SyncFile,
 
-    /// Boundary condition tests (concurrent, dup, `set_name`).
+    /// Boundary condition tests (concurrent, dup, naming).
     Edge {
         /// Concurrent alloc threads.
         #[arg(long, default_value_t = 100)]
@@ -61,7 +65,7 @@ pub enum Command {
 
     /// Performance measurement.
     Perf {
-        /// Measurement sizes (comma-separated).
+        /// Measurement sizes, comma-separated (default: 4096,65536,1048576).
         #[arg(long, value_delimiter = ',')]
         sizes: Option<Vec<u64>>,
 
@@ -81,11 +85,11 @@ pub enum Command {
         alloc_size: u64,
     },
 
-    /// Fragmentation observation.
+    /// Fragmentation analysis.
     Fragmentation {
-        /// Pattern type (interleave / sequential).
-        #[arg(long, default_value = "interleave")]
-        pattern: String,
+        /// Allocation pattern type.
+        #[arg(long, value_enum, default_value_t = FragPattern::Interleave)]
+        pattern: FragPattern,
     },
 
     /// Pool/cache behavior tests.
@@ -95,13 +99,116 @@ pub enum Command {
     Negative,
 
     /// Workload scenario simulations.
-    Scenario,
+    Scenario {
+        #[command(subcommand)]
+        scenario: ScenarioCommand,
+    },
 
-    /// Run all tests sequentially.
+    /// Run all tests including scenarios.
     All,
 
     /// Standalone sysfs/procfs snapshot.
     SysfsDump,
+}
+
+/// Fragmentation allocation pattern.
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum FragPattern {
+    /// Interleave: free every other buffer.
+    Interleave,
+    /// Sequential: free first half of buffers.
+    Sequential,
+}
+
+impl FragPattern {
+    /// Return the pattern name as a string slice.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Interleave => "interleave",
+            Self::Sequential => "sequential",
+        }
+    }
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ScenarioCommand {
+    /// NPU inference workload simulation.
+    Npu {
+        /// Inference iterations.
+        #[arg(long, default_value_t = 100)]
+        iterations: u32,
+
+        /// Concurrent client threads.
+        #[arg(long, default_value_t = 4)]
+        clients: u32,
+    },
+
+    /// Camera capture/preview workload simulation.
+    Camera {
+        /// Capture width.
+        #[arg(long, default_value_t = 1920)]
+        width: u32,
+
+        /// Capture height.
+        #[arg(long, default_value_t = 1080)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 100)]
+        frames: u32,
+    },
+
+    /// Display compositor workload simulation.
+    Display {
+        /// Display width.
+        #[arg(long, default_value_t = 1440)]
+        width: u32,
+
+        /// Display height.
+        #[arg(long, default_value_t = 3200)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 120)]
+        frames: u32,
+    },
+
+    /// Video codec (decoder DPB) workload simulation.
+    Codec {
+        /// Video width.
+        #[arg(long, default_value_t = 3840)]
+        width: u32,
+
+        /// Video height.
+        #[arg(long, default_value_t = 2160)]
+        height: u32,
+
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 60)]
+        frames: u32,
+    },
+
+    /// GPU texture/render workload simulation.
+    Gpu {
+        /// Number of buffers.
+        #[arg(long, default_value_t = 50)]
+        buffer_count: usize,
+
+        /// Texture buffer size (bytes).
+        #[arg(long, default_value_t = 1_048_576)]
+        texture_size: u64,
+    },
+
+    /// Combined camera+display+codec+npu pipeline simulation.
+    Pipeline {
+        /// Number of frames to simulate.
+        #[arg(long, default_value_t = 30)]
+        frames: u32,
+    },
+
+    /// Run all scenario simulations.
+    All,
 }
 
 #[cfg(test)]
@@ -203,13 +310,54 @@ mod tests {
             "fragmentation",
             "pool",
             "negative",
-            "scenario",
             "all",
             "sysfs-dump",
         ] {
             let cli = Cli::try_parse_from(["dhp", cmd]);
             assert!(cli.is_ok(), "failed to parse: {cmd}");
         }
+    }
+
+    #[test]
+    fn scenario_subcommands() {
+        for sub in &[
+            "npu", "camera", "display", "codec", "gpu", "pipeline", "all",
+        ] {
+            let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
+            assert!(cli.is_ok(), "failed to parse: scenario {sub}");
+        }
+    }
+
+    #[test]
+    fn scenario_npu_custom_args() {
+        let cli = parse(&[
+            "dhp",
+            "scenario",
+            "npu",
+            "--iterations",
+            "50",
+            "--clients",
+            "2",
+        ]);
+        match cli.command {
+            Command::Scenario {
+                scenario:
+                    ScenarioCommand::Npu {
+                        iterations,
+                        clients,
+                    },
+            } => {
+                assert_eq!(iterations, 50);
+                assert_eq!(clients, 2);
+            }
+            _ => panic!("expected Scenario::Npu"),
+        }
+    }
+
+    #[test]
+    fn scenario_requires_subcommand() {
+        let result = Cli::try_parse_from(["dhp", "scenario"]);
+        assert!(result.is_err());
     }
 
     #[test]

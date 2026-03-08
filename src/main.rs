@@ -19,7 +19,7 @@ mod trace;
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
 
-use cli::{Cli, Command};
+use cli::{Cli, Command, ScenarioCommand};
 
 fn main() {
     let cli = Cli::parse();
@@ -81,7 +81,7 @@ fn main() {
             }
         }
         Command::Fragmentation { pattern } => {
-            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, &pattern) {
+            if let Err(e) = cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str()) {
                 tracing::error!(error = %e, "fragmentation tests failed");
                 std::process::exit(1);
             }
@@ -98,11 +98,118 @@ fn main() {
         Command::SysfsDump => {
             run_sysfs_dump();
         }
-        Command::Scenario => {
-            tracing::error!("scenario command requires a subcommand (not yet wired)");
-            std::process::exit(1);
+        Command::Scenario { ref scenario } => {
+            run_scenario(&backend, &cli.heap, scenario);
         }
     }
+}
+
+/// Dispatch a scenario subcommand.
+fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    backend: &B,
+    heap: &str,
+    scenario: &ScenarioCommand,
+) {
+    use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
+
+    let result = match *scenario {
+        ScenarioCommand::Npu {
+            iterations,
+            clients,
+        } => npu::run(
+            backend,
+            heap,
+            &npu::NpuConfig {
+                iterations,
+                clients,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::Camera {
+            width,
+            height,
+            frames,
+        } => camera::run(
+            backend,
+            heap,
+            &camera::CameraConfig {
+                width,
+                height,
+                frames,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::Display {
+            width,
+            height,
+            frames,
+        } => display::run(
+            backend,
+            heap,
+            &display::DisplayConfig {
+                width,
+                height,
+                frames,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::Codec {
+            width,
+            height,
+            frames,
+        } => codec::run(
+            backend,
+            heap,
+            &codec::CodecConfig {
+                width,
+                height,
+                frames,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::Gpu {
+            buffer_count,
+            texture_size,
+        } => gpu::run(
+            backend,
+            heap,
+            &gpu::GpuConfig {
+                buffer_count,
+                texture_size,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::Pipeline { frames } => pipeline::run(
+            backend,
+            heap,
+            &pipeline::PipelineConfig {
+                frames,
+                ..Default::default()
+            },
+        ),
+        ScenarioCommand::All => run_all_scenarios(backend, heap),
+    };
+
+    if let Err(e) = result {
+        tracing::error!(error = %e, "scenario tests failed");
+        std::process::exit(1);
+    }
+}
+
+/// Run all scenario simulations with default configs.
+fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    backend: &B,
+    heap: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
+
+    npu::run(backend, heap, &npu::NpuConfig::default())?;
+    camera::run(backend, heap, &camera::CameraConfig::default())?;
+    display::run(backend, heap, &display::DisplayConfig::default())?;
+    codec::run(backend, heap, &codec::CodecConfig::default())?;
+    gpu::run(backend, heap, &gpu::GpuConfig::default())?;
+    pipeline::run(backend, heap, &pipeline::PipelineConfig::default())?;
+    Ok(())
 }
 
 /// Run all test stages sequentially with result tracking.
@@ -130,6 +237,40 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
         cmd::fragmentation::run(backend, &heap, "interleave")
     });
     runner::run_stage(&mut results, "pool", || cmd::pool::run(backend, &heap));
+    runner::run_stage(&mut results, "scenario_npu", || {
+        cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default())
+    });
+    runner::run_stage(&mut results, "scenario_camera", || {
+        cmd::scenario::camera::run(
+            backend,
+            &heap,
+            &cmd::scenario::camera::CameraConfig::default(),
+        )
+    });
+    runner::run_stage(&mut results, "scenario_display", || {
+        cmd::scenario::display::run(
+            backend,
+            &heap,
+            &cmd::scenario::display::DisplayConfig::default(),
+        )
+    });
+    runner::run_stage(&mut results, "scenario_codec", || {
+        cmd::scenario::codec::run(
+            backend,
+            &heap,
+            &cmd::scenario::codec::CodecConfig::default(),
+        )
+    });
+    runner::run_stage(&mut results, "scenario_gpu", || {
+        cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default())
+    });
+    runner::run_stage(&mut results, "scenario_pipeline", || {
+        cmd::scenario::pipeline::run(
+            backend,
+            &heap,
+            &cmd::scenario::pipeline::PipelineConfig::default(),
+        )
+    });
 
     tracing::info!(
         passed = results.total_passed,
