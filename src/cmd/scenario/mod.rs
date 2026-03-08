@@ -54,7 +54,7 @@ impl<'a, B: HeapBackend + DmaBufBackend> BufferPool<'a, B> {
 }
 
 #[cfg(test)]
-impl<'a, B: HeapBackend + DmaBufBackend> BufferPool<'a, B> {
+impl<B: HeapBackend + DmaBufBackend> BufferPool<'_, B> {
     /// Return the number of buffers in the pool.
     #[must_use]
     pub fn len(&self) -> usize {

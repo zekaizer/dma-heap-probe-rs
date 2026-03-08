@@ -11,6 +11,8 @@ use crate::heap::DmaHeap;
 const BPP_ARGB8888: u64 = 4;
 
 /// Display scenario configuration.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct DisplayConfig {
     pub width: u32,
     pub height: u32,
@@ -45,7 +47,10 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &DisplayConfig,
-) -> (Vec<crate::runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+) -> (
+    Vec<crate::runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("flip", display_flip(backend, heap_name, config)),
         ("rotation", display_rotation(backend, heap_name, config)),

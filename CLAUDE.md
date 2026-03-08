@@ -29,6 +29,7 @@ cargo ndk -t arm64-v8a -p 35 build --release
 - `src/runner.rs` — test runner + result aggregation
 - `src/cmd/` — subcommand implementations (basic, sync_file, edge, perf, negative, pressure, fragmentation, pool)
 - `src/cmd/scenario/` — workload simulations (npu, camera, display, codec, gpu, pipeline)
+- `src/config.rs` — JSON config file loading, ScenarioConfigs, resolve functions
 - `tests/cli_smoke.rs` — CLI end-to-end smoke tests (assert_cmd)
 - `tests/cli_fuzz.rs` — CLI argument combination fuzzing (proptest)
 
@@ -60,7 +61,7 @@ cargo ndk -t arm64-v8a -p 35 build --release
 |---|---|
 | nix (0.29+) | ioctl, mmap, close, lseek, dup |
 | clap (4.x, derive) | CLI parsing |
-| serde + serde_json | JSON result output |
+| serde + serde_json | JSON result output + config loading |
 | libc | auxiliary constants (O_CLOEXEC, etc.) |
 | assert_cmd (2.x) | CLI integration test runner (dev) |
 | predicates (3.x) | Output assertion matchers (dev) |
@@ -87,6 +88,7 @@ cargo ndk -t arm64-v8a -p 35 build --release
   - `feat/scenario-pipeline` — cmd/scenario/pipeline.rs
   - `feat/runner-output` — runner.rs + JSON output integration
   - `feat/cli-integration-test` — CLI smoke + proptest fuzz tests
+  - `feat/scenario-json-config` — JSON config file for scenario workloads
 - `fix/<name>` — bug fixes
 - `refactor/<name>` — refactoring without behavior change
 
@@ -96,6 +98,33 @@ Each feature branch is based on `main` and merged back via PR after review.
 
 - `tasks/todo.md` — implementation checklist with checkable items per phase. Update progress as tasks are completed.
 - `tasks/lessons.md` — patterns and corrections discovered during development. Record mistakes and fixes here to avoid repeating them.
+
+## Scenario JSON Configuration
+
+Scenario workload parameters can be customized via a JSON config file.
+
+```sh
+# Dump default config to file
+dhp scenario dump-config > config.json
+
+# Edit config.json, then run with custom settings
+dhp --config config.json scenario npu
+
+# CLI args override JSON values (priority: Default -> JSON -> CLI)
+dhp --config config.json scenario npu --iterations 10
+
+# Works with 'all' and top-level 'all' command
+dhp --config config.json scenario all
+dhp --config config.json all
+```
+
+Config file supports partial specification — omitted fields use defaults:
+```json
+{
+  "npu": { "iterations": 50, "clients": 2 },
+  "camera": { "width": 3840, "height": 2160, "format": "raw16" }
+}
+```
 
 ## Deploy
 

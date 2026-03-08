@@ -151,8 +151,7 @@ pub fn collect_test_results(
                     error: Some(e.to_string()),
                 });
                 if first_error.is_none() {
-                    first_error =
-                        Some(format!("{stage} test '{name}' failed: {e}").into());
+                    first_error = Some(format!("{stage} test '{name}' failed: {e}").into());
                 }
             }
         }

@@ -3,8 +3,8 @@
 
 use std::path::Path;
 
-use assert_cmd::cargo::cargo_bin_cmd;
 use assert_cmd::Command;
+use assert_cmd::cargo::cargo_bin_cmd;
 use predicates::prelude::*;
 
 fn dhp() -> Command {
@@ -35,10 +35,7 @@ fn sync_file_defaults() {
 
 #[test]
 fn edge_defaults() {
-    dhp()
-        .args(["edge", "--threads", "4"])
-        .assert()
-        .success();
+    dhp().args(["edge", "--threads", "4"]).assert().success();
 }
 
 #[test]
@@ -251,7 +248,11 @@ fn output_all_json() {
 
     let json = read_json(tmp.path());
     let stages = json["stages"].as_array().unwrap();
-    assert!(stages.len() >= 14, "expected >= 14 stages, got {}", stages.len());
+    assert!(
+        stages.len() >= 14,
+        "expected >= 14 stages, got {}",
+        stages.len()
+    );
     let total = json["total_passed"].as_u64().unwrap() + json["total_failed"].as_u64().unwrap();
     assert_eq!(total, stages.len() as u64);
 }
@@ -275,10 +276,7 @@ fn error_invalid_subcommand() {
 
 #[test]
 fn error_invalid_sizes_value() {
-    dhp()
-        .args(["basic", "--sizes", "abc"])
-        .assert()
-        .failure();
+    dhp().args(["basic", "--sizes", "abc"]).assert().failure();
 }
 
 #[test]
@@ -308,21 +306,120 @@ fn error_unknown_global_option() {
 }
 
 // ---------------------------------------------------------------------------
-// D. Global option combinations
+// D. --config / dump-config
+// ---------------------------------------------------------------------------
+
+#[test]
+fn config_file_not_found() {
+    dhp()
+        .args(["--config", "/nonexistent/config.json", "scenario", "npu"])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn dump_config_outputs_json() {
+    let output = dhp()
+        .args(["scenario", "dump-config"])
+        .output()
+        .expect("run dump-config");
+    assert!(output.status.success());
+    let json: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("parse dump-config JSON");
+    assert!(json.get("npu").is_some());
+    assert!(json.get("camera").is_some());
+    assert!(json.get("display").is_some());
+    assert!(json.get("codec").is_some());
+    assert!(json.get("gpu").is_some());
+    assert!(json.get("pipeline").is_some());
+}
+
+#[test]
+fn config_file_loads_and_runs() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        r#"{ "npu": { "iterations": 10, "clients": 1 } }"#,
+    )
+    .expect("write config");
+    dhp()
+        .args(["--config", config_path.to_str().unwrap(), "scenario", "npu"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_with_cli_override() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = dir.path().join("config.json");
+    std::fs::write(
+        &config_path,
+        r#"{ "npu": { "iterations": 50, "clients": 2 } }"#,
+    )
+    .expect("write config");
+    // CLI override: --iterations 10
+    dhp()
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "scenario",
+            "npu",
+            "--iterations",
+            "10",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn dump_config_roundtrip() {
+    // dump -> write to file -> load with --config -> run
+    let output = dhp()
+        .args(["scenario", "dump-config"])
+        .output()
+        .expect("run dump-config");
+    assert!(output.status.success());
+
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = dir.path().join("default.json");
+    std::fs::write(&config_path, &output.stdout).expect("write dumped config");
+
+    dhp()
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "scenario",
+            "npu",
+            "--iterations",
+            "10",
+            "--clients",
+            "1",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn config_invalid_json() {
+    let dir = tempfile::tempdir().expect("create tempdir");
+    let config_path = dir.path().join("bad.json");
+    std::fs::write(&config_path, "{ not valid json }").expect("write bad config");
+    dhp()
+        .args(["--config", config_path.to_str().unwrap(), "scenario", "npu"])
+        .assert()
+        .failure();
+}
+
+// ---------------------------------------------------------------------------
+// E. Global option combinations
 // ---------------------------------------------------------------------------
 
 #[test]
 fn global_all_flags_combined() {
     dhp()
         .args([
-            "--trace",
-            "--sysfs",
-            "--procfs",
-            "basic",
-            "--sizes",
-            "4096",
-            "--repeat",
-            "1",
+            "--trace", "--sysfs", "--procfs", "basic", "--sizes", "4096", "--repeat", "1",
         ])
         .assert()
         .success();
@@ -332,15 +429,7 @@ fn global_all_flags_combined() {
 fn global_options_after_subcommand() {
     dhp()
         .args([
-            "basic",
-            "--heap",
-            "myheap",
-            "--trace",
-            "-vv",
-            "--sizes",
-            "4096",
-            "--repeat",
-            "1",
+            "basic", "--heap", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
         ])
         .assert()
         .success();

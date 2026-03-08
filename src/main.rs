@@ -2,6 +2,7 @@
 mod backend;
 mod cli;
 mod cmd;
+mod config;
 #[allow(dead_code)]
 mod dmabuf;
 #[allow(dead_code)]
@@ -24,6 +25,7 @@ use tracing_subscriber::filter::LevelFilter;
 
 use cli::{Cli, Command, ScenarioCommand};
 
+#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
@@ -44,22 +46,50 @@ fn main() {
         Command::Basic { sizes, repeat } => {
             let start = Instant::now();
             let (sub, err) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat);
-            handle_cmd_output("basic", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "basic",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::SyncFile => {
             let start = Instant::now();
             let (sub, err) = cmd::sync_file::run(&backend, &cli.heap);
-            handle_cmd_output("sync_file", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "sync_file",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Edge { threads } => {
             let start = Instant::now();
             let (sub, err) = cmd::edge::run(&backend, &cli.heap, threads);
-            handle_cmd_output("edge", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "edge",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Negative => {
             let start = Instant::now();
             let (sub, err) = cmd::negative::run(&backend, &cli.heap);
-            handle_cmd_output("negative", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "negative",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Perf {
             sizes,
@@ -69,34 +99,78 @@ fn main() {
             let start = Instant::now();
             let (sub, err) =
                 cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup);
-            handle_cmd_output("perf", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "perf",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Pressure { alloc_size } => {
             let start = Instant::now();
             let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size);
-            handle_cmd_output("pressure", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "pressure",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Fragmentation { pattern } => {
             let start = Instant::now();
-            let (sub, err) =
-                cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str());
-            handle_cmd_output("fragmentation", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            let (sub, err) = cmd::fragmentation::run(&backend, &cli.heap, pattern.as_str());
+            handle_cmd_output(
+                "fragmentation",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::Pool => {
             let start = Instant::now();
             let (sub, err) = cmd::pool::run(&backend, &cli.heap);
-            handle_cmd_output("pool", &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+            handle_cmd_output(
+                "pool",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
         }
         Command::All => {
-            run_all(&backend, &cli);
+            let json_cfg = load_scenario_config(&cli);
+            run_all(&backend, &cli, json_cfg.as_ref());
         }
         Command::SysfsDump => {
             run_sysfs_dump();
         }
+        Command::Scenario {
+            scenario: ScenarioCommand::DumpConfig,
+        } => {
+            println!("{}", config::dump_default_config());
+        }
         Command::Scenario { ref scenario } => {
-            run_scenario(&backend, &cli, scenario);
+            let json_cfg = load_scenario_config(&cli);
+            run_scenario(&backend, &cli, scenario, json_cfg.as_ref());
         }
     }
+}
+
+/// Load scenario config from JSON file if --config is provided.
+fn load_scenario_config(cli: &Cli) -> Option<config::ScenarioConfigs> {
+    cli.config.as_ref().map(|p| {
+        config::load_config(p).unwrap_or_else(|e| {
+            tracing::error!(error = %e, path = %p.display(), "failed to load config");
+            std::process::exit(1);
+        })
+    })
 }
 
 /// Dispatch a scenario subcommand.
@@ -104,6 +178,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     cli: &Cli,
     scenario: &ScenarioCommand,
+    json: Option<&config::ScenarioConfigs>,
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
@@ -115,6 +190,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ScenarioCommand::Gpu { .. } => "scenario_gpu",
         ScenarioCommand::Pipeline { .. } => "scenario_pipeline",
         ScenarioCommand::All => "scenario_all",
+        ScenarioCommand::DumpConfig => unreachable!(),
     };
 
     let start = Instant::now();
@@ -122,114 +198,117 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ScenarioCommand::Npu {
             iterations,
             clients,
-        } => npu::run(
-            backend,
-            &cli.heap,
-            &npu::NpuConfig {
-                iterations,
-                clients,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), iterations, clients);
+            npu::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Camera {
             width,
             height,
             frames,
-        } => camera::run(
-            backend,
-            &cli.heap,
-            &camera::CameraConfig {
-                width,
-                height,
-                frames,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg =
+                config::resolve_camera(json.and_then(|c| c.camera.as_ref()), width, height, frames);
+            camera::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Display {
             width,
             height,
             frames,
-        } => display::run(
-            backend,
-            &cli.heap,
-            &display::DisplayConfig {
+        } => {
+            let cfg = config::resolve_display(
+                json.and_then(|c| c.display.as_ref()),
                 width,
                 height,
                 frames,
-                ..Default::default()
-            },
-        ),
+            );
+            display::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Codec {
             width,
             height,
             frames,
-        } => codec::run(
-            backend,
-            &cli.heap,
-            &codec::CodecConfig {
-                width,
-                height,
-                frames,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg =
+                config::resolve_codec(json.and_then(|c| c.codec.as_ref()), width, height, frames);
+            codec::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Gpu {
             buffer_count,
             texture_size,
-        } => gpu::run(
-            backend,
-            &cli.heap,
-            &gpu::GpuConfig {
+        } => {
+            let cfg = config::resolve_gpu(
+                json.and_then(|c| c.gpu.as_ref()),
                 buffer_count,
                 texture_size,
-                ..Default::default()
-            },
-        ),
-        ScenarioCommand::Pipeline { frames } => pipeline::run(
-            backend,
-            &cli.heap,
-            &pipeline::PipelineConfig {
-                frames,
-                ..Default::default()
-            },
-        ),
-        ScenarioCommand::All => run_all_scenarios(backend, &cli.heap),
+            );
+            gpu::run(backend, &cli.heap, &cfg)
+        }
+        ScenarioCommand::Pipeline { frames } => {
+            let cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), frames);
+            pipeline::run(backend, &cli.heap, &cfg)
+        }
+        ScenarioCommand::All => run_all_scenarios(backend, &cli.heap, json),
+        ScenarioCommand::DumpConfig => unreachable!(),
     };
 
-    handle_cmd_output(stage_name, &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
+    handle_cmd_output(
+        stage_name,
+        &cli.heap,
+        cli.output.as_ref(),
+        &sub,
+        err,
+        start.elapsed(),
+    );
 }
 
-/// Run all scenario simulations with default configs.
+/// Run all scenario simulations with optional JSON config.
 fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     heap: &str,
-) -> (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
+    json: Option<&config::ScenarioConfigs>,
+) -> (
+    Vec<runner::SubTestResult>,
+    Option<Box<dyn std::error::Error>>,
+) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
+
+    let cfgs = config::resolve_all_defaults(json);
 
     let mut all_results = Vec::with_capacity(36);
 
-    for (sub, err) in [
-        npu::run(backend, heap, &npu::NpuConfig::default()),
-        camera::run(backend, heap, &camera::CameraConfig::default()),
-        display::run(backend, heap, &display::DisplayConfig::default()),
-        codec::run(backend, heap, &codec::CodecConfig::default()),
-        gpu::run(backend, heap, &gpu::GpuConfig::default()),
-        pipeline::run(backend, heap, &pipeline::PipelineConfig::default()),
-    ] {
-        all_results.extend(sub);
-        if err.is_some() {
-            return (all_results, err);
-        }
+    macro_rules! run_scenario {
+        ($run:expr) => {{
+            let (sub, err) = $run;
+            all_results.extend(sub);
+            if err.is_some() {
+                return (all_results, err);
+            }
+        }};
     }
+
+    run_scenario!(npu::run(backend, heap, &cfgs.npu));
+    run_scenario!(camera::run(backend, heap, &cfgs.camera));
+    run_scenario!(display::run(backend, heap, &cfgs.display));
+    run_scenario!(codec::run(backend, heap, &cfgs.codec));
+    run_scenario!(gpu::run(backend, heap, &cfgs.gpu));
+    run_scenario!(pipeline::run(backend, heap, &cfgs.pipeline));
 
     (all_results, None)
 }
 
 /// Run all test stages sequentially with result tracking.
-fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
+fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    backend: &B,
+    cli: &Cli,
+    json: Option<&config::ScenarioConfigs>,
+) {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
-        r: (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>),
+        r: (
+            Vec<runner::SubTestResult>,
+            Option<Box<dyn std::error::Error>>,
+        ),
     ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
         let (sub, err) = r;
         let details = Some(runner::sub_tests_to_details(&sub));
@@ -243,7 +322,12 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     let heap = cli.heap.clone();
 
     runner::run_stage(&mut results, "basic", || {
-        stage_result(cmd::basic::run(backend, &heap, &[4096, 65536, 1_048_576], 1024))
+        stage_result(cmd::basic::run(
+            backend,
+            &heap,
+            &[4096, 65536, 1_048_576],
+            1024,
+        ))
     });
     runner::run_stage(&mut results, "sync_file", || {
         stage_result(cmd::sync_file::run(backend, &heap))
@@ -266,31 +350,26 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     runner::run_stage(&mut results, "pool", || {
         stage_result(cmd::pool::run(backend, &heap))
     });
+
+    let cfgs = config::resolve_all_defaults(json);
+
     runner::run_stage(&mut results, "scenario_npu", || {
-        stage_result(cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default()))
+        stage_result(cmd::scenario::npu::run(backend, &heap, &cfgs.npu))
     });
     runner::run_stage(&mut results, "scenario_camera", || {
-        stage_result(cmd::scenario::camera::run(
-            backend, &heap, &cmd::scenario::camera::CameraConfig::default(),
-        ))
+        stage_result(cmd::scenario::camera::run(backend, &heap, &cfgs.camera))
     });
     runner::run_stage(&mut results, "scenario_display", || {
-        stage_result(cmd::scenario::display::run(
-            backend, &heap, &cmd::scenario::display::DisplayConfig::default(),
-        ))
+        stage_result(cmd::scenario::display::run(backend, &heap, &cfgs.display))
     });
     runner::run_stage(&mut results, "scenario_codec", || {
-        stage_result(cmd::scenario::codec::run(
-            backend, &heap, &cmd::scenario::codec::CodecConfig::default(),
-        ))
+        stage_result(cmd::scenario::codec::run(backend, &heap, &cfgs.codec))
     });
     runner::run_stage(&mut results, "scenario_gpu", || {
-        stage_result(cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default()))
+        stage_result(cmd::scenario::gpu::run(backend, &heap, &cfgs.gpu))
     });
     runner::run_stage(&mut results, "scenario_pipeline", || {
-        stage_result(cmd::scenario::pipeline::run(
-            backend, &heap, &cmd::scenario::pipeline::PipelineConfig::default(),
-        ))
+        stage_result(cmd::scenario::pipeline::run(backend, &heap, &cfgs.pipeline))
     });
 
     tracing::info!(
