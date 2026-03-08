@@ -35,6 +35,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub output: Option<PathBuf>,
 
+    /// JSON configuration file for scenario workload parameters.
+    #[arg(long, global = true)]
+    pub config: Option<PathBuf>,
+
     /// Increase verbosity (-v=info, -vv=debug, -vvv=trace).
     #[arg(short = 'v', long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -135,77 +139,80 @@ impl FragPattern {
 pub enum ScenarioCommand {
     /// NPU inference workload simulation.
     Npu {
-        /// Inference iterations.
-        #[arg(long, default_value_t = 100)]
-        iterations: u32,
+        /// Inference iterations (default: 100).
+        #[arg(long)]
+        iterations: Option<u32>,
 
-        /// Concurrent client threads.
-        #[arg(long, default_value_t = 4)]
-        clients: u32,
+        /// Concurrent client threads (default: 4).
+        #[arg(long)]
+        clients: Option<u32>,
     },
 
     /// Camera capture/preview workload simulation.
     Camera {
-        /// Capture width.
-        #[arg(long, default_value_t = 1920)]
-        width: u32,
+        /// Capture width (default: 1920).
+        #[arg(long)]
+        width: Option<u32>,
 
-        /// Capture height.
-        #[arg(long, default_value_t = 1080)]
-        height: u32,
+        /// Capture height (default: 1080).
+        #[arg(long)]
+        height: Option<u32>,
 
-        /// Number of frames to simulate.
-        #[arg(long, default_value_t = 100)]
-        frames: u32,
+        /// Number of frames to simulate (default: 100).
+        #[arg(long)]
+        frames: Option<u32>,
     },
 
     /// Display compositor workload simulation.
     Display {
-        /// Display width.
-        #[arg(long, default_value_t = 1440)]
-        width: u32,
+        /// Display width (default: 1440).
+        #[arg(long)]
+        width: Option<u32>,
 
-        /// Display height.
-        #[arg(long, default_value_t = 3200)]
-        height: u32,
+        /// Display height (default: 3200).
+        #[arg(long)]
+        height: Option<u32>,
 
-        /// Number of frames to simulate.
-        #[arg(long, default_value_t = 120)]
-        frames: u32,
+        /// Number of frames to simulate (default: 120).
+        #[arg(long)]
+        frames: Option<u32>,
     },
 
     /// Video codec (decoder DPB) workload simulation.
     Codec {
-        /// Video width.
-        #[arg(long, default_value_t = 3840)]
-        width: u32,
+        /// Video width (default: 3840).
+        #[arg(long)]
+        width: Option<u32>,
 
-        /// Video height.
-        #[arg(long, default_value_t = 2160)]
-        height: u32,
+        /// Video height (default: 2160).
+        #[arg(long)]
+        height: Option<u32>,
 
-        /// Number of frames to simulate.
-        #[arg(long, default_value_t = 60)]
-        frames: u32,
+        /// Number of frames to simulate (default: 60).
+        #[arg(long)]
+        frames: Option<u32>,
     },
 
     /// GPU texture/render workload simulation.
     Gpu {
-        /// Number of buffers.
-        #[arg(long, default_value_t = 50)]
-        buffer_count: usize,
+        /// Number of buffers (default: 50).
+        #[arg(long)]
+        buffer_count: Option<usize>,
 
-        /// Texture buffer size (bytes).
-        #[arg(long, default_value_t = 1_048_576)]
-        texture_size: u64,
+        /// Texture buffer size in bytes (default: 1048576).
+        #[arg(long)]
+        texture_size: Option<u64>,
     },
 
     /// Combined camera+display+codec+npu pipeline simulation.
     Pipeline {
-        /// Number of frames to simulate.
-        #[arg(long, default_value_t = 30)]
-        frames: u32,
+        /// Number of frames to simulate (default: 30).
+        #[arg(long)]
+        frames: Option<u32>,
     },
+
+    /// Dump default scenario configuration as JSON.
+    DumpConfig,
 
     /// Run all scenario simulations.
     All,
@@ -321,7 +328,7 @@ mod tests {
     #[test]
     fn scenario_subcommands() {
         for sub in &[
-            "npu", "camera", "display", "codec", "gpu", "pipeline", "all",
+            "npu", "camera", "display", "codec", "gpu", "pipeline", "dump-config", "all",
         ] {
             let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
             assert!(cli.is_ok(), "failed to parse: scenario {sub}");
@@ -347,11 +354,40 @@ mod tests {
                         clients,
                     },
             } => {
-                assert_eq!(iterations, 50);
-                assert_eq!(clients, 2);
+                assert_eq!(iterations, Some(50));
+                assert_eq!(clients, Some(2));
             }
             _ => panic!("expected Scenario::Npu"),
         }
+    }
+
+    #[test]
+    fn scenario_npu_defaults_none() {
+        let cli = parse(&["dhp", "scenario", "npu"]);
+        match cli.command {
+            Command::Scenario {
+                scenario: ScenarioCommand::Npu { iterations, clients },
+            } => {
+                assert!(iterations.is_none());
+                assert!(clients.is_none());
+            }
+            _ => panic!("expected Scenario::Npu"),
+        }
+    }
+
+    #[test]
+    fn config_option() {
+        let cli = parse(&["dhp", "--config", "/tmp/cfg.json", "scenario", "npu"]);
+        assert_eq!(cli.config, Some(PathBuf::from("/tmp/cfg.json")));
+    }
+
+    #[test]
+    fn dump_config_subcommand() {
+        let cli = parse(&["dhp", "scenario", "dump-config"]);
+        assert!(matches!(
+            cli.command,
+            Command::Scenario { scenario: ScenarioCommand::DumpConfig }
+        ));
     }
 
     #[test]

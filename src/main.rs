@@ -108,6 +108,19 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
+    let json_cfg = cli.config.as_ref().map(|p| {
+        config::load_config(p).unwrap_or_else(|e| {
+            tracing::error!(error = %e, path = %p.display(), "failed to load config");
+            std::process::exit(1);
+        })
+    });
+    let json = json_cfg.as_ref();
+
+    if matches!(scenario, ScenarioCommand::DumpConfig) {
+        println!("{}", config::dump_default_config());
+        return;
+    }
+
     let stage_name = match *scenario {
         ScenarioCommand::Npu { .. } => "scenario_npu",
         ScenarioCommand::Camera { .. } => "scenario_camera",
@@ -116,6 +129,7 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ScenarioCommand::Gpu { .. } => "scenario_gpu",
         ScenarioCommand::Pipeline { .. } => "scenario_pipeline",
         ScenarioCommand::All => "scenario_all",
+        ScenarioCommand::DumpConfig => unreachable!(),
     };
 
     let start = Instant::now();
@@ -123,99 +137,84 @@ fn run_scenario<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         ScenarioCommand::Npu {
             iterations,
             clients,
-        } => npu::run(
-            backend,
-            &cli.heap,
-            &npu::NpuConfig {
-                iterations,
-                clients,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), iterations, clients);
+            npu::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Camera {
             width,
             height,
             frames,
-        } => camera::run(
-            backend,
-            &cli.heap,
-            &camera::CameraConfig {
-                width,
-                height,
-                frames,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg =
+                config::resolve_camera(json.and_then(|c| c.camera.as_ref()), width, height, frames);
+            camera::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Display {
             width,
             height,
             frames,
-        } => display::run(
-            backend,
-            &cli.heap,
-            &display::DisplayConfig {
+        } => {
+            let cfg = config::resolve_display(
+                json.and_then(|c| c.display.as_ref()),
                 width,
                 height,
                 frames,
-                ..Default::default()
-            },
-        ),
+            );
+            display::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Codec {
             width,
             height,
             frames,
-        } => codec::run(
-            backend,
-            &cli.heap,
-            &codec::CodecConfig {
-                width,
-                height,
-                frames,
-                ..Default::default()
-            },
-        ),
+        } => {
+            let cfg =
+                config::resolve_codec(json.and_then(|c| c.codec.as_ref()), width, height, frames);
+            codec::run(backend, &cli.heap, &cfg)
+        }
         ScenarioCommand::Gpu {
             buffer_count,
             texture_size,
-        } => gpu::run(
-            backend,
-            &cli.heap,
-            &gpu::GpuConfig {
-                buffer_count,
-                texture_size,
-                ..Default::default()
-            },
-        ),
-        ScenarioCommand::Pipeline { frames } => pipeline::run(
-            backend,
-            &cli.heap,
-            &pipeline::PipelineConfig {
-                frames,
-                ..Default::default()
-            },
-        ),
-        ScenarioCommand::All => run_all_scenarios(backend, &cli.heap),
+        } => {
+            let cfg =
+                config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), buffer_count, texture_size);
+            gpu::run(backend, &cli.heap, &cfg)
+        }
+        ScenarioCommand::Pipeline { frames } => {
+            let cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), frames);
+            pipeline::run(backend, &cli.heap, &cfg)
+        }
+        ScenarioCommand::All => run_all_scenarios(backend, &cli.heap, json),
+        ScenarioCommand::DumpConfig => unreachable!(),
     };
 
     handle_cmd_output(stage_name, &cli.heap, cli.output.as_ref(), &sub, err, start.elapsed());
 }
 
-/// Run all scenario simulations with default configs.
+/// Run all scenario simulations with optional JSON config.
 fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
     heap: &str,
+    json: Option<&config::ScenarioConfigs>,
 ) -> (Vec<runner::SubTestResult>, Option<Box<dyn std::error::Error>>) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
+
+    let npu_cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None);
+    let cam_cfg = config::resolve_camera(json.and_then(|c| c.camera.as_ref()), None, None, None);
+    let dsp_cfg = config::resolve_display(json.and_then(|c| c.display.as_ref()), None, None, None);
+    let cod_cfg = config::resolve_codec(json.and_then(|c| c.codec.as_ref()), None, None, None);
+    let gpu_cfg = config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), None, None);
+    let pip_cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), None);
 
     let mut all_results = Vec::with_capacity(36);
 
     for (sub, err) in [
-        npu::run(backend, heap, &npu::NpuConfig::default()),
-        camera::run(backend, heap, &camera::CameraConfig::default()),
-        display::run(backend, heap, &display::DisplayConfig::default()),
-        codec::run(backend, heap, &codec::CodecConfig::default()),
-        gpu::run(backend, heap, &gpu::GpuConfig::default()),
-        pipeline::run(backend, heap, &pipeline::PipelineConfig::default()),
+        npu::run(backend, heap, &npu_cfg),
+        camera::run(backend, heap, &cam_cfg),
+        display::run(backend, heap, &dsp_cfg),
+        codec::run(backend, heap, &cod_cfg),
+        gpu::run(backend, heap, &gpu_cfg),
+        pipeline::run(backend, heap, &pip_cfg),
     ] {
         all_results.extend(sub);
         if err.is_some() {
@@ -239,6 +238,14 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
             None => Ok(details),
         }
     }
+
+    let json_cfg = cli.config.as_ref().map(|p| {
+        config::load_config(p).unwrap_or_else(|e| {
+            tracing::error!(error = %e, path = %p.display(), "failed to load config");
+            std::process::exit(1);
+        })
+    });
+    let json = json_cfg.as_ref();
 
     let mut results = runner::RunResult::new(&cli.heap);
     let heap = cli.heap.clone();
@@ -267,31 +274,31 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
     runner::run_stage(&mut results, "pool", || {
         stage_result(cmd::pool::run(backend, &heap))
     });
+
+    let npu_cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None);
+    let cam_cfg = config::resolve_camera(json.and_then(|c| c.camera.as_ref()), None, None, None);
+    let dsp_cfg = config::resolve_display(json.and_then(|c| c.display.as_ref()), None, None, None);
+    let cod_cfg = config::resolve_codec(json.and_then(|c| c.codec.as_ref()), None, None, None);
+    let gpu_cfg = config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), None, None);
+    let pip_cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), None);
+
     runner::run_stage(&mut results, "scenario_npu", || {
-        stage_result(cmd::scenario::npu::run(backend, &heap, &cmd::scenario::npu::NpuConfig::default()))
+        stage_result(cmd::scenario::npu::run(backend, &heap, &npu_cfg))
     });
     runner::run_stage(&mut results, "scenario_camera", || {
-        stage_result(cmd::scenario::camera::run(
-            backend, &heap, &cmd::scenario::camera::CameraConfig::default(),
-        ))
+        stage_result(cmd::scenario::camera::run(backend, &heap, &cam_cfg))
     });
     runner::run_stage(&mut results, "scenario_display", || {
-        stage_result(cmd::scenario::display::run(
-            backend, &heap, &cmd::scenario::display::DisplayConfig::default(),
-        ))
+        stage_result(cmd::scenario::display::run(backend, &heap, &dsp_cfg))
     });
     runner::run_stage(&mut results, "scenario_codec", || {
-        stage_result(cmd::scenario::codec::run(
-            backend, &heap, &cmd::scenario::codec::CodecConfig::default(),
-        ))
+        stage_result(cmd::scenario::codec::run(backend, &heap, &cod_cfg))
     });
     runner::run_stage(&mut results, "scenario_gpu", || {
-        stage_result(cmd::scenario::gpu::run(backend, &heap, &cmd::scenario::gpu::GpuConfig::default()))
+        stage_result(cmd::scenario::gpu::run(backend, &heap, &gpu_cfg))
     });
     runner::run_stage(&mut results, "scenario_pipeline", || {
-        stage_result(cmd::scenario::pipeline::run(
-            backend, &heap, &cmd::scenario::pipeline::PipelineConfig::default(),
-        ))
+        stage_result(cmd::scenario::pipeline::run(backend, &heap, &pip_cfg))
     });
 
     tracing::info!(
