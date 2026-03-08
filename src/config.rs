@@ -32,6 +32,38 @@ pub fn load_config(path: &Path) -> Result<ScenarioConfigs, Box<dyn Error>> {
     Ok(configs)
 }
 
+/// Resolve a config struct: clone JSON base (or default) then apply CLI overrides.
+macro_rules! resolve_config {
+    ($json:expr, $($field:ident: $val:expr),* $(,)?) => {{
+        let mut cfg = $json.cloned().unwrap_or_default();
+        $(if let Some(v) = $val { cfg.$field = v; })*
+        cfg
+    }};
+}
+
+/// All resolved scenario configs.
+pub struct AllResolved {
+    pub npu: NpuConfig,
+    pub camera: CameraConfig,
+    pub display: DisplayConfig,
+    pub codec: CodecConfig,
+    pub gpu: GpuConfig,
+    pub pipeline: PipelineConfig,
+}
+
+/// Return resolved configs for all scenarios with JSON base and no CLI overrides.
+#[must_use]
+pub fn resolve_all_defaults(json: Option<&ScenarioConfigs>) -> AllResolved {
+    AllResolved {
+        npu: resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None),
+        camera: resolve_camera(json.and_then(|c| c.camera.as_ref()), None, None, None),
+        display: resolve_display(json.and_then(|c| c.display.as_ref()), None, None, None),
+        codec: resolve_codec(json.and_then(|c| c.codec.as_ref()), None, None, None),
+        gpu: resolve_gpu(json.and_then(|c| c.gpu.as_ref()), None, None),
+        pipeline: resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), None),
+    }
+}
+
 /// Dump default configurations for all scenarios as pretty JSON.
 #[must_use]
 pub fn dump_default_config() -> String {
@@ -53,14 +85,7 @@ pub fn resolve_npu(
     iterations: Option<u32>,
     clients: Option<u32>,
 ) -> NpuConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = iterations {
-        cfg.iterations = v;
-    }
-    if let Some(v) = clients {
-        cfg.clients = v;
-    }
-    cfg
+    resolve_config!(json, iterations: iterations, clients: clients)
 }
 
 /// Resolve Camera config: JSON base with CLI overrides.
@@ -71,17 +96,7 @@ pub fn resolve_camera(
     height: Option<u32>,
     frames: Option<u32>,
 ) -> CameraConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = width {
-        cfg.width = v;
-    }
-    if let Some(v) = height {
-        cfg.height = v;
-    }
-    if let Some(v) = frames {
-        cfg.frames = v;
-    }
-    cfg
+    resolve_config!(json, width: width, height: height, frames: frames)
 }
 
 /// Resolve Display config: JSON base with CLI overrides.
@@ -92,17 +107,7 @@ pub fn resolve_display(
     height: Option<u32>,
     frames: Option<u32>,
 ) -> DisplayConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = width {
-        cfg.width = v;
-    }
-    if let Some(v) = height {
-        cfg.height = v;
-    }
-    if let Some(v) = frames {
-        cfg.frames = v;
-    }
-    cfg
+    resolve_config!(json, width: width, height: height, frames: frames)
 }
 
 /// Resolve Codec config: JSON base with CLI overrides.
@@ -113,17 +118,7 @@ pub fn resolve_codec(
     height: Option<u32>,
     frames: Option<u32>,
 ) -> CodecConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = width {
-        cfg.width = v;
-    }
-    if let Some(v) = height {
-        cfg.height = v;
-    }
-    if let Some(v) = frames {
-        cfg.frames = v;
-    }
-    cfg
+    resolve_config!(json, width: width, height: height, frames: frames)
 }
 
 /// Resolve GPU config: JSON base with CLI overrides.
@@ -133,24 +128,13 @@ pub fn resolve_gpu(
     buffer_count: Option<usize>,
     texture_size: Option<u64>,
 ) -> GpuConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = buffer_count {
-        cfg.buffer_count = v;
-    }
-    if let Some(v) = texture_size {
-        cfg.texture_size = v;
-    }
-    cfg
+    resolve_config!(json, buffer_count: buffer_count, texture_size: texture_size)
 }
 
 /// Resolve Pipeline config: JSON base with CLI overrides.
 #[must_use]
 pub fn resolve_pipeline(json: Option<&PipelineConfig>, frames: Option<u32>) -> PipelineConfig {
-    let mut cfg = json.cloned().unwrap_or_default();
-    if let Some(v) = frames {
-        cfg.frames = v;
-    }
-    cfg
+    resolve_config!(json, frames: frames)
 }
 
 #[cfg(test)]

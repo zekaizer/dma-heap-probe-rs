@@ -273,12 +273,7 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
 ) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
-    let npu_cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None);
-    let cam_cfg = config::resolve_camera(json.and_then(|c| c.camera.as_ref()), None, None, None);
-    let dsp_cfg = config::resolve_display(json.and_then(|c| c.display.as_ref()), None, None, None);
-    let cod_cfg = config::resolve_codec(json.and_then(|c| c.codec.as_ref()), None, None, None);
-    let gpu_cfg = config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), None, None);
-    let pip_cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), None);
+    let cfgs = config::resolve_all_defaults(json);
 
     let mut all_results = Vec::with_capacity(36);
 
@@ -292,12 +287,12 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
         }};
     }
 
-    run_scenario!(npu::run(backend, heap, &npu_cfg));
-    run_scenario!(camera::run(backend, heap, &cam_cfg));
-    run_scenario!(display::run(backend, heap, &dsp_cfg));
-    run_scenario!(codec::run(backend, heap, &cod_cfg));
-    run_scenario!(gpu::run(backend, heap, &gpu_cfg));
-    run_scenario!(pipeline::run(backend, heap, &pip_cfg));
+    run_scenario!(npu::run(backend, heap, &cfgs.npu));
+    run_scenario!(camera::run(backend, heap, &cfgs.camera));
+    run_scenario!(display::run(backend, heap, &cfgs.display));
+    run_scenario!(codec::run(backend, heap, &cfgs.codec));
+    run_scenario!(gpu::run(backend, heap, &cfgs.gpu));
+    run_scenario!(pipeline::run(backend, heap, &cfgs.pipeline));
 
     (all_results, None)
 }
@@ -356,30 +351,25 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         stage_result(cmd::pool::run(backend, &heap))
     });
 
-    let npu_cfg = config::resolve_npu(json.and_then(|c| c.npu.as_ref()), None, None);
-    let cam_cfg = config::resolve_camera(json.and_then(|c| c.camera.as_ref()), None, None, None);
-    let dsp_cfg = config::resolve_display(json.and_then(|c| c.display.as_ref()), None, None, None);
-    let cod_cfg = config::resolve_codec(json.and_then(|c| c.codec.as_ref()), None, None, None);
-    let gpu_cfg = config::resolve_gpu(json.and_then(|c| c.gpu.as_ref()), None, None);
-    let pip_cfg = config::resolve_pipeline(json.and_then(|c| c.pipeline.as_ref()), None);
+    let cfgs = config::resolve_all_defaults(json);
 
     runner::run_stage(&mut results, "scenario_npu", || {
-        stage_result(cmd::scenario::npu::run(backend, &heap, &npu_cfg))
+        stage_result(cmd::scenario::npu::run(backend, &heap, &cfgs.npu))
     });
     runner::run_stage(&mut results, "scenario_camera", || {
-        stage_result(cmd::scenario::camera::run(backend, &heap, &cam_cfg))
+        stage_result(cmd::scenario::camera::run(backend, &heap, &cfgs.camera))
     });
     runner::run_stage(&mut results, "scenario_display", || {
-        stage_result(cmd::scenario::display::run(backend, &heap, &dsp_cfg))
+        stage_result(cmd::scenario::display::run(backend, &heap, &cfgs.display))
     });
     runner::run_stage(&mut results, "scenario_codec", || {
-        stage_result(cmd::scenario::codec::run(backend, &heap, &cod_cfg))
+        stage_result(cmd::scenario::codec::run(backend, &heap, &cfgs.codec))
     });
     runner::run_stage(&mut results, "scenario_gpu", || {
-        stage_result(cmd::scenario::gpu::run(backend, &heap, &gpu_cfg))
+        stage_result(cmd::scenario::gpu::run(backend, &heap, &cfgs.gpu))
     });
     runner::run_stage(&mut results, "scenario_pipeline", || {
-        stage_result(cmd::scenario::pipeline::run(backend, &heap, &pip_cfg))
+        stage_result(cmd::scenario::pipeline::run(backend, &heap, &cfgs.pipeline))
     });
 
     tracing::info!(
