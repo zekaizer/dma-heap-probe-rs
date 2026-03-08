@@ -5,6 +5,7 @@
 
 use std::ffi::CString;
 use std::num::NonZeroUsize;
+use std::os::fd::{BorrowedFd, IntoRawFd};
 use std::os::unix::io::RawFd;
 
 use nix::errno::Errno;
@@ -20,21 +21,27 @@ use crate::ioctl::dma_heap::{self, DmaHeapAllocationData};
 
 use super::{DmaBufBackend, HeapBackend};
 
-/// Real heap backend using `/dev/dma_heap/` device nodes.
-pub struct RealHeapBackend;
+/// Real backend using `/dev/dma_heap/` device nodes and ioctl/mmap syscalls.
+pub struct RealBackend;
 
-/// Real dma-buf backend using ioctl/mmap syscalls.
-pub struct RealDmaBufBackend;
+impl RealBackend {
+    /// Create a new real backend instance.
+    #[must_use]
+    pub fn new() -> Self {
+        Self
+    }
+}
 
-impl HeapBackend for RealHeapBackend {
+impl HeapBackend for RealBackend {
     fn open(&self, name: &str) -> nix::Result<RawFd> {
         let path = format!("/dev/dma_heap/{name}");
         let cpath = CString::new(path).map_err(|_| Errno::EINVAL)?;
-        nix::fcntl::open(
+        let owned_fd = nix::fcntl::open(
             cpath.as_c_str(),
             OFlag::O_RDONLY | OFlag::O_CLOEXEC,
             Mode::empty(),
-        )
+        )?;
+        Ok(owned_fd.into_raw_fd())
     }
 
     fn alloc(&self, heap_fd: RawFd, data: &mut DmaHeapAllocationData) -> nix::Result<()> {
@@ -48,33 +55,34 @@ impl HeapBackend for RealHeapBackend {
     }
 }
 
-impl DmaBufBackend for RealDmaBufBackend {
+impl DmaBufBackend for RealBackend {
     fn mmap(&self, fd: RawFd, len: usize) -> nix::Result<*mut u8> {
         let len = NonZeroUsize::new(len).ok_or(Errno::EINVAL)?;
         // SAFETY: fd is a valid dma-buf fd, mapping is shared read/write.
         let ptr = unsafe {
+            let borrowed = BorrowedFd::borrow_raw(fd);
             mman::mmap(
                 None,
                 len,
                 ProtFlags::PROT_READ | ProtFlags::PROT_WRITE,
                 MapFlags::MAP_SHARED,
-                Some(fd),
+                borrowed,
                 0,
             )?
         };
-        Ok(ptr.cast::<u8>())
+        Ok(ptr.as_ptr().cast::<u8>())
     }
 
     fn munmap(&self, addr: *mut u8, len: usize) -> nix::Result<()> {
-        let len = NonZeroUsize::new(len).ok_or(Errno::EINVAL)?;
+        let nn = std::ptr::NonNull::new(addr.cast::<std::ffi::c_void>()).ok_or(Errno::EINVAL)?;
         // SAFETY: addr was returned by a previous mmap call with the given len.
-        unsafe { mman::munmap(std::ptr::NonNull::new(addr).ok_or(Errno::EINVAL)?, len) }
+        unsafe { mman::munmap(nn, len) }
     }
 
     fn sync(&self, fd: RawFd, flags: u64) -> nix::Result<()> {
         let sync_data = DmaBufSync { flags };
         // SAFETY: fd is a valid dma-buf fd, sync_data has valid flags.
-        unsafe { dma_buf::dma_buf_ioctl_sync(fd, &sync_data) }?;
+        unsafe { dma_buf::dma_buf_ioctl_sync(fd, &raw const sync_data) }?;
         Ok(())
     }
 
@@ -84,7 +92,9 @@ impl DmaBufBackend for RealDmaBufBackend {
             libc::SEEK_END => unistd::Whence::SeekEnd,
             _ => return Err(Errno::EINVAL),
         };
-        unistd::lseek(fd, offset, w).map(Into::into)
+        // SAFETY: fd is a valid dma-buf fd.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        unistd::lseek(borrowed, offset, w)
     }
 
     fn set_name(&self, fd: RawFd, name: &str) -> nix::Result<()> {
@@ -104,14 +114,16 @@ impl DmaBufBackend for RealDmaBufBackend {
     }
 
     fn import_sync_file(&self, fd: RawFd, data: DmaBufImportSyncFile) -> nix::Result<()> {
-        let mut data = data;
         // SAFETY: fd is a valid dma-buf fd, data contains a valid sync_file fd.
-        unsafe { dma_buf::dma_buf_ioctl_import_sync_file(fd, &mut data) }?;
+        unsafe { dma_buf::dma_buf_ioctl_import_sync_file(fd, &raw const data) }?;
         Ok(())
     }
 
     fn dup(&self, fd: RawFd) -> nix::Result<RawFd> {
-        unistd::dup(fd)
+        // SAFETY: fd is a valid dma-buf fd.
+        let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
+        let owned = unistd::dup(borrowed)?;
+        Ok(owned.into_raw_fd())
     }
 
     fn close(&self, fd: RawFd) -> nix::Result<()> {
