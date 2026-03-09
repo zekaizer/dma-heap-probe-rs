@@ -124,6 +124,17 @@ pub fn sub_tests_to_details(tests: &[SubTestResult]) -> serde_json::Value {
     serde_json::json!({ "tests": tests })
 }
 
+/// Return a `SELinux` hint suffix for permission-related errno values.
+fn selinux_hint(errno: nix::errno::Errno) -> &'static str {
+    match errno {
+        nix::errno::Errno::EPERM | nix::errno::Errno::EACCES => {
+            " (hint: likely SELinux denial. Try `adb shell setenforce 0` on userdebug builds. \
+             Check `adb logcat | grep avc` for details)"
+        }
+        _ => "",
+    }
+}
+
 /// Collect nix test results into `SubTestResult` entries, logging each.
 /// Returns the collected results and the first error (if any).
 pub fn collect_test_results(
@@ -144,14 +155,18 @@ pub fn collect_test_results(
                 });
             }
             Err(e) => {
+                let hint = selinux_hint(*e);
                 tracing::error!(name, error = %e, "FAIL");
+                if !hint.is_empty() {
+                    tracing::warn!(name, "{hint}");
+                }
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: false,
-                    error: Some(e.to_string()),
+                    error: Some(format!("{e}{hint}")),
                 });
                 if first_error.is_none() {
-                    first_error = Some(format!("{stage} test '{name}' failed: {e}").into());
+                    first_error = Some(format!("{stage} test '{name}' failed: {e}{hint}").into());
                 }
             }
         }
@@ -291,5 +306,42 @@ mod tests {
         assert_eq!(parsed.stages.len(), 1);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn collect_eperm_includes_hint() {
+        let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EPERM))];
+        let (results, err) = collect_test_results("stage", &tests);
+        assert!(!results[0].passed);
+        let error_msg = results[0].error.as_ref().unwrap();
+        assert!(
+            error_msg.contains("SELinux"),
+            "expected SELinux hint: {error_msg}"
+        );
+        assert!(error_msg.contains("setenforce"));
+        let first = err.unwrap().to_string();
+        assert!(first.contains("SELinux"));
+    }
+
+    #[test]
+    fn collect_eacces_includes_hint() {
+        let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EACCES))];
+        let (results, _) = collect_test_results("stage", &tests);
+        let error_msg = results[0].error.as_ref().unwrap();
+        assert!(
+            error_msg.contains("SELinux"),
+            "expected SELinux hint: {error_msg}"
+        );
+    }
+
+    #[test]
+    fn collect_einval_no_hint() {
+        let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EINVAL))];
+        let (results, _) = collect_test_results("stage", &tests);
+        let error_msg = results[0].error.as_ref().unwrap();
+        assert!(
+            !error_msg.contains("SELinux"),
+            "unexpected SELinux hint: {error_msg}"
+        );
     }
 }
