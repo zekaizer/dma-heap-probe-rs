@@ -18,12 +18,17 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     alloc_size: u64,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    let max_allocs = safe_exhaust_limit(alloc_size);
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "gradual_exhaust",
-            test_gradual_exhaust(backend, heap_name, alloc_size),
+            test_gradual_exhaust(backend, heap_name, alloc_size, max_allocs),
         ),
-        ("recovery", test_recovery(backend, heap_name, alloc_size)),
+        (
+            "recovery",
+            test_recovery(backend, heap_name, alloc_size, max_allocs),
+        ),
         (
             "pressure_concurrent",
             test_pressure_concurrent(backend, heap_name, alloc_size),
@@ -33,8 +38,34 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     runner::collect_test_results("pressure", &tests)
 }
 
-/// Maximum allocations before giving up (safety limit for host testing).
+/// Absolute upper bound on exhaust allocations.
 const MAX_EXHAUST_ALLOCS: usize = 10_000;
+
+/// Conservative fallback when `/proc/meminfo` is unavailable (e.g. macOS).
+const DEFAULT_EXHAUST_LIMIT: usize = 500;
+
+/// Fraction of available memory to use for exhaust testing (1/4 = 25%).
+const MEM_USAGE_FRACTION: u64 = 4;
+
+/// Calculate a safe exhaust allocation limit based on available memory.
+#[allow(clippy::cast_possible_truncation)]
+fn safe_exhaust_limit(alloc_size: u64) -> usize {
+    if let Ok(meminfo) = crate::procfs::read_meminfo() {
+        let available_bytes = meminfo.mem_available_kb * 1024;
+        let usable = available_bytes / MEM_USAGE_FRACTION;
+        let limit = (usable / alloc_size) as usize;
+        let clamped = limit.clamp(1, MAX_EXHAUST_ALLOCS);
+        tracing::debug!(
+            mem_available_kb = meminfo.mem_available_kb,
+            alloc_size,
+            limit = clamped,
+            "dynamic exhaust limit"
+        );
+        return clamped;
+    }
+    tracing::debug!(limit = DEFAULT_EXHAUST_LIMIT, "using default exhaust limit");
+    DEFAULT_EXHAUST_LIMIT
+}
 
 /// Allocate fixed-size buffers until `ENOMEM`. Track latency and total allocated.
 #[allow(clippy::cast_possible_truncation)]
@@ -42,13 +73,14 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     alloc_size: u64,
+    max_allocs: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut buffers: Vec<DmaBuf<'_, B>> = Vec::new();
     let mut latencies_us: Vec<u64> = Vec::new();
 
     loop {
-        if buffers.len() >= MAX_EXHAUST_ALLOCS {
+        if buffers.len() >= max_allocs {
             tracing::warn!(
                 count = buffers.len(),
                 "exhaust limit reached without ENOMEM"
@@ -96,13 +128,14 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     alloc_size: u64,
+    max_allocs: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut buffers: Vec<DmaBuf<'_, B>> = Vec::new();
 
     // Exhaust until ENOMEM (with safety limit).
     loop {
-        if buffers.len() >= MAX_EXHAUST_ALLOCS {
+        if buffers.len() >= max_allocs {
             break;
         }
         match heap.alloc(
@@ -230,15 +263,15 @@ mod tests {
 
     #[test]
     fn gradual_exhaust_hits_limit() {
-        // Use small alloc size + safety limit to avoid host OOM.
+        // Use small alloc size + conservative limit to avoid host OOM.
         let b = MockBackend::new();
-        test_gradual_exhaust(&b, "system", 4096).unwrap();
+        test_gradual_exhaust(&b, "system", 4096, 500).unwrap();
     }
 
     #[test]
     fn recovery_after_exhaust() {
         let b = MockBackend::new();
-        test_recovery(&b, "system", 4096).unwrap();
+        test_recovery(&b, "system", 4096, 500).unwrap();
     }
 
     #[test]
@@ -285,7 +318,7 @@ mod tests {
     #[test]
     fn recovery_no_leak() {
         let b = MockBackend::new();
-        test_recovery(&b, "system", 4096).unwrap();
+        test_recovery(&b, "system", 4096, 500).unwrap();
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
 }
