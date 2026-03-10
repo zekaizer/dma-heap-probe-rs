@@ -317,6 +317,24 @@ mod tests {
     }
 
     #[test]
+    fn info_defaults() {
+        let cli = parse(&["dhp", "info"]);
+        match cli.command {
+            Command::Info { detail } => assert!(!detail),
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn info_with_detail() {
+        let cli = parse(&["dhp", "info", "--detail"]);
+        match cli.command {
+            Command::Info { detail } => assert!(detail),
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
     fn stub_commands() {
         for cmd in &[
             "perf",
@@ -325,6 +343,7 @@ mod tests {
             "pool",
             "negative",
             "all",
+            "info",
             "sysfs-dump",
         ] {
             let cli = Cli::try_parse_from(["dhp", cmd]);
