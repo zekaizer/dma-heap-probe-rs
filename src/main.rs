@@ -144,6 +144,17 @@ fn main() {
                 start.elapsed(),
             );
         }
+        Command::Info { detail } => {
+            let heap_filter = if detail {
+                Some(cli.heap.as_str())
+            } else {
+                None
+            };
+            if let Err(e) = cmd::info::run(detail, heap_filter, cli.procfs, cli.output.as_ref()) {
+                tracing::error!(error = %e, "info command failed");
+                std::process::exit(1);
+            }
+        }
         Command::All => {
             let json_cfg = load_scenario_config(&cli);
             run_all(&backend, &cli, json_cfg.as_ref());

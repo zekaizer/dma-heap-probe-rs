@@ -111,6 +111,13 @@ pub enum Command {
     /// Run all tests including scenarios.
     All,
 
+    /// Display system DMA heap information and buffer status.
+    Info {
+        /// Show individual buffer list (requires debugfs access for full detail).
+        #[arg(long)]
+        detail: bool,
+    },
+
     /// Standalone sysfs/procfs snapshot.
     SysfsDump,
 }
