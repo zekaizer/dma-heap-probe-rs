@@ -27,7 +27,8 @@ cargo ndk -t arm64-v8a -P 35 build --release
 - `src/sysfs.rs` — /sys/kernel/dmabuf/buffers/ parsing
 - `src/procfs.rs` — buddyinfo, pagetypeinfo, meminfo, vmstat parsing
 - `src/runner.rs` — test runner + result aggregation
-- `src/cmd/` — subcommand implementations (basic, sync_file, edge, perf, negative, pressure, fragmentation, pool)
+- `src/cmd/` — subcommand implementations (basic, sync_file, edge, perf, negative, pressure, fragmentation, pool, aging, info)
+- `src/cmd/aging/` — sustained alloc/free aging tests (mod.rs, worker.rs, fuzz.rs)
 - `src/cmd/scenario/` — workload simulations (npu, camera, display, codec, gpu, pipeline)
 - `src/config.rs` — JSON config file loading, ScenarioConfigs, resolve functions
 - `tests/cli_smoke.rs` — CLI end-to-end smoke tests (assert_cmd)
@@ -69,6 +70,7 @@ cargo ndk -t arm64-v8a -P 35 build --release
 | predicates (3.x) | Output assertion matchers (dev) |
 | tempfile (3.x) | Temporary file for --output tests (dev) |
 | proptest (1.x) | Property-based / fuzz testing (dev) |
+| rand (0.8) | Random number generation for fuzz aging |
 
 ## Branching Strategy
 
@@ -91,6 +93,8 @@ cargo ndk -t arm64-v8a -P 35 build --release
   - `feat/runner-output` — runner.rs + JSON output integration
   - `feat/cli-integration-test` — CLI smoke + proptest fuzz tests
   - `feat/scenario-json-config` — JSON config file for scenario workloads
+  - `feat/cmd-aging` — aging tests (normal + fuzz modes)
+  - `feat/cmd-info` — system info display (heap discovery, buffer status)
 - `fix/<name>` — bug fixes
 - `refactor/<name>` — refactoring without behavior change
 
