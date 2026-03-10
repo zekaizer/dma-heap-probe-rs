@@ -14,6 +14,7 @@ A comprehensive userspace testing tool for DMA-Heap on Android 16+ (kernel 6.12+
 - **Pool/cache** — warmup, drain, size switch, release order, deferred free
 - **Aging** — sustained alloc/free with periodic metric reporting, normal (pipeline round-robin) and fuzz (random size/op/timing with deterministic seeding) modes
 - **Workload simulation** — NPU, camera, display, codec, GPU, multi-subsystem pipelines
+- **System info** — heap discovery, buffer status (debugfs/procfs), memory statistics
 - **Observability** — Perfetto trace markers, sysfs/procfs snapshot collection
 
 ## Quick Start
@@ -34,6 +35,7 @@ adb shell su -c /data/local/tmp/dhp perf --heap system --trace
 adb shell su -c /data/local/tmp/dhp scenario npu --heap system
 adb shell su -c /data/local/tmp/dhp aging --heap system --threads 4 --duration 300
 adb shell su -c /data/local/tmp/dhp aging --heap system --fuzz --seed 42 --max-hold 64
+adb shell su -c /data/local/tmp/dhp info --detail
 adb shell su -c /data/local/tmp/dhp all --heap system --sysfs --procfs --output /data/local/tmp/results.json
 ```
 
