@@ -194,6 +194,7 @@ dependencies = [
  "nix",
  "predicates",
  "proptest",
+ "rand",
  "serde",
  "serde_json",
  "tempfile",
