@@ -10,7 +10,7 @@ use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{bulk_alloc, check_thread_failures, fill_buffer, read_sync};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// Default model size in bytes (512 MB).
 const DEFAULT_MODEL_SIZE: u64 = 512 * 1024 * 1024;
@@ -120,7 +120,7 @@ fn npu_model_load<B: HeapBackend + DmaBufBackend>(
         let probe_start = Instant::now();
         match heap.alloc(
             probe_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         ) {
             Ok(fd) => {
@@ -161,7 +161,7 @@ fn npu_inference_loop<B: HeapBackend + DmaBufBackend>(
         // Allocate input buffer.
         let in_fd = heap.alloc(
             config.input_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let mut in_buf = DmaBuf::new(backend, in_fd, config.input_size as usize);
@@ -171,7 +171,7 @@ fn npu_inference_loop<B: HeapBackend + DmaBufBackend>(
         // Allocate output buffer.
         let out_fd = heap.alloc(
             config.output_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let out_buf = DmaBuf::new(backend, out_fd, config.output_size as usize);
@@ -278,13 +278,13 @@ fn npu_sustained<B: HeapBackend + DmaBufBackend>(
 
         let in_fd = heap.alloc(
             config.input_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let in_buf = DmaBuf::new(backend, in_fd, config.input_size as usize);
         let out_fd = heap.alloc(
             config.output_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let out_buf = DmaBuf::new(backend, out_fd, config.output_size as usize);
@@ -340,7 +340,7 @@ fn npu_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     let start = Instant::now();
                     let in_fd = match heap.alloc(
                         config.input_size,
-                        DMA_HEAP_VALID_FD_FLAGS,
+                        DMA_HEAP_ALLOC_FD_FLAGS,
                         DMA_HEAP_VALID_HEAP_FLAGS,
                     ) {
                         Ok(fd) => fd,

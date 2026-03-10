@@ -333,6 +333,7 @@ impl DmaBufBackend for MockBackend {
 mod tests {
     use super::*;
     use crate::ioctl::dma_buf::{DMA_BUF_SYNC_RW, DMA_BUF_SYNC_START};
+    use crate::ioctl::dma_heap::DMA_HEAP_ALLOC_FD_FLAGS;
 
     fn setup() -> MockBackend {
         MockBackend::new()
@@ -343,7 +344,7 @@ mod tests {
         let heap_fd = backend.open("system").unwrap();
         let mut data = DmaHeapAllocationData {
             len: size,
-            fd_flags: libc::O_CLOEXEC as u32,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             ..Default::default()
         };
         backend.alloc(heap_fd, &mut data).unwrap();
@@ -378,7 +379,7 @@ mod tests {
         let heap_fd = b.open("system").unwrap();
         let mut data = DmaHeapAllocationData {
             len: 0,
-            fd_flags: libc::O_CLOEXEC as u32,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             ..Default::default()
         };
         assert_eq!(b.alloc(heap_fd, &mut data), Err(Errno::EINVAL));
@@ -402,7 +403,7 @@ mod tests {
         let heap_fd = b.open("system").unwrap();
         let mut data = DmaHeapAllocationData {
             len: 4096,
-            fd_flags: libc::O_CLOEXEC as u32,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             heap_flags: 1,
             ..Default::default()
         };
@@ -416,7 +417,7 @@ mod tests {
         b.close_heap(heap_fd).unwrap();
         let mut data = DmaHeapAllocationData {
             len: 4096,
-            fd_flags: libc::O_CLOEXEC as u32,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             ..Default::default()
         };
         assert_eq!(b.alloc(heap_fd, &mut data), Err(Errno::EBADF));
@@ -436,7 +437,7 @@ mod tests {
         let heap_fd = b.open("system").unwrap();
         let mut data = DmaHeapAllocationData {
             len: MAX_ALLOC_SIZE + 1,
-            fd_flags: libc::O_CLOEXEC as u32,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             ..Default::default()
         };
         assert_eq!(b.alloc(heap_fd, &mut data), Err(Errno::ENOMEM));

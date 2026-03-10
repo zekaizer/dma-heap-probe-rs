@@ -7,7 +7,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::DMA_BUF_SYNC_WRITE;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::procfs::{self, BuddyInfoEntry, PageTypeInfoEntry};
 use crate::runner::{self, SubTestResult};
 
@@ -81,7 +81,7 @@ fn test_buddyinfo_track<B: HeapBackend + DmaBufBackend>(
     for _ in 0..100 {
         let fd = heap.alloc(
             1_048_576,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         buffers.push(DmaBuf::new(backend, fd, 1_048_576));
@@ -108,7 +108,7 @@ fn test_interleave_pattern<B: HeapBackend + DmaBufBackend>(
     let mut buffers: Vec<Option<DmaBuf<'_, B>>> = Vec::with_capacity(INTERLEAVE_COUNT);
     for i in 0..INTERLEAVE_COUNT {
         let size = MIXED_SIZES[i % MIXED_SIZES.len()];
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let mut buf = DmaBuf::new(backend, fd, size as usize);
         // Touch the buffer to ensure pages are faulted in.
         let ptr = buf.mmap()?;
@@ -151,7 +151,7 @@ fn test_interleave_pattern<B: HeapBackend + DmaBufBackend>(
         if slot.is_none() {
             // Use a different size than original.
             let size = 32768u64; // 32KB — different from all MIXED_SIZES.
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             *slot = Some(DmaBuf::new(backend, fd, size as usize));
             realloc_count += 1;
         }
@@ -185,7 +185,7 @@ fn test_pagetypeinfo_track<B: HeapBackend + DmaBufBackend>(
     for _ in 0..50 {
         let fd = heap.alloc(
             1_048_576,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         buffers.push(DmaBuf::new(backend, fd, 1_048_576));

@@ -12,7 +12,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_NAME_LEN, DMA_BUF_SYNC_READ};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Allocation size for negative tests.
@@ -107,7 +107,7 @@ fn neg_alloc_zero_size<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let result = heap.alloc(0, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
+    let result = heap.alloc(0, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
     expect_errno(result, Errno::EINVAL, "alloc zero size")
 }
 
@@ -117,7 +117,7 @@ fn neg_alloc_overflow_size<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let result = heap.alloc(u64::MAX, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
+    let result = heap.alloc(u64::MAX, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
     expect_errno_one_of(result, &[Errno::EINVAL, Errno::ENOMEM], "alloc overflow")
 }
 
@@ -142,7 +142,7 @@ fn neg_alloc_invalid_heap_flags<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let result = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_VALID_FD_FLAGS, 1);
+    let result = heap.alloc(NEG_ALLOC_SIZE, DMA_HEAP_ALLOC_FD_FLAGS, 1);
     expect_errno(result, Errno::EINVAL, "alloc invalid heap_flags")
 }
 
@@ -158,7 +158,7 @@ fn neg_alloc_on_closed_heap<B: HeapBackend + DmaBufBackend>(
     let mut data = crate::ioctl::dma_heap::DmaHeapAllocationData {
         len: NEG_ALLOC_SIZE,
         fd: 0,
-        fd_flags: DMA_HEAP_VALID_FD_FLAGS,
+        fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
         heap_flags: DMA_HEAP_VALID_HEAP_FLAGS,
     };
     let result = backend.alloc(heap_fd, &mut data);
@@ -176,7 +176,7 @@ fn neg_sync_invalid_flags<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -201,7 +201,7 @@ fn neg_sync_on_closed_fd<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -222,7 +222,7 @@ fn neg_llseek_invalid<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -251,7 +251,7 @@ fn neg_set_name_too_long<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -272,7 +272,7 @@ fn neg_mmap_beyond_size<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let mut buf = DmaBuf::new(backend, fd, (NEG_ALLOC_SIZE * 2) as usize);
@@ -293,7 +293,7 @@ fn neg_export_sync_file_invalid_flags<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -311,7 +311,7 @@ fn neg_import_sync_file_bad_fd<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -334,7 +334,7 @@ fn neg_rapid_alloc_close_no_leak<B: HeapBackend + DmaBufBackend>(
     for _ in 0..1000 {
         let fd = heap.alloc(
             NEG_ALLOC_SIZE,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
@@ -357,7 +357,7 @@ fn neg_concurrent_close_same_fd<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         NEG_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
 

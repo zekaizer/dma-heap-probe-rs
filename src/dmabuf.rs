@@ -164,13 +164,13 @@ mod tests {
     use crate::backend::mock::MockBackend;
     use crate::heap::DmaHeap;
     use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW};
-    use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+    use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
     fn alloc_buf(backend: &MockBackend, size: usize) -> RawFd {
         let heap = DmaHeap::open(backend, "system").unwrap();
         heap.alloc(
             size as u64,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )
         .unwrap()

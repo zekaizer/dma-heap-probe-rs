@@ -8,7 +8,7 @@ use nix::errno::Errno;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Run all pressure tests. Returns sub-test results (and the first error, if any).
@@ -90,7 +90,7 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
         let start = Instant::now();
         match heap.alloc(
             alloc_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         ) {
             Ok(fd) => {
@@ -140,7 +140,7 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
         }
         match heap.alloc(
             alloc_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         ) {
             Ok(fd) => buffers.push(DmaBuf::new(backend, fd, alloc_size as usize)),
@@ -169,7 +169,7 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
         let start = Instant::now();
         match heap.alloc(
             alloc_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         ) {
             Ok(fd) => {
@@ -223,7 +223,7 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 for _ in 0..allocs_per_worker {
                     match heap_ref.alloc(
                         alloc_size,
-                        DMA_HEAP_VALID_FD_FLAGS,
+                        DMA_HEAP_ALLOC_FD_FLAGS,
                         DMA_HEAP_VALID_HEAP_FLAGS,
                     ) {
                         Ok(fd) => {
@@ -300,7 +300,7 @@ mod tests {
         for _ in 0..100 {
             match heap.alloc(
                 alloc_size,
-                DMA_HEAP_VALID_FD_FLAGS,
+                DMA_HEAP_ALLOC_FD_FLAGS,
                 DMA_HEAP_VALID_HEAP_FLAGS,
             ) {
                 Ok(fd) => {

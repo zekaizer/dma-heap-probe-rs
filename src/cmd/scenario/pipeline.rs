@@ -10,7 +10,7 @@ use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::{BufferPool, check_thread_failures, fill_buffer, nv12_size, read_sync};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// Pipeline scenario configuration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -354,7 +354,7 @@ fn run_alloc_free_worker<B: HeapBackend + DmaBufBackend>(
     let mut latencies = Vec::with_capacity(frames as usize);
     for _ in 0..frames {
         let start = Instant::now();
-        match heap.alloc(buf_size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
+        match heap.alloc(buf_size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
             Ok(fd) => {
                 let buf = DmaBuf::new(backend, fd, buf_size as usize);
                 let _ = read_sync(&buf);

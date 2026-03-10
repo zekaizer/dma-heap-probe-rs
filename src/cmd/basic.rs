@@ -8,7 +8,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Number of buffers used in the zeroed-page test.
@@ -57,7 +57,7 @@ fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
 
     for &size in sizes {
         tracing::debug!(size, "alloc_and_map");
-        let buf_fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let mut buf = DmaBuf::new(backend, buf_fd, size as usize);
         let ptr = buf.mmap()?;
 
@@ -107,7 +107,7 @@ fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
         {
             let mut bufs = Vec::with_capacity(ZEROED_TEST_COUNT);
             for _ in 0..ZEROED_TEST_COUNT {
-                let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
                 let mut buf = DmaBuf::new(backend, fd, size as usize);
                 let ptr = buf.mmap()?;
 
@@ -124,7 +124,7 @@ fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
         // Pass 2: verify zero
         {
             for _ in 0..ZEROED_TEST_COUNT {
-                let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
                 let mut buf = DmaBuf::new(backend, fd, size as usize);
                 let ptr = buf.mmap()?;
 
@@ -161,7 +161,7 @@ fn test_repeated_alloc<B: HeapBackend + DmaBufBackend>(
         tracing::debug!(size, repeat, "repeated_alloc");
 
         for i in 0..repeat {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             let ptr = buf.mmap()?;
 
@@ -191,7 +191,7 @@ fn test_llseek_size<B: HeapBackend + DmaBufBackend>(
 
     for &size in sizes {
         tracing::debug!(size, "llseek_size");
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let buf = DmaBuf::new(backend, fd, size as usize);
 
         let reported = buf.llseek_size()?;

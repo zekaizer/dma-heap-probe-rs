@@ -61,7 +61,7 @@ impl<H: HeapBackend> Drop for DmaHeap<'_, H> {
 mod tests {
     use super::*;
     use crate::backend::mock::MockBackend;
-    use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+    use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
     fn make_backend() -> MockBackend {
         MockBackend::new()
@@ -72,7 +72,7 @@ mod tests {
         let backend = make_backend();
         let heap = DmaHeap::open(&backend, "system").unwrap();
         let fd = heap
-            .alloc(4096, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
             .unwrap();
         assert!(fd >= 1000); // mock fds start at 1000
     }
@@ -88,7 +88,7 @@ mod tests {
     fn alloc_zero_size() {
         let backend = make_backend();
         let heap = DmaHeap::open(&backend, "system").unwrap();
-        let result = heap.alloc(0, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
+        let result = heap.alloc(0, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS);
         assert_eq!(result.unwrap_err(), nix::errno::Errno::EINVAL);
     }
 
@@ -97,10 +97,10 @@ mod tests {
         let backend = make_backend();
         let heap = DmaHeap::open(&backend, "system").unwrap();
         let fd1 = heap
-            .alloc(4096, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
             .unwrap();
         let fd2 = heap
-            .alloc(4096, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
             .unwrap();
         assert_ne!(fd1, fd2);
     }
@@ -117,7 +117,7 @@ mod tests {
         let mut data = DmaHeapAllocationData {
             len: 4096,
             fd: 0,
-            fd_flags: DMA_HEAP_VALID_FD_FLAGS,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
             heap_flags: DMA_HEAP_VALID_HEAP_FLAGS,
         };
         let result = backend.alloc(heap_fd, &mut data);

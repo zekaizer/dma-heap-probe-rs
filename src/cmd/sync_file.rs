@@ -6,7 +6,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Run all stage 2 `sync_file` tests. Executes all tests even if some fail;
@@ -37,7 +37,7 @@ fn test_export_sync_file<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let size: u64 = 4096;
-    let buf_fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
     let buf = DmaBuf::new(backend, buf_fd, size as usize);
 
     for &flags in &[DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE, DMA_BUF_SYNC_RW] {
@@ -60,7 +60,7 @@ fn test_import_sync_file<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let size: u64 = 4096;
-    let buf_fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
     let buf = DmaBuf::new(backend, buf_fd, size as usize);
 
     // Export a sync_file, then import it back.
@@ -98,7 +98,7 @@ mod tests {
 
         for size in [4096_u64, 65536, 1_048_576] {
             let fd = heap
-                .alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+                .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
                 .unwrap();
             let buf = DmaBuf::new(&backend, fd, size as usize);
             let sync_fd = buf.export_sync_file(DMA_BUF_SYNC_RW as u32).unwrap();

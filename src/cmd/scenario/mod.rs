@@ -15,7 +15,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// A fixed-size buffer pool that allocates N buffers and cycles through them.
 ///
@@ -36,7 +36,7 @@ impl<'a, B: HeapBackend + DmaBufBackend> BufferPool<'a, B> {
     ) -> nix::Result<Self> {
         let mut buffers = Vec::with_capacity(count);
         for _ in 0..count {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             buf.mmap()?;
             buffers.push(buf);
@@ -80,7 +80,7 @@ pub fn bulk_alloc<'a, B: HeapBackend + DmaBufBackend>(
     let mut latencies = Vec::with_capacity(count);
     for _ in 0..count {
         let start = Instant::now();
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let elapsed = start.elapsed().as_micros() as u64;
         latencies.push(elapsed);
         buffers.push(DmaBuf::new(backend, fd, size as usize));
@@ -162,7 +162,7 @@ mod tests {
         let b = MockBackend::new();
         let heap = DmaHeap::open(&b, "system").unwrap();
         let fd = heap
-            .alloc(4096, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
             .unwrap();
         let mut buf = DmaBuf::new(&b, fd, 4096);
         let ptr = buf.mmap().unwrap();

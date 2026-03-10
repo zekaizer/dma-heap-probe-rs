@@ -17,8 +17,12 @@ pub struct DmaHeapAllocationData {
     pub heap_flags: u64,
 }
 
-/// Valid `fd_flags` mask: `O_CLOEXEC | O_ACCMODE`.
+/// Valid `fd_flags` validation mask: `O_CLOEXEC | O_ACCMODE`. For alloc defaults, use
+/// [`DMA_HEAP_ALLOC_FD_FLAGS`].
 pub const DMA_HEAP_VALID_FD_FLAGS: u32 = (libc::O_CLOEXEC | libc::O_ACCMODE) as u32;
+
+/// Default `fd_flags` for allocation: read-write + close-on-exec.
+pub const DMA_HEAP_ALLOC_FD_FLAGS: u32 = (libc::O_RDWR | libc::O_CLOEXEC) as u32;
 
 /// Valid `heap_flags` mask (currently none).
 pub const DMA_HEAP_VALID_HEAP_FLAGS: u64 = 0;
@@ -72,6 +76,19 @@ mod tests {
     #[test]
     fn valid_heap_flags_is_zero() {
         assert_eq!(DMA_HEAP_VALID_HEAP_FLAGS, 0);
+    }
+
+    #[test]
+    fn alloc_fd_flags_is_rdwr_cloexec() {
+        assert_eq!(
+            DMA_HEAP_ALLOC_FD_FLAGS,
+            (libc::O_RDWR | libc::O_CLOEXEC) as u32
+        );
+        // Ensure O_RDWR (not O_ACCMODE) is the access mode
+        assert_eq!(
+            DMA_HEAP_ALLOC_FD_FLAGS & libc::O_ACCMODE as u32,
+            libc::O_RDWR as u32,
+        );
     }
 
     #[test]

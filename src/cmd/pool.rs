@@ -8,7 +8,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::compute_stats;
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Default buffer count for pool tests.
@@ -48,7 +48,7 @@ fn measure_alloc_latency<B: HeapBackend + DmaBufBackend>(
     let mut samples = Vec::with_capacity(count as usize);
     for _ in 0..count {
         let start = Instant::now();
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let elapsed = start.elapsed().as_micros() as u64;
         samples.push(elapsed);
         let buf = DmaBuf::new(backend, fd, size as usize);
@@ -72,7 +72,7 @@ fn test_pool_warmup<B: HeapBackend + DmaBufBackend>(
     for _ in 0..POOL_COUNT {
         let fd = heap.alloc(
             POOL_SIZE,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         let buf = DmaBuf::new(backend, fd, POOL_SIZE as usize);
@@ -166,7 +166,7 @@ fn test_release_order<B: HeapBackend + DmaBufBackend>(
         for _ in 0..count {
             let fd = heap.alloc(
                 POOL_SIZE,
-                DMA_HEAP_VALID_FD_FLAGS,
+                DMA_HEAP_ALLOC_FD_FLAGS,
                 DMA_HEAP_VALID_HEAP_FLAGS,
             )?;
             buffers.push(DmaBuf::new(backend, fd, POOL_SIZE as usize));
@@ -235,7 +235,7 @@ fn test_deferred_free<B: HeapBackend + DmaBufBackend>(
     // Allocate in bulk.
     let mut buffers: Vec<DmaBuf<'_, B>> = Vec::with_capacity(count as usize);
     for _ in 0..count {
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         buffers.push(DmaBuf::new(backend, fd, size as usize));
     }
 

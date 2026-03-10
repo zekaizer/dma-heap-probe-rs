@@ -7,7 +7,7 @@ use crate::cmd::perf::compute_stats;
 use crate::cmd::scenario::bulk_alloc;
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
 /// GPU scenario configuration.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -77,7 +77,7 @@ fn gpu_app_launch<B: HeapBackend + DmaBufBackend>(
     for i in 0..config.buffer_count {
         let size = APP_LAUNCH_SIZES[i % APP_LAUNCH_SIZES.len()];
         let start = Instant::now();
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         latencies.push(start.elapsed().as_micros() as u64);
         buffers.push(DmaBuf::new(backend, fd, size as usize));
     }
@@ -148,7 +148,7 @@ fn gpu_game_texture<B: HeapBackend + DmaBufBackend>(
     for _ in 0..config.pool_size {
         let fd = heap.alloc(
             config.texture_size,
-            DMA_HEAP_VALID_FD_FLAGS,
+            DMA_HEAP_ALLOC_FD_FLAGS,
             DMA_HEAP_VALID_HEAP_FLAGS,
         )?;
         pool.push(Some(DmaBuf::new(backend, fd, config.texture_size as usize)));
@@ -178,7 +178,7 @@ fn gpu_game_texture<B: HeapBackend + DmaBufBackend>(
             if slot.is_none() {
                 let fd = heap.alloc(
                     config.texture_size,
-                    DMA_HEAP_VALID_FD_FLAGS,
+                    DMA_HEAP_ALLOC_FD_FLAGS,
                     DMA_HEAP_VALID_HEAP_FLAGS,
                 )?;
                 *slot = Some(DmaBuf::new(backend, fd, config.texture_size as usize));

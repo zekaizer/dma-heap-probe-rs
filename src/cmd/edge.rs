@@ -9,7 +9,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Allocation size used for edge tests.
@@ -51,7 +51,7 @@ fn test_concurrent_alloc<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     let heap = DmaHeap::open(backend, heap_name)?;
                     let fd = heap.alloc(
                         EDGE_ALLOC_SIZE,
-                        DMA_HEAP_VALID_FD_FLAGS,
+                        DMA_HEAP_ALLOC_FD_FLAGS,
                         DMA_HEAP_VALID_HEAP_FLAGS,
                     )?;
                     let mut buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
@@ -101,7 +101,7 @@ fn test_dup_fd<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> 
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         EDGE_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     let mut buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
@@ -141,7 +141,7 @@ fn test_set_name<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         EDGE_ALLOC_SIZE,
-        DMA_HEAP_VALID_FD_FLAGS,
+        DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
     #[allow(clippy::cast_possible_truncation)]

@@ -10,7 +10,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
-use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
 /// Page size for alignment calculations.
@@ -130,7 +130,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     for &size in sizes {
         // Warmup
         for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let buf = DmaBuf::new(backend, fd, size as usize);
             drop(buf);
         }
@@ -139,7 +139,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
             let start = Instant::now();
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let elapsed = start.elapsed().as_micros() as u64;
             samples.push(elapsed);
             let buf = DmaBuf::new(backend, fd, size as usize);
@@ -177,7 +177,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     for &size in sizes {
         // Warmup
         for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             let ptr = buf.mmap()?;
             buf.sync_start(DMA_BUF_SYNC_WRITE)?;
@@ -190,7 +190,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
             let start = Instant::now();
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             let ptr = buf.mmap()?;
             buf.sync_start(DMA_BUF_SYNC_WRITE)?;
@@ -232,7 +232,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
     for &size in sizes {
         // Warmup
         for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let buf = DmaBuf::new(backend, fd, size as usize);
             drop(buf);
         }
@@ -240,7 +240,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         // Pre-alloc then measure close latency
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let buf = DmaBuf::new(backend, fd, size as usize);
             let start = Instant::now();
             drop(buf);
@@ -276,7 +276,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
     for &size in ORDER_BOUNDARY_SIZES {
         // Warmup
         for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let buf = DmaBuf::new(backend, fd, size as usize);
             drop(buf);
         }
@@ -285,7 +285,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
             let start = Instant::now();
-            let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let elapsed = start.elapsed().as_micros() as u64;
             samples.push(elapsed);
             let buf = DmaBuf::new(backend, fd, size as usize);
@@ -316,7 +316,7 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for &size in FRAG_SIZES {
-        let fd = heap.alloc(size, DMA_HEAP_VALID_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let buf = DmaBuf::new(backend, fd, size as usize);
 
         let actual = buf.llseek_size()?;
