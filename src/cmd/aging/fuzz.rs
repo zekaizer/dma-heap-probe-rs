@@ -15,7 +15,7 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
-use super::{AgingState, HeapCaps, should_stop};
+use super::{AgingState, HeapCaps, mark_init_error, should_stop};
 
 /// Allocation sizes covering page and order boundary values.
 const FUZZ_SIZES: &[u64] = &[
@@ -186,8 +186,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let heap_caps = super::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
-        state.total_errors.fetch_add(1, Relaxed);
-        state.running.store(false, Relaxed);
+        mark_init_error(state);
         return;
     }
 
@@ -205,8 +204,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         .collect();
 
     if contexts.is_empty() {
-        state.total_errors.fetch_add(1, Relaxed);
-        state.running.store(false, Relaxed);
+        mark_init_error(state);
         return;
     }
 
@@ -269,8 +267,11 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
-                // Evict from hold pool to free memory
-                hold_pool.bufs.clear();
+                // Evict half the hold pool to free memory gradually.
+                let drain = hold_pool.bufs.len() / 2 + 1;
+                for _ in 0..drain {
+                    hold_pool.bufs.pop_front();
+                }
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
@@ -386,17 +387,14 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_READ);
                 // SAFETY: ptr valid for size_usize bytes.
                 let slice = unsafe { std::slice::from_raw_parts(ptr, size_usize) };
-                for (i, &byte) in slice.iter().enumerate() {
-                    if byte != expected {
-                        tracing::error!(
-                            offset = i,
-                            expected,
-                            actual = byte,
-                            "data corruption detected"
-                        );
-                        error = true;
-                        break;
-                    }
+                if let Some(offset) = slice.iter().position(|&b| b != expected) {
+                    tracing::error!(
+                        offset,
+                        expected,
+                        actual = slice[offset],
+                        "data corruption detected"
+                    );
+                    error = true;
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_READ);
             }

@@ -240,6 +240,23 @@ pub(crate) fn discover_and_probe<B: HeapBackend + DmaBufBackend>(
     caps
 }
 
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/// Compute memory delta in MB between two optional `MemAvailable` values (in KB).
+#[allow(clippy::cast_possible_wrap)]
+fn compute_mem_delta_mb(initial_kb: Option<u64>, current_kb: Option<u64>) -> Option<i64> {
+    match (initial_kb, current_kb) {
+        (Some(init), Some(now)) => Some((now as i64 - init as i64) / 1024),
+        _ => None,
+    }
+}
+
+/// Mark initialization failure in shared state.
+pub(crate) fn mark_init_error(state: &AgingState) {
+    state.total_errors.fetch_add(1, Relaxed);
+    state.running.store(false, Relaxed);
+}
+
 // ── Reporter loop ───────────────────────────────────────────────────────────
 
 /// Periodic reporter that drains interval latencies and logs metrics.
@@ -271,11 +288,7 @@ pub(crate) fn reporter_loop(
         let lat_stats = perf::compute_stats(&latencies);
 
         let mem_available = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
-        #[allow(clippy::cast_possible_wrap)]
-        let mem_delta_mb = match (initial_mem_available_kb, mem_available) {
-            (Some(init), Some(now)) => Some((now as i64 - init as i64) / 1024),
-            _ => None,
-        };
+        let mem_delta_mb = compute_mem_delta_mb(initial_mem_available_kb, mem_available);
         let buf_count = sysfs::snapshot()
             .ok()
             .map_or(0, |snap| sysfs::buffer_count(&snap));
@@ -326,11 +339,7 @@ where
     let remaining = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
     let final_stats = perf::compute_stats(&remaining);
     let final_mem = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
-    #[allow(clippy::cast_possible_wrap)]
-    let mem_delta_mb = match (initial_mem, final_mem) {
-        (Some(init), Some(now)) => Some((now as i64 - init as i64) / 1024),
-        _ => None,
-    };
+    let mem_delta_mb = compute_mem_delta_mb(initial_mem, final_mem);
     let buf_count = sysfs::snapshot()
         .ok()
         .map_or(0, |snap| sysfs::buffer_count(&snap));

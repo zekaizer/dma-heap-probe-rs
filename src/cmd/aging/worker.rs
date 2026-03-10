@@ -11,7 +11,7 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
-use super::{AgingState, HeapCaps, should_stop};
+use super::{AgingState, HeapCaps, mark_init_error, should_stop};
 
 /// Context for a single heap: the opened device and its probed capabilities.
 struct HeapContext<'a, B: HeapBackend> {
@@ -32,8 +32,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
 ) {
     let heap_caps = super::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
-        state.total_errors.fetch_add(1, Relaxed);
-        state.running.store(false, Relaxed);
+        mark_init_error(state);
         return;
     }
 
@@ -47,8 +46,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         .collect();
 
     if contexts.is_empty() {
-        state.total_errors.fetch_add(1, Relaxed);
-        state.running.store(false, Relaxed);
+        mark_init_error(state);
         return;
     }
 
