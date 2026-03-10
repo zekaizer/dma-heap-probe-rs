@@ -108,6 +108,45 @@ pub enum Command {
         scenario: ScenarioCommand,
     },
 
+    /// Aging tests (sustained alloc/free with periodic reporting).
+    Aging {
+        /// Allocation size in bytes (ignored in fuzz mode).
+        #[arg(long, default_value_t = 4096)]
+        size: u64,
+
+        /// Worker thread count.
+        #[arg(long, default_value_t = 1)]
+        threads: u32,
+
+        /// Max duration in seconds (omit for infinite).
+        #[arg(long)]
+        duration: Option<u64>,
+
+        /// Max iterations (omit for no limit).
+        #[arg(long)]
+        iterations: Option<u64>,
+
+        /// Report interval in seconds.
+        #[arg(long, default_value_t = 30)]
+        report_interval: u64,
+
+        /// Comma-separated heap names (auto-discover `/dev/dma_heap/` if omitted).
+        #[arg(long, value_delimiter = ',')]
+        heaps: Option<Vec<String>>,
+
+        /// Enable fuzz mode (random size, operation, timing).
+        #[arg(long)]
+        fuzz: bool,
+
+        /// Max buffers held simultaneously (fuzz mode only).
+        #[arg(long, default_value_t = 32)]
+        max_hold: usize,
+
+        /// Random seed for fuzz mode (auto if omitted).
+        #[arg(long)]
+        seed: Option<u64>,
+    },
+
     /// Run all tests including scenarios.
     All,
 

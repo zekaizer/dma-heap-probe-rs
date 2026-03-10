@@ -155,6 +155,42 @@ fn main() {
                 std::process::exit(1);
             }
         }
+        Command::Aging {
+            size,
+            threads,
+            duration,
+            iterations,
+            report_interval,
+            heaps,
+            fuzz,
+            max_hold,
+            seed,
+        } => {
+            let heap_names = cmd::aging::discover_heaps(heaps.as_deref());
+            let dur = duration.map(std::time::Duration::from_secs);
+            let interval = std::time::Duration::from_secs(report_interval);
+            let start = Instant::now();
+            let (sub, err) = cmd::aging::run(
+                &backend,
+                &heap_names,
+                size,
+                threads,
+                dur,
+                iterations,
+                interval,
+                fuzz,
+                max_hold,
+                seed,
+            );
+            handle_cmd_output(
+                "aging",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
+        }
         Command::All => {
             let json_cfg = load_scenario_config(&cli);
             run_all(&backend, &cli, json_cfg.as_ref());
