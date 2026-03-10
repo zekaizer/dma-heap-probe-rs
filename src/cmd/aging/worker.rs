@@ -50,6 +50,13 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         return;
     }
 
+    tracing::debug!(
+        threads,
+        heaps = contexts.len(),
+        size,
+        "normal workers starting"
+    );
+
     let deadline = duration.map(|d| Instant::now() + d);
     let contexts_ref = &contexts;
 
@@ -82,6 +89,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     worker_id: u32,
 ) {
     let mut local_index = worker_id as usize;
+    tracing::debug!(worker_id, "worker started");
 
     loop {
         if should_stop(state, deadline, max_iters) {
@@ -98,10 +106,22 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
+                tracing::debug!(
+                    worker_id,
+                    heap = ctx.caps.name.as_str(),
+                    size,
+                    "alloc ENOMEM, backing off"
+                );
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
             Err(_) => {
+                tracing::debug!(
+                    worker_id,
+                    heap = ctx.caps.name.as_str(),
+                    size,
+                    "alloc error"
+                );
                 state.total_errors.fetch_add(1, Relaxed);
                 continue;
             }
@@ -130,6 +150,13 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         let latency_us = start.elapsed().as_micros() as u64;
         state.interval_latencies.lock().unwrap().push(latency_us);
         state.total_iters.fetch_add(1, Relaxed);
+        tracing::trace!(
+            worker_id,
+            heap = ctx.caps.name.as_str(),
+            size,
+            latency_us,
+            "iteration"
+        );
     }
 
     tracing::debug!(worker_id, "worker done");
