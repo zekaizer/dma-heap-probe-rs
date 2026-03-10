@@ -148,6 +148,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
 
     fn push(&mut self, buf: DmaBuf<'a, B>) {
         if self.bufs.len() >= self.max_size {
+            tracing::trace!(pool_size = self.bufs.len(), "hold pool eviction");
             self.bufs.pop_front(); // FIFO eviction
         }
         self.bufs.push_back(buf);
@@ -208,6 +209,13 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         return;
     }
 
+    tracing::debug!(
+        threads,
+        heaps = contexts.len(),
+        max_hold,
+        "fuzz workers starting"
+    );
+
     let deadline = duration.map(|d| Instant::now() + d);
     let contexts_ref = &contexts;
 
@@ -244,6 +252,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut hold_pool: HoldPool<'_, B> = HoldPool::new(max_hold);
+    tracing::debug!(worker_id, seed, "fuzz worker started");
 
     loop {
         if should_stop(state, deadline, max_iters) {
@@ -269,6 +278,12 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             Err(Errno::ENOMEM) => {
                 // Evict half the hold pool to free memory gradually.
                 let drain = hold_pool.bufs.len() / 2 + 1;
+                tracing::debug!(
+                    worker_id,
+                    drained = drain,
+                    remaining = hold_pool.bufs.len().saturating_sub(drain),
+                    "ENOMEM, evicting hold pool"
+                );
                 for _ in 0..drain {
                     hold_pool.bufs.pop_front();
                 }
@@ -276,6 +291,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
                 continue;
             }
             Err(_) => {
+                tracing::debug!(worker_id, "alloc error");
                 state.total_errors.fetch_add(1, Relaxed);
                 continue;
             }
@@ -299,6 +315,14 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         let latency_us = start.elapsed().as_micros() as u64;
         state.interval_latencies.lock().unwrap().push(latency_us);
         state.total_iters.fetch_add(1, Relaxed);
+        tracing::trace!(
+            worker_id,
+            heap = ctx.caps.name.as_str(),
+            size,
+            ?pipeline,
+            latency_us,
+            "fuzz iteration"
+        );
     }
 
     // Drain hold pool on exit.
