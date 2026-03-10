@@ -70,6 +70,33 @@ fn pool_defaults() {
 }
 
 #[test]
+fn info_defaults() {
+    dhp().arg("info").assert().success();
+}
+
+#[test]
+fn info_with_detail() {
+    dhp().args(["info", "--detail"]).assert().success();
+}
+
+#[test]
+fn info_with_procfs() {
+    dhp().args(["info", "--procfs"]).assert().success();
+}
+
+#[test]
+fn info_json_output() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    dhp()
+        .args(["info", "--output", tmp.path().to_str().unwrap()])
+        .assert()
+        .success();
+    let json = read_json(tmp.path());
+    assert!(json["heaps"].is_array());
+    assert!(json["total_buffers"].is_number());
+}
+
+#[test]
 fn sysfs_dump_defaults() {
     dhp().arg("sysfs-dump").assert().success();
 }

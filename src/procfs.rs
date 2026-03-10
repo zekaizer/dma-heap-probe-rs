@@ -180,16 +180,25 @@ pub struct MemInfo {
     pub mem_available_kb: u64,
     pub cma_total_kb: Option<u64>,
     pub cma_free_kb: Option<u64>,
+    pub buffers_kb: Option<u64>,
+    pub cached_kb: Option<u64>,
+    pub active_kb: Option<u64>,
+    pub inactive_kb: Option<u64>,
+    pub shmem_kb: Option<u64>,
+    pub slab_kb: Option<u64>,
 }
 
 /// Selected fields from `/proc/vmstat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct VmStat {
     pub compact_stall: Option<u64>,
     pub compact_success: Option<u64>,
     pub compact_fail: Option<u64>,
     pub pgalloc_normal: Option<u64>,
     pub pgfree: Option<u64>,
+    pub cma_alloc_success: Option<u64>,
+    pub cma_alloc_fail: Option<u64>,
+    pub nr_free_cma: Option<u64>,
 }
 
 /// Combined procfs snapshot.
@@ -211,6 +220,12 @@ pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
     let mut mem_available_kb = None;
     let mut cma_total_kb = None;
     let mut cma_free_kb = None;
+    let mut buffers_kb = None;
+    let mut cached_kb = None;
+    let mut active_kb = None;
+    let mut inactive_kb = None;
+    let mut shmem_kb = None;
+    let mut slab_kb = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -228,6 +243,12 @@ pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
                 "MemAvailable" => mem_available_kb = val_kb.ok(),
                 "CmaTotal" => cma_total_kb = val_kb.ok(),
                 "CmaFree" => cma_free_kb = val_kb.ok(),
+                "Buffers" => buffers_kb = val_kb.ok(),
+                "Cached" => cached_kb = val_kb.ok(),
+                "Active" => active_kb = val_kb.ok(),
+                "Inactive" => inactive_kb = val_kb.ok(),
+                "Shmem" => shmem_kb = val_kb.ok(),
+                "Slab" => slab_kb = val_kb.ok(),
                 _ => {}
             }
         }
@@ -239,6 +260,12 @@ pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
         mem_available_kb: mem_available_kb.ok_or("meminfo: MemAvailable not found")?,
         cma_total_kb,
         cma_free_kb,
+        buffers_kb,
+        cached_kb,
+        active_kb,
+        inactive_kb,
+        shmem_kb,
+        slab_kb,
     })
 }
 
@@ -249,6 +276,9 @@ pub fn parse_vmstat(content: &str) -> VmStat {
     let mut compact_fail = None;
     let mut pgalloc_normal = None;
     let mut pgfree = None;
+    let mut cma_alloc_success = None;
+    let mut cma_alloc_fail = None;
+    let mut nr_free_cma = None;
 
     for line in content.lines() {
         let mut parts = line.split_whitespace();
@@ -260,6 +290,9 @@ pub fn parse_vmstat(content: &str) -> VmStat {
                 "compact_fail" => compact_fail = val,
                 "pgalloc_normal" => pgalloc_normal = val,
                 "pgfree" => pgfree = val,
+                "cma_alloc_success" => cma_alloc_success = val,
+                "cma_alloc_fail" => cma_alloc_fail = val,
+                "nr_free_cma" => nr_free_cma = val,
                 _ => {}
             }
         }
@@ -271,6 +304,9 @@ pub fn parse_vmstat(content: &str) -> VmStat {
         compact_fail,
         pgalloc_normal,
         pgfree,
+        cma_alloc_success,
+        cma_alloc_fail,
+        nr_free_cma,
     }
 }
 
@@ -421,6 +457,10 @@ MemAvailable:    5242880 kB
 Buffers:          123456 kB
 Cached:          1234567 kB
 SwapCached:            0 kB
+Active:          3355443 kB
+Inactive:        1572864 kB
+Shmem:             65536 kB
+Slab:             262144 kB
 CmaTotal:         262144 kB
 CmaFree:          131072 kB
 ";
@@ -433,6 +473,12 @@ CmaFree:          131072 kB
         assert_eq!(info.mem_available_kb, 5_242_880);
         assert_eq!(info.cma_total_kb, Some(262_144));
         assert_eq!(info.cma_free_kb, Some(131_072));
+        assert_eq!(info.buffers_kb, Some(123_456));
+        assert_eq!(info.cached_kb, Some(1_234_567));
+        assert_eq!(info.active_kb, Some(3_355_443));
+        assert_eq!(info.inactive_kb, Some(1_572_864));
+        assert_eq!(info.shmem_kb, Some(65_536));
+        assert_eq!(info.slab_kb, Some(262_144));
     }
 
     #[test]
@@ -461,6 +507,9 @@ compact_fail 12
 pgalloc_normal 123456
 pgfree 234567
 nr_dirty 100
+cma_alloc_success 100
+cma_alloc_fail 2
+nr_free_cma 32768
 ";
 
     #[test]
@@ -471,6 +520,9 @@ nr_dirty 100
         assert_eq!(stat.compact_fail, Some(12));
         assert_eq!(stat.pgalloc_normal, Some(123_456));
         assert_eq!(stat.pgfree, Some(234_567));
+        assert_eq!(stat.cma_alloc_success, Some(100));
+        assert_eq!(stat.cma_alloc_fail, Some(2));
+        assert_eq!(stat.nr_free_cma, Some(32_768));
     }
 
     #[test]

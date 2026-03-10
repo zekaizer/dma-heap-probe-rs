@@ -3,6 +3,7 @@
 pub mod basic;
 pub mod edge;
 pub mod fragmentation;
+pub mod info;
 pub mod negative;
 pub mod perf;
 pub mod pool;
