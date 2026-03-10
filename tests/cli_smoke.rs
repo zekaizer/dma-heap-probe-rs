@@ -172,6 +172,30 @@ fn scenario_all_subcommand() {
     dhp().args(["scenario", "all"]).assert().success();
 }
 
+#[test]
+fn aging_defaults() {
+    dhp()
+        .args(["aging", "--iterations", "10"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn aging_fuzz() {
+    dhp()
+        .args(["aging", "--fuzz", "--iterations", "10", "--seed", "42"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn aging_with_duration() {
+    dhp()
+        .args(["aging", "--duration", "2", "--report-interval", "1"])
+        .assert()
+        .success();
+}
+
 // ---------------------------------------------------------------------------
 // B. JSON output validation
 // ---------------------------------------------------------------------------

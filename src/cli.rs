@@ -381,6 +381,7 @@ mod tests {
             "fragmentation",
             "pool",
             "negative",
+            "aging",
             "all",
             "info",
             "sysfs-dump",
