@@ -133,6 +133,15 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--frames".into(),
             f.to_string(),
         ]),
+        (1..10u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string(),]),
+        (1..10u64).prop_map(|i| vec![
+            "aging".into(),
+            "--fuzz".into(),
+            "--iterations".into(),
+            i.to_string(),
+            "--seed".into(),
+            "42".into(),
+        ]),
     ]
 }
 

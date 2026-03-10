@@ -1,5 +1,6 @@
 // Subcommand implementations.
 
+pub mod aging;
 pub mod basic;
 pub mod edge;
 pub mod fragmentation;
