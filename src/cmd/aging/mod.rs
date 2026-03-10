@@ -77,18 +77,25 @@ pub(crate) fn should_stop(
         return true;
     }
     if sigint_received() {
+        tracing::debug!("sigint received, stopping");
         state.running.store(false, Relaxed);
         return true;
     }
     if let Some(dl) = deadline
         && Instant::now() >= dl
     {
+        tracing::debug!("deadline reached, stopping");
         state.running.store(false, Relaxed);
         return true;
     }
     if let Some(max) = max_iters
         && state.total_iters.load(Relaxed) >= max
     {
+        tracing::debug!(
+            iterations = state.total_iters.load(Relaxed),
+            max,
+            "iteration limit reached, stopping"
+        );
         state.running.store(false, Relaxed);
         return true;
     }
@@ -101,6 +108,7 @@ pub(crate) fn should_stop(
 /// `/dev/dma_heap/`, falling back to `["system"]`.
 pub(crate) fn discover_heaps(override_heaps: Option<&[String]>) -> Vec<String> {
     if let Some(heaps) = override_heaps {
+        tracing::debug!(count = heaps.len(), "using override heaps");
         return heaps.to_vec();
     }
     if let Ok(entries) = std::fs::read_dir("/dev/dma_heap") {
@@ -110,9 +118,11 @@ pub(crate) fn discover_heaps(override_heaps: Option<&[String]>) -> Vec<String> {
             .collect();
         heaps.sort();
         if !heaps.is_empty() {
+            tracing::debug!(count = heaps.len(), "discovered heaps from /dev/dma_heap");
             return heaps;
         }
     }
+    tracing::debug!("no heaps found, falling back to system");
     vec!["system".to_string()]
 }
 
@@ -155,21 +165,21 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
     let mut caps = HeapCaps::new_false(heap_name);
 
     let Ok(heap) = DmaHeap::open(backend, heap_name) else {
+        tracing::trace!(heap = heap_name, "probe: open failed");
         return caps;
     };
-    let fd = match heap.alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) {
-        Ok(fd) => {
-            caps.can_alloc = true;
-            fd
-        }
-        Err(_) => return caps,
+    let Ok(fd) = heap.alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) else {
+        tracing::trace!(heap = heap_name, "probe: alloc failed");
+        return caps;
     };
+    caps.can_alloc = true;
 
     let mut buf = DmaBuf::new(backend, fd, 4096);
 
     // mmap
     if let Ok(ptr) = buf.mmap() {
         caps.can_mmap = true;
+        tracing::trace!(heap = heap_name, "probe: mmap ok");
 
         // sync + write
         if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
@@ -181,22 +191,35 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
                 }
             }));
             caps.can_write = write_ok.is_ok();
+            tracing::trace!(heap = heap_name, ok = caps.can_write, "probe: write");
             let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+        } else {
+            tracing::trace!(heap = heap_name, "probe: sync failed");
         }
+    } else {
+        tracing::trace!(heap = heap_name, "probe: mmap failed");
     }
 
     caps.can_llseek = buf.llseek_size().is_ok();
+    tracing::trace!(heap = heap_name, ok = caps.can_llseek, "probe: llseek");
     caps.can_set_name = buf.set_name("probe").is_ok();
+    tracing::trace!(heap = heap_name, ok = caps.can_set_name, "probe: set_name");
 
     #[allow(clippy::cast_possible_truncation)]
     {
         caps.can_sync_file = buf.export_sync_file(DMA_BUF_SYNC_WRITE as u32).is_ok();
     }
+    tracing::trace!(
+        heap = heap_name,
+        ok = caps.can_sync_file,
+        "probe: sync_file"
+    );
 
     if let Ok(dup_buf) = buf.dup() {
         caps.can_dup = true;
         drop(dup_buf);
     }
+    tracing::trace!(heap = heap_name, ok = caps.can_dup, "probe: dup");
 
     drop(buf);
 
@@ -284,6 +307,7 @@ pub(crate) fn reporter_loop(
             return;
         }
 
+        tracing::trace!("reporter wakeup");
         let latencies = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
         let lat_stats = perf::compute_stats(&latencies);
 
@@ -326,6 +350,7 @@ where
     F: FnOnce(),
 {
     install_sigint_handler();
+    tracing::trace!("sigint handler installed");
     let start_time = Instant::now();
     let initial_mem = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
 
@@ -373,6 +398,18 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     max_hold: usize,
     seed: Option<u64>,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    let mode = if fuzz_mode { "fuzz" } else { "normal" };
+    tracing::debug!(
+        mode,
+        threads,
+        heaps = heaps.len(),
+        size,
+        ?duration,
+        ?iterations,
+        report_interval_s = report_interval.as_secs(),
+        "aging start"
+    );
+
     let state = AgingState::new();
 
     run_with_reporter(&state, report_interval, || {
