@@ -189,7 +189,7 @@ pub struct MemInfo {
 }
 
 /// Selected fields from `/proc/vmstat`.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct VmStat {
     pub compact_stall: Option<u64>,
     pub compact_success: Option<u64>,

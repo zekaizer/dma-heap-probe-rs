@@ -647,6 +647,11 @@ enum Align {
     Right,
 }
 
+fn separator(widths: &[usize]) -> String {
+    let total_w: usize = widths.iter().sum::<usize>() + (widths.len() - 1) * 2;
+    format!("  {}", "-".repeat(total_w))
+}
+
 fn format_row(widths: &[usize], aligns: &[Align], values: &[&str]) -> String {
     let mut out = String::from("  ");
     for (i, val) in values.iter().enumerate() {
@@ -750,8 +755,7 @@ pub fn format_human(report: &InfoReport) -> String {
             out.push('\n');
         }
 
-        let total_w: usize = widths.iter().sum::<usize>() + (widths.len() - 1) * 2;
-        writeln!(out, "  {}", "-".repeat(total_w)).unwrap();
+        writeln!(out, "{}", separator(&widths)).unwrap();
         let avg_total = if report.total_buffers > 0 {
             format_size(report.total_buffer_size_bytes / report.total_buffers as u64)
         } else {
@@ -816,8 +820,7 @@ pub fn format_human(report: &InfoReport) -> String {
                 ));
                 out.push('\n');
             }
-            let total_w: usize = widths.iter().sum::<usize>() + (widths.len() - 1) * 2;
-            writeln!(out, "  {}", "-".repeat(total_w)).unwrap();
+            writeln!(out, "{}", separator(&widths)).unwrap();
             writeln!(
                 out,
                 "  {} buffers, {} total",
@@ -858,8 +861,7 @@ pub fn format_human(report: &InfoReport) -> String {
                 ));
                 out.push('\n');
             }
-            let total_w: usize = widths.iter().sum::<usize>() + (widths.len() - 1) * 2;
-            writeln!(out, "  {}", "-".repeat(total_w)).unwrap();
+            writeln!(out, "{}", separator(&widths)).unwrap();
             let total_fds: usize = summaries.iter().map(|s| s.fd_count).sum();
             let total_size: u64 = summaries.iter().map(|s| s.total_size_bytes).sum();
             writeln!(
@@ -1148,43 +1150,17 @@ pub fn run(
     // 4. Memory context
     let memory = match (procfs::read_meminfo(), procfs::read_vmstat()) {
         (Ok(meminfo), Ok(vmstat)) => Some(build_memory_context(&meminfo, &vmstat)),
-        (Ok(meminfo), Err(_)) => Some(build_memory_context(
-            &meminfo,
-            &VmStat {
-                compact_stall: None,
-                compact_success: None,
-                compact_fail: None,
-                pgalloc_normal: None,
-                pgfree: None,
-                cma_alloc_success: None,
-                cma_alloc_fail: None,
-                nr_free_cma: None,
-            },
-        )),
+        (Ok(meminfo), Err(_)) => Some(build_memory_context(&meminfo, &VmStat::default())),
         _ => None,
     };
 
     // 5. Extended procfs (--procfs)
-    let vm_params = if show_procfs {
-        Some(read_vm_params())
-    } else {
-        None
-    };
-    let zones = if show_procfs {
-        read_zoneinfo().ok()
-    } else {
-        None
-    };
-    let buddyinfo = if show_procfs {
-        procfs::read_buddyinfo().ok()
-    } else {
-        None
-    };
-    let pagetypeinfo = if show_procfs {
-        procfs::read_pagetypeinfo().ok()
-    } else {
-        None
-    };
+    let vm_params = show_procfs.then(read_vm_params);
+    let zones = show_procfs.then(|| read_zoneinfo().ok()).flatten();
+    let buddyinfo = show_procfs.then(|| procfs::read_buddyinfo().ok()).flatten();
+    let pagetypeinfo = show_procfs
+        .then(|| procfs::read_pagetypeinfo().ok())
+        .flatten();
 
     let report = InfoReport {
         heaps,
