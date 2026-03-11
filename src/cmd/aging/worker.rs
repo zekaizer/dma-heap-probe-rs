@@ -127,6 +127,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             }
         };
 
+        state.total_allocs.fetch_add(1, Relaxed);
         let mut buf = DmaBuf::new(backend, fd, size as usize);
 
         // Full pipeline if heap supports it, otherwise alloc-close only.
@@ -146,6 +147,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         }
 
         drop(buf);
+        state.total_frees.fetch_add(1, Relaxed);
 
         let latency_us = start.elapsed().as_micros() as u64;
         state.interval_latencies.lock().unwrap().push(latency_us);
@@ -166,6 +168,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
 mod tests {
     use super::super::AgingState;
     use crate::backend::mock::MockBackend;
+    use std::sync::atomic::Ordering::Relaxed;
     use std::time::Duration;
 
     #[test]
@@ -175,6 +178,10 @@ mod tests {
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20));
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+        let allocs = state.total_allocs.load(Relaxed);
+        let frees = state.total_frees.load(Relaxed);
+        assert_eq!(allocs, frees, "normal mode: allocs must equal frees");
+        assert_eq!(allocs, state.total_iters.load(Relaxed));
     }
 
     #[test]
