@@ -142,6 +142,7 @@ const RECOVERY_THRESHOLD: u32 = 100;
 /// FIFO buffer hold pool with adaptive sizing based on ENOMEM pressure.
 struct HoldPool<'a, B: DmaBufBackend> {
     bufs: VecDeque<DmaBuf<'a, B>>,
+    state: &'a AgingState,
     max_size: usize,
     initial_max_size: usize,
     consecutive_enomem: u32,
@@ -149,9 +150,10 @@ struct HoldPool<'a, B: DmaBufBackend> {
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
-    fn new(max_size: usize) -> Self {
+    fn new(max_size: usize, state: &'a AgingState) -> Self {
         Self {
             bufs: VecDeque::new(),
+            state,
             max_size,
             initial_max_size: max_size,
             consecutive_enomem: 0,
@@ -163,6 +165,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         if self.bufs.len() >= self.max_size {
             tracing::trace!(pool_size = self.bufs.len(), "hold pool eviction");
             self.bufs.pop_front(); // FIFO eviction
+            self.state.total_frees.fetch_add(1, Relaxed);
         }
         self.bufs.push_back(buf);
     }
@@ -171,9 +174,13 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     fn notify_enomem(&mut self, worker_id: u32) {
         // Always drain half to free memory immediately.
         let drain = self.bufs.len() / 2 + 1;
+        let actual_drain = drain.min(self.bufs.len());
         for _ in 0..drain {
             self.bufs.pop_front();
         }
+        self.state
+            .total_frees
+            .fetch_add(actual_drain as u64, Relaxed);
 
         self.consecutive_enomem += 1;
         self.success_since_shrink = 0;
@@ -182,8 +189,13 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             let old_max = self.max_size;
             self.max_size = (self.max_size / 2).max(MIN_HOLD_SIZE);
             // Trim pool to new max_size.
+            let mut trimmed: u64 = 0;
             while self.bufs.len() > self.max_size {
                 self.bufs.pop_front();
+                trimmed += 1;
+            }
+            if trimmed > 0 {
+                self.state.total_frees.fetch_add(trimmed, Relaxed);
             }
             self.consecutive_enomem = 0;
             tracing::info!(
@@ -220,6 +232,15 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
                     "adaptive hold pool recovery"
                 );
             }
+        }
+    }
+
+    /// Drain all remaining buffers, counting frees.
+    fn drain_all(&mut self) {
+        let count = self.bufs.len() as u64;
+        self.bufs.clear();
+        if count > 0 {
+            self.state.total_frees.fetch_add(count, Relaxed);
         }
     }
 }
@@ -320,7 +341,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
     worker_id: u32,
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
-    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(max_hold);
+    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(max_hold, state);
     tracing::debug!(worker_id, seed, "fuzz worker started");
 
     loop {
@@ -356,6 +377,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             }
         };
 
+        state.total_allocs.fetch_add(1, Relaxed);
         hold_pool.notify_success(worker_id);
 
         let error_occurred = execute_pipeline(
@@ -372,6 +394,9 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         if error_occurred {
             state.total_errors.fetch_add(1, Relaxed);
         }
+        if !matches!(pipeline, Pipeline::AllocHold) {
+            state.total_frees.fetch_add(1, Relaxed);
+        }
 
         let latency_us = start.elapsed().as_micros() as u64;
         state.interval_latencies.lock().unwrap().push(latency_us);
@@ -386,8 +411,8 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Drain hold pool on exit.
-    drop(hold_pool);
+    // Drain hold pool on exit, counting remaining frees.
+    hold_pool.drain_all();
     tracing::debug!(worker_id, "fuzz worker done");
 }
 
@@ -619,7 +644,8 @@ mod tests {
     #[test]
     fn adaptive_shrink() {
         let b = MockBackend::new();
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        let state = AgingState::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
         // Fill pool
         for _ in 0..16 {
             pool.push(make_buf(&b));
@@ -635,7 +661,8 @@ mod tests {
     #[test]
     fn adaptive_min_floor() {
         let _b = MockBackend::new();
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE);
+        let state = AgingState::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE, &state);
         // Even after repeated shrinks, should not go below MIN_HOLD_SIZE
         for _ in 0..ENOMEM_SHRINK_THRESHOLD * 3 {
             pool.notify_enomem(0);
@@ -646,7 +673,8 @@ mod tests {
     #[test]
     fn adaptive_recovery() {
         let _b = MockBackend::new();
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        let state = AgingState::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
         // Shrink first
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
@@ -662,7 +690,8 @@ mod tests {
     #[test]
     fn adaptive_recovery_ceiling() {
         let _b = MockBackend::new();
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8);
+        let state = AgingState::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8, &state);
         // Shrink to 4
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
@@ -683,7 +712,8 @@ mod tests {
     #[test]
     fn drain_on_every_enomem() {
         let b = MockBackend::new();
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        let state = AgingState::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
         for _ in 0..10 {
             pool.push(make_buf(&b));
         }
@@ -700,6 +730,9 @@ mod tests {
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, Some(42));
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+        let allocs = state.total_allocs.load(Relaxed);
+        let frees = state.total_frees.load(Relaxed);
+        assert_eq!(allocs, frees, "fuzz: allocs must equal frees after drain");
     }
 
     #[test]
@@ -730,6 +763,11 @@ mod tests {
             0,
             "all buffers should be freed after pool drain"
         );
+        assert_eq!(
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+            "allocs must equal frees after pool drain"
+        );
     }
 
     #[test]
@@ -739,5 +777,10 @@ mod tests {
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, Some(42));
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+        assert_eq!(
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+            "allocs must equal frees after drain"
+        );
     }
 }
