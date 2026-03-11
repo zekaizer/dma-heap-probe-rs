@@ -298,6 +298,14 @@ pub(crate) fn reporter_loop(
     let mut prev_allocs: u64 = 0;
     let mut prev_frees: u64 = 0;
 
+    tracing::info!(
+        "aging report fields:\n  \
+         time:    elapsed(s) iters samples\n  \
+         alloc:   allocs frees bufs\n  \
+         latency: avg_us p99_us trend(x)\n  \
+         system:  errs mem_mb(avail delta)"
+    );
+
     loop {
         // Sleep in 1-second chunks for responsive shutdown.
         let mut waited = Duration::ZERO;
@@ -340,16 +348,16 @@ pub(crate) fn reporter_loop(
         prev_frees = cur_frees;
 
         tracing::info!(
-            elapsed_s = start_time.elapsed().as_secs(),
-            iterations = state.total_iters.load(Relaxed),
-            interval_count = latencies.len(),
+            elapsed = start_time.elapsed().as_secs(),
+            iters = state.total_iters.load(Relaxed),
+            samples = latencies.len(),
             allocs = interval_allocs,
             frees = interval_frees,
             avg_us = avg_us.unwrap_or(0),
             p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us),
-            errors = state.total_errors.load(Relaxed),
-            mem_delta_mb = mem_delta_mb.unwrap_or(0),
-            buf_count,
+            errs = state.total_errors.load(Relaxed),
+            mem_mb = mem_delta_mb.unwrap_or(0),
+            bufs = buf_count,
             trend = format!("{trend:.1}x"),
             "aging report"
         );
@@ -385,16 +393,16 @@ where
         .map_or(0, |snap| sysfs::buffer_count(&snap));
 
     tracing::info!(
-        elapsed_s = start_time.elapsed().as_secs(),
-        total_iterations = state.total_iters.load(Relaxed),
-        total_allocs = state.total_allocs.load(Relaxed),
-        total_frees = state.total_frees.load(Relaxed),
-        total_errors = state.total_errors.load(Relaxed),
-        last_interval_count = remaining.len(),
-        last_avg_us = final_stats.as_ref().map_or(0, |ls| ls.avg_us),
-        last_p99_us = final_stats.as_ref().map_or(0, |ls| ls.p99_us),
-        mem_delta_mb = mem_delta_mb.unwrap_or(0),
-        buf_count,
+        elapsed = start_time.elapsed().as_secs(),
+        tot_iters = state.total_iters.load(Relaxed),
+        tot_allocs = state.total_allocs.load(Relaxed),
+        tot_frees = state.total_frees.load(Relaxed),
+        tot_errs = state.total_errors.load(Relaxed),
+        samples = remaining.len(),
+        avg_us = final_stats.as_ref().map_or(0, |ls| ls.avg_us),
+        p99_us = final_stats.as_ref().map_or(0, |ls| ls.p99_us),
+        mem_mb = mem_delta_mb.unwrap_or(0),
+        bufs = buf_count,
         "aging complete — final report"
     );
 }
