@@ -30,6 +30,8 @@ pub(crate) struct AgingState {
     pub running: AtomicBool,
     pub total_iters: AtomicU64,
     pub total_errors: AtomicU64,
+    pub total_allocs: AtomicU64,
+    pub total_frees: AtomicU64,
     pub interval_latencies: Mutex<Vec<u64>>,
 }
 
@@ -39,6 +41,8 @@ impl AgingState {
             running: AtomicBool::new(true),
             total_iters: AtomicU64::new(0),
             total_errors: AtomicU64::new(0),
+            total_allocs: AtomicU64::new(0),
+            total_frees: AtomicU64::new(0),
             interval_latencies: Mutex::new(Vec::new()),
         }
     }
@@ -291,6 +295,8 @@ pub(crate) fn reporter_loop(
     initial_mem_available_kb: Option<u64>,
 ) {
     let mut first_interval_avg: Option<u64> = None;
+    let mut prev_allocs: u64 = 0;
+    let mut prev_frees: u64 = 0;
 
     loop {
         // Sleep in 1-second chunks for responsive shutdown.
@@ -326,10 +332,19 @@ pub(crate) fn reporter_loop(
             _ => 1.0,
         };
 
+        let cur_allocs = state.total_allocs.load(Relaxed);
+        let cur_frees = state.total_frees.load(Relaxed);
+        let interval_allocs = cur_allocs - prev_allocs;
+        let interval_frees = cur_frees - prev_frees;
+        prev_allocs = cur_allocs;
+        prev_frees = cur_frees;
+
         tracing::info!(
             elapsed_s = start_time.elapsed().as_secs(),
             iterations = state.total_iters.load(Relaxed),
             interval_count = latencies.len(),
+            allocs = interval_allocs,
+            frees = interval_frees,
             avg_us = avg_us.unwrap_or(0),
             p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us),
             errors = state.total_errors.load(Relaxed),
@@ -372,6 +387,8 @@ where
     tracing::info!(
         elapsed_s = start_time.elapsed().as_secs(),
         total_iterations = state.total_iters.load(Relaxed),
+        total_allocs = state.total_allocs.load(Relaxed),
+        total_frees = state.total_frees.load(Relaxed),
         total_errors = state.total_errors.load(Relaxed),
         last_interval_count = remaining.len(),
         last_avg_us = final_stats.as_ref().map_or(0, |ls| ls.avg_us),
