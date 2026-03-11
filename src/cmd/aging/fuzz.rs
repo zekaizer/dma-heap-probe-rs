@@ -132,10 +132,20 @@ fn pattern_byte(pat: WritePattern) -> u8 {
 
 // ── Hold pool ───────────────────────────────────────────────────────────────
 
-/// FIFO buffer hold pool for delayed-release pressure.
+/// Minimum hold pool size — below this, hold tests lose meaning.
+const MIN_HOLD_SIZE: usize = 2;
+/// Consecutive ENOMEM count before shrinking `max_size`.
+const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
+/// Successful allocs after a shrink before attempting grow-back.
+const RECOVERY_THRESHOLD: u32 = 100;
+
+/// FIFO buffer hold pool with adaptive sizing based on ENOMEM pressure.
 struct HoldPool<'a, B: DmaBufBackend> {
     bufs: VecDeque<DmaBuf<'a, B>>,
     max_size: usize,
+    initial_max_size: usize,
+    consecutive_enomem: u32,
+    success_since_shrink: u32,
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
@@ -143,6 +153,9 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         Self {
             bufs: VecDeque::new(),
             max_size,
+            initial_max_size: max_size,
+            consecutive_enomem: 0,
+            success_since_shrink: 0,
         }
     }
 
@@ -152,6 +165,62 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.bufs.pop_front(); // FIFO eviction
         }
         self.bufs.push_back(buf);
+    }
+
+    /// Handle ENOMEM: drain half the pool and shrink max_size if repeated.
+    fn notify_enomem(&mut self, worker_id: u32) {
+        // Always drain half to free memory immediately.
+        let drain = self.bufs.len() / 2 + 1;
+        for _ in 0..drain {
+            self.bufs.pop_front();
+        }
+
+        self.consecutive_enomem += 1;
+        self.success_since_shrink = 0;
+
+        if self.consecutive_enomem >= ENOMEM_SHRINK_THRESHOLD {
+            let old_max = self.max_size;
+            self.max_size = (self.max_size / 2).max(MIN_HOLD_SIZE);
+            // Trim pool to new max_size.
+            while self.bufs.len() > self.max_size {
+                self.bufs.pop_front();
+            }
+            self.consecutive_enomem = 0;
+            tracing::info!(
+                worker_id,
+                old_max,
+                new_max = self.max_size,
+                pool_len = self.bufs.len(),
+                "adaptive hold pool shrink"
+            );
+        } else {
+            tracing::debug!(
+                worker_id,
+                drained = drain,
+                remaining = self.bufs.len(),
+                consecutive_enomem = self.consecutive_enomem,
+                "ENOMEM, evicting hold pool"
+            );
+        }
+    }
+
+    /// Handle successful alloc: reset ENOMEM counter, attempt grow-back.
+    fn notify_success(&mut self, worker_id: u32) {
+        self.consecutive_enomem = 0;
+        if self.max_size < self.initial_max_size {
+            self.success_since_shrink += 1;
+            if self.success_since_shrink >= RECOVERY_THRESHOLD {
+                let old_max = self.max_size;
+                self.max_size = (self.max_size * 2).min(self.initial_max_size);
+                self.success_since_shrink = 0;
+                tracing::debug!(
+                    worker_id,
+                    old_max,
+                    new_max = self.max_size,
+                    "adaptive hold pool recovery"
+                );
+            }
+        }
     }
 }
 
@@ -276,17 +345,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
-                // Evict half the hold pool to free memory gradually.
-                let drain = hold_pool.bufs.len() / 2 + 1;
-                tracing::debug!(
-                    worker_id,
-                    drained = drain,
-                    remaining = hold_pool.bufs.len().saturating_sub(drain),
-                    "ENOMEM, evicting hold pool"
-                );
-                for _ in 0..drain {
-                    hold_pool.bufs.pop_front();
-                }
+                hold_pool.notify_enomem(worker_id);
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
@@ -296,6 +355,8 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
                 continue;
             }
         };
+
+        hold_pool.notify_success(worker_id);
 
         let error_occurred = execute_pipeline(
             backend,
@@ -539,8 +600,98 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
 #[cfg(test)]
 mod tests {
     use super::super::AgingState;
+    use super::{ENOMEM_SHRINK_THRESHOLD, HoldPool, MIN_HOLD_SIZE, RECOVERY_THRESHOLD};
     use crate::backend::mock::MockBackend;
+    use crate::dmabuf::DmaBuf;
     use std::sync::atomic::Ordering::Relaxed;
+
+    fn make_buf(backend: &MockBackend) -> DmaBuf<'_, MockBackend> {
+        use crate::backend::HeapBackend;
+        use crate::heap::DmaHeap;
+        use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+        let heap = DmaHeap::open(backend, "system").unwrap();
+        let fd = heap
+            .alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .unwrap();
+        DmaBuf::new(backend, fd, 4096)
+    }
+
+    #[test]
+    fn adaptive_shrink() {
+        let b = MockBackend::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        // Fill pool
+        for _ in 0..16 {
+            pool.push(make_buf(&b));
+        }
+        assert_eq!(pool.max_size, 16);
+        // Trigger shrink: ENOMEM_SHRINK_THRESHOLD consecutive ENOMEMs
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, 8);
+    }
+
+    #[test]
+    fn adaptive_min_floor() {
+        let _b = MockBackend::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE);
+        // Even after repeated shrinks, should not go below MIN_HOLD_SIZE
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD * 3 {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, MIN_HOLD_SIZE);
+    }
+
+    #[test]
+    fn adaptive_recovery() {
+        let _b = MockBackend::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        // Shrink first
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, 8);
+        // Recover after RECOVERY_THRESHOLD successes
+        for _ in 0..RECOVERY_THRESHOLD {
+            pool.notify_success(0);
+        }
+        assert_eq!(pool.max_size, 16);
+    }
+
+    #[test]
+    fn adaptive_recovery_ceiling() {
+        let _b = MockBackend::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8);
+        // Shrink to 4
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, 4);
+        // Recover to 8 (ceiling)
+        for _ in 0..RECOVERY_THRESHOLD {
+            pool.notify_success(0);
+        }
+        assert_eq!(pool.max_size, 8);
+        // Further successes should not exceed initial_max_size
+        for _ in 0..RECOVERY_THRESHOLD {
+            pool.notify_success(0);
+        }
+        assert_eq!(pool.max_size, 8);
+    }
+
+    #[test]
+    fn drain_on_every_enomem() {
+        let b = MockBackend::new();
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16);
+        for _ in 0..10 {
+            pool.push(make_buf(&b));
+        }
+        assert_eq!(pool.bufs.len(), 10);
+        // Single ENOMEM (below threshold) should still drain half
+        pool.notify_enomem(0);
+        assert!(pool.bufs.len() <= 5, "should drain at least half");
+    }
 
     #[test]
     fn fuzz_runs() {
