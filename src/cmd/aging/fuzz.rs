@@ -271,7 +271,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64)
     });
-    tracing::info!(seed = base_seed, "fuzz seed");
+    println!("fuzz seed: {base_seed}");
 
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {

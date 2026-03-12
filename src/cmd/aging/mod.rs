@@ -401,13 +401,19 @@ pub(crate) fn reporter_loop(
     let mut prev_allocs: u64 = 0;
     let mut prev_frees: u64 = 0;
 
-    tracing::info!(
-        "aging report fields:\n  \
-         time:    elapsed(s) iters samples\n  \
-         alloc:   allocs frees bufs\n  \
-         latency: avg_us p99_us trend(x)\n  \
-         system:  errs enomem mem_mb(avail delta)"
-    );
+    println!("aging report legend:");
+    println!("  elapsed   wall clock seconds since start");
+    println!("  iters     total completed iterations (cumulative)");
+    println!("  samples   latency samples collected this interval");
+    println!("  allocs    allocations this interval");
+    println!("  frees     frees this interval");
+    println!("  avg_us    mean alloc-to-close latency (us), this interval");
+    println!("  p99_us    99th percentile latency (us), this interval");
+    println!("  errs      non-ENOMEM errors (cumulative)");
+    println!("  enomem    ENOMEM count (cumulative)");
+    println!("  mem_mb    MemAvailable delta from start (MB, negative = leak)");
+    println!("  bufs      active dma-buf count (sysfs)");
+    println!("  trend     latency degradation ratio (final_avg / first_avg, 1.0x = stable)");
 
     loop {
         // Sleep in 1-second chunks for responsive shutdown.
@@ -448,20 +454,20 @@ pub(crate) fn reporter_loop(
         prev_allocs = cur_allocs;
         prev_frees = cur_frees;
 
-        tracing::info!(
-            elapsed = start_time.elapsed().as_secs(),
-            iters = state.total_iters.load(Relaxed),
-            samples = latencies.len(),
-            allocs = interval_allocs,
-            frees = interval_frees,
-            avg_us = lat_stats.as_ref().map_or(0, |ls| ls.avg_us),
-            p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us),
-            errs = state.total_errors.load(Relaxed),
-            enomem = state.total_enomem.load(Relaxed),
-            mem_mb = mem_delta_mb.unwrap_or(0),
-            bufs = buf_count,
-            trend = format!("{trend:.1}x"),
-            "aging report"
+        println!(
+            "aging: elapsed={} iters={} samples={} allocs={} frees={} avg_us={} p99_us={} errs={} enomem={} mem_mb={} bufs={} trend={:.1}x",
+            start_time.elapsed().as_secs(),
+            state.total_iters.load(Relaxed),
+            latencies.len(),
+            interval_allocs,
+            interval_frees,
+            lat_stats.as_ref().map_or(0, |ls| ls.avg_us),
+            lat_stats.as_ref().map_or(0, |ls| ls.p99_us),
+            state.total_errors.load(Relaxed),
+            state.total_enomem.load(Relaxed),
+            mem_delta_mb.unwrap_or(0),
+            buf_count,
+            trend,
         );
     }
 }
@@ -499,15 +505,15 @@ where
     let elapsed = start_time.elapsed();
     let final_snap = take_snapshot();
 
-    tracing::info!(
-        elapsed = elapsed.as_secs(),
-        tot_iters = state.total_iters.load(Relaxed),
-        tot_allocs = state.total_allocs.load(Relaxed),
-        tot_frees = state.total_frees.load(Relaxed),
-        tot_errs = state.total_errors.load(Relaxed),
-        tot_enomem = state.total_enomem.load(Relaxed),
-        trend = format!("{:.1}x", state.trend()),
-        "aging complete — final report"
+    println!(
+        "aging complete: elapsed={} iters={} allocs={} frees={} errs={} enomem={} trend={:.1}x",
+        elapsed.as_secs(),
+        state.total_iters.load(Relaxed),
+        state.total_allocs.load(Relaxed),
+        state.total_frees.load(Relaxed),
+        state.total_errors.load(Relaxed),
+        state.total_enomem.load(Relaxed),
+        state.trend(),
     );
 
     (initial_snap, final_snap, elapsed)
