@@ -107,6 +107,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
+                state.total_enomem.fetch_add(1, Relaxed);
                 tracing::debug!(
                     worker_id,
                     heap = ctx.caps.name.as_str(),

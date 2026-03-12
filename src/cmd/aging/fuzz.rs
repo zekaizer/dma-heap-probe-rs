@@ -367,6 +367,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
+                state.total_enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
