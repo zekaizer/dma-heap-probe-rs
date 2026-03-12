@@ -167,7 +167,7 @@ fn npu_model_load<B: HeapBackend + DmaBufBackend>(
                 let _ = DmaBuf::new(backend, fd, probe_size as usize);
             }
             Err(Errno::ENOMEM) => {
-                tracing::warn!(probe_size, "model_load_probe_enomem");
+                println!("scenario npu: model_load_probe_enomem probe_size={probe_size}");
             }
             Err(e) => return Err(e),
         }
@@ -250,7 +250,7 @@ fn npu_model_switch<B: HeapBackend + DmaBufBackend>(
 
     // Phase 1: Load model A (half model size).
     let (model_a, _) = bulk_alloc(backend, &heap, chunk, a_count)?;
-    tracing::info!(phase = 1, chunks = a_count, "model_a loaded");
+    println!("scenario npu: model_switch_phase1 chunks={a_count}");
 
     // Phase 2: Load model B (full model size) alongside A.
     let (b_count, _) = chunk_params(config.model_size, config.chunk_size);
@@ -268,7 +268,7 @@ fn npu_model_switch<B: HeapBackend + DmaBufBackend>(
     let release_start = Instant::now();
     drop(model_a);
     let release_us = release_start.elapsed().as_micros() as u64;
-    tracing::info!(phase = 3, release_us, "model_a released");
+    println!("scenario npu: model_switch_phase3 release_us={release_us}");
 
     // Phase 4: Load model C (same size as A) into freed space.
     let start_c = Instant::now();
