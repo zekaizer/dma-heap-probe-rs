@@ -157,7 +157,7 @@ pub enum Command {
         buckets: usize,
     },
 
-    /// Run all tests including scenarios.
+    /// Run all test stages (basic, negative, perf, pressure).
     All,
 
     /// Display system DMA heap information and buffer status.
