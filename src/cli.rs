@@ -15,9 +15,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Heap name.
-    #[arg(long, default_value = "system", global = true)]
-    pub heap: String,
+    /// Heap names, comma-separated (auto-discovers `/dev/dma_heap/` if omitted).
+    #[arg(long, value_delimiter = ',', global = true)]
+    pub heaps: Option<Vec<String>>,
 
     /// Enable Perfetto atrace markers.
     #[arg(long, global = true)]
@@ -117,10 +117,6 @@ pub enum Command {
         #[arg(long, default_value_t = 30)]
         report_interval: u64,
 
-        /// Comma-separated heap names (auto-discover `/dev/dma_heap/` if omitted).
-        #[arg(long, value_delimiter = ',')]
-        heaps: Option<Vec<String>>,
-
         /// Enable fuzz mode (random size, operation, timing).
         #[arg(long)]
         fuzz: bool,
@@ -151,10 +147,6 @@ pub enum Command {
         /// Allocation sizes, comma-separated (default: 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
         sizes: Vec<u64>,
-
-        /// Comma-separated heap names (uses --heap if omitted).
-        #[arg(long, value_delimiter = ',')]
-        heaps: Option<Vec<String>>,
 
         /// Number of samples per (heap, size) combination.
         #[arg(long, default_value_t = 10_000)]
@@ -253,9 +245,24 @@ mod tests {
     }
 
     #[test]
-    fn global_heap_option() {
-        let cli = parse(&["dhp", "basic", "--heap", "my_heap"]);
-        assert_eq!(cli.heap, "my_heap");
+    fn global_heaps_option() {
+        let cli = parse(&["dhp", "basic", "--heaps", "my_heap"]);
+        assert_eq!(cli.heaps, Some(vec!["my_heap".to_string()]));
+    }
+
+    #[test]
+    fn global_heaps_multi() {
+        let cli = parse(&["dhp", "basic", "--heaps", "system,reserved"]);
+        assert_eq!(
+            cli.heaps,
+            Some(vec!["system".to_string(), "reserved".to_string()])
+        );
+    }
+
+    #[test]
+    fn global_heaps_omitted() {
+        let cli = parse(&["dhp", "basic"]);
+        assert!(cli.heaps.is_none());
     }
 
     #[test]
@@ -263,6 +270,8 @@ mod tests {
         let cli = parse(&[
             "dhp",
             "basic",
+            "--heaps",
+            "system",
             "--trace",
             "--sysfs",
             "--procfs",
@@ -270,6 +279,7 @@ mod tests {
             "/tmp/out.json",
             "-vv",
         ]);
+        assert_eq!(cli.heaps, Some(vec!["system".to_string()]));
         assert!(cli.trace);
         assert!(cli.sysfs);
         assert!(cli.procfs);

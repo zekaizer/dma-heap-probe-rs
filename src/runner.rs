@@ -31,7 +31,7 @@ pub struct StageResult {
 /// Aggregated test run results.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RunResult {
-    pub heap: String,
+    pub heaps: Vec<String>,
     pub stages: Vec<StageResult>,
     pub total_passed: usize,
     pub total_failed: usize,
@@ -41,9 +41,9 @@ pub struct RunResult {
 impl RunResult {
     /// Create a new empty result set.
     #[must_use]
-    pub fn new(heap: &str) -> Self {
+    pub fn new(heaps: &[String]) -> Self {
         Self {
-            heap: heap.to_string(),
+            heaps: heaps.to_vec(),
             stages: Vec::new(),
             total_passed: 0,
             total_failed: 0,
@@ -183,7 +183,7 @@ mod tests {
 
     #[test]
     fn record_pass() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         r.record("test1", Ok(()), 100, None);
         assert_eq!(r.total_passed, 1);
         assert_eq!(r.total_failed, 0);
@@ -196,7 +196,7 @@ mod tests {
 
     #[test]
     fn record_fail() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         r.record("test1", Err(anyhow::anyhow!("oops")), 50, None);
         assert_eq!(r.total_passed, 0);
         assert_eq!(r.total_failed, 1);
@@ -206,7 +206,7 @@ mod tests {
 
     #[test]
     fn record_mixed() {
-        let mut r = RunResult::new("custom");
+        let mut r = RunResult::new(&["custom".into()]);
         r.record("a", Ok(()), 10, None);
         r.record("b", Err(anyhow::anyhow!("fail")), 20, None);
         r.record("c", Ok(()), 30, None);
@@ -218,7 +218,7 @@ mod tests {
 
     #[test]
     fn record_with_details() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         let details = serde_json::json!({"tests": [{"name": "t1", "passed": true}]});
         r.record("stage1", Ok(()), 100, Some(details.clone()));
         assert_eq!(r.stages[0].details, Some(details));
@@ -226,14 +226,14 @@ mod tests {
 
     #[test]
     fn serde_roundtrip() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         r.record("stage1", Ok(()), 100, None);
         r.record("stage2", Err(anyhow::anyhow!("error")), 50, None);
 
         let json = serde_json::to_string(&r).unwrap();
         let deserialized: RunResult = serde_json::from_str(&json).unwrap();
 
-        assert_eq!(deserialized.heap, "system");
+        assert_eq!(deserialized.heaps, vec!["system".to_string()]);
         assert_eq!(deserialized.stages.len(), 2);
         assert_eq!(deserialized.total_passed, 1);
         assert_eq!(deserialized.total_failed, 1);
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn serde_skips_none_fields() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         r.record("test", Ok(()), 42, None);
 
         let json = serde_json::to_string(&r).unwrap();
@@ -251,7 +251,7 @@ mod tests {
 
     #[test]
     fn run_stage_records() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         run_stage(&mut r, "ok_stage", || Ok(None));
         run_stage(&mut r, "err_stage", || Err(anyhow::anyhow!("boom")));
         assert_eq!(r.stages.len(), 2);
@@ -261,7 +261,7 @@ mod tests {
 
     #[test]
     fn run_stage_with_details() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         run_stage(&mut r, "detailed", || {
             let details = serde_json::json!({"tests": []});
             Ok(Some(details))
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn write_json_creates_file() {
-        let mut r = RunResult::new("system");
+        let mut r = RunResult::new(&["system".into()]);
         r.record("test", Ok(()), 42, None);
 
         let dir = std::env::temp_dir().join("dhp_test_runner");
@@ -304,7 +304,7 @@ mod tests {
 
         let content = std::fs::read_to_string(&path).unwrap();
         let parsed: RunResult = serde_json::from_str(&content).unwrap();
-        assert_eq!(parsed.heap, "system");
+        assert_eq!(parsed.heaps, vec!["system".to_string()]);
         assert_eq!(parsed.stages.len(), 1);
 
         let _ = std::fs::remove_file(&path);

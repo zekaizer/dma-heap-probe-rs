@@ -146,18 +146,18 @@ fn output_basic_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heap"], "system");
+    assert_eq!(json["heaps"][0], "system");
     assert!(json["stages"].is_array());
     assert!(json["stages"][0]["passed"].as_bool().unwrap());
     assert!(json["total_passed"].as_u64().unwrap() >= 1);
 }
 
 #[test]
-fn output_custom_heap_json() {
+fn output_custom_heaps_json() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     dhp()
         .args([
-            "--heap",
+            "--heaps",
             "myheap",
             "--output",
             tmp.path().to_str().unwrap(),
@@ -171,7 +171,7 @@ fn output_custom_heap_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heap"], "myheap");
+    assert_eq!(json["heaps"][0], "myheap");
 }
 
 #[test]
@@ -267,7 +267,7 @@ fn global_all_flags_combined() {
 fn global_options_after_subcommand() {
     dhp()
         .args([
-            "basic", "--heap", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
+            "basic", "--heaps", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
         ])
         .assert()
         .success();

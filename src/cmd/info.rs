@@ -1097,12 +1097,12 @@ pub fn format_human(report: &InfoReport) -> String {
 /// Run the info subcommand.
 ///
 /// - `detail`: show individual buffer list and per-process usage.
-/// - `heap_filter`: when detail is true, filter buffers by heap/exporter name.
+/// - `heap_filter`: when detail is true, filter buffers by heap/exporter name(s).
 /// - `show_procfs`: include extended memory info (zoneinfo, buddyinfo, pagetypeinfo, vm params).
 /// - `output`: if Some, write JSON report to file instead of human-readable stdout.
 pub fn run(
     detail: bool,
-    heap_filter: Option<&str>,
+    heap_filter: Option<&[&str]>,
     show_procfs: bool,
     output: Option<&PathBuf>,
 ) -> anyhow::Result<()> {
@@ -1131,7 +1131,7 @@ pub fn run(
     let buffers = if detail {
         debugfs_entries.map(|mut entries| {
             if let Some(filter) = heap_filter {
-                entries.retain(|e| e.exp_name == filter);
+                entries.retain(|e| filter.contains(&e.exp_name.as_str()));
             }
             entries
         })
@@ -1142,7 +1142,7 @@ pub fn run(
     let process_usage = if detail {
         scan_process_dmabufs().ok().map(|mut entries| {
             if let Some(filter) = heap_filter {
-                entries.retain(|e| e.exp_name == filter);
+                entries.retain(|e| filter.contains(&e.exp_name.as_str()));
             }
             entries
         })

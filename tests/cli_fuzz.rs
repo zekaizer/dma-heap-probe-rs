@@ -24,7 +24,7 @@ fn arb_global_opts() -> impl Strategy<Value = Vec<String>> {
         .prop_map(|(heap, trace, sysfs, procfs, verbose)| {
             let mut args: Vec<String> = Vec::new();
             if let Some(h) = heap {
-                args.push("--heap".into());
+                args.push("--heaps".into());
                 args.push(h);
             }
             if trace {
@@ -160,7 +160,7 @@ proptest! {
             }
             let json: serde_json::Value = serde_json::from_str(&content)
                 .expect("invalid JSON output");
-            prop_assert!(json["heap"].is_string());
+            prop_assert!(json["heaps"].is_array());
             prop_assert!(json["stages"].is_array());
             prop_assert!(json["total_passed"].is_u64());
             prop_assert!(json["total_failed"].is_u64());
