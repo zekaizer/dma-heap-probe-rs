@@ -29,11 +29,6 @@ fn basic_defaults() {
 }
 
 #[test]
-fn edge_defaults() {
-    dhp().args(["edge", "--threads", "4"]).assert().success();
-}
-
-#[test]
 fn negative_defaults() {
     dhp().arg("negative").assert().success();
 }
@@ -201,8 +196,8 @@ fn output_all_json() {
     let json = read_json(tmp.path());
     let stages = json["stages"].as_array().unwrap();
     assert!(
-        stages.len() >= 6,
-        "expected >= 6 stages, got {}",
+        stages.len() >= 5,
+        "expected >= 5 stages, got {}",
         stages.len()
     );
     let total = json["total_passed"].as_u64().unwrap() + json["total_failed"].as_u64().unwrap();
@@ -234,7 +229,7 @@ fn error_invalid_sizes_value() {
 #[test]
 fn error_invalid_threads_value() {
     dhp()
-        .args(["edge", "--threads", "notanum"])
+        .args(["basic", "--threads", "notanum"])
         .assert()
         .failure();
 }

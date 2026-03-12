@@ -42,7 +42,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated, `sync_file`).
+    /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated,
+    /// `sync_file`, concurrent, dup, `set_name`).
     Basic {
         /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
@@ -51,10 +52,7 @@ pub enum Command {
         /// Repeat count for repeated alloc test.
         #[arg(long, default_value_t = 1024)]
         repeat: u32,
-    },
 
-    /// Boundary condition tests (concurrent, dup, naming).
-    Edge {
         /// Concurrent alloc threads.
         #[arg(long, default_value_t = 100)]
         threads: u32,
@@ -211,9 +209,14 @@ mod tests {
     fn basic_defaults() {
         let cli = parse(&["dhp", "basic"]);
         match cli.command {
-            Command::Basic { sizes, repeat } => {
+            Command::Basic {
+                sizes,
+                repeat,
+                threads,
+            } => {
                 assert_eq!(sizes, vec![4096, 65536, 1_048_576]);
                 assert_eq!(repeat, 1024);
+                assert_eq!(threads, 100);
             }
             _ => panic!("expected Basic"),
         }
@@ -285,20 +288,11 @@ mod tests {
     }
 
     #[test]
-    fn edge_defaults() {
-        let cli = parse(&["dhp", "edge"]);
+    fn basic_custom_threads() {
+        let cli = parse(&["dhp", "basic", "--threads", "50"]);
         match cli.command {
-            Command::Edge { threads } => assert_eq!(threads, 100),
-            _ => panic!("expected Edge"),
-        }
-    }
-
-    #[test]
-    fn edge_custom_threads() {
-        let cli = parse(&["dhp", "edge", "--threads", "50"]);
-        match cli.command {
-            Command::Edge { threads } => assert_eq!(threads, 50),
-            _ => panic!("expected Edge"),
+            Command::Basic { threads, .. } => assert_eq!(threads, 50),
+            _ => panic!("expected Basic"),
         }
     }
 

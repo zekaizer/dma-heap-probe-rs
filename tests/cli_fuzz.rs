@@ -59,7 +59,13 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--repeat".into(),
             r.to_string(),
         ]),
-        (1..8u32).prop_map(|t| vec!["edge".into(), "--threads".into(), t.to_string(),]),
+        (1..8u32).prop_map(|t| vec![
+            "basic".into(),
+            "--sizes".into(),
+            "4096".into(),
+            "--threads".into(),
+            t.to_string(),
+        ]),
         Just(vec!["negative".into()]),
         (1..10u32, 0..3u32).prop_map(|(i, w)| vec![
             "perf".into(),
@@ -99,7 +105,7 @@ fn arb_invalid_args() -> impl Strategy<Value = Vec<String>> {
             "--sizes".into(),
             "not_a_number".into()
         ]),
-        Just(vec!["edge".into(), "--threads".into(), "abc".into()]),
+        Just(vec!["basic".into(), "--threads".into(), "abc".into()]),
         "[a-z]{1,8}".prop_map(|s| vec![format!("--{s}"), "basic".into()]),
     ]
 }

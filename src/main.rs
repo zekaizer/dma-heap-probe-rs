@@ -46,23 +46,17 @@ fn main() {
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
 
     match cli.command {
-        Command::Basic { sizes, repeat } => {
+        Command::Basic {
+            sizes,
+            repeat,
+            threads,
+        } => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::basic::run(&backend, h, &sizes, repeat));
+            let (sub, err) = run_per_heap(&heaps, |h| {
+                cmd::basic::run(&backend, h, &sizes, repeat, threads)
+            });
             handle_cmd_output(
                 "basic",
-                &heaps,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
-        Command::Edge { threads } => {
-            let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::edge::run(&backend, h, threads));
-            handle_cmd_output(
-                "edge",
                 &heaps,
                 cli.output.as_ref(),
                 &sub,
@@ -255,10 +249,13 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
 
     for heap in heaps {
         runner::run_stage(&mut results, "basic", heap, || {
-            stage_result(cmd::basic::run(backend, heap, &[4096, 65536, 1_048_576], 8))
-        });
-        runner::run_stage(&mut results, "edge", heap, || {
-            stage_result(cmd::edge::run(backend, heap, 4))
+            stage_result(cmd::basic::run(
+                backend,
+                heap,
+                &[4096, 65536, 1_048_576],
+                8,
+                4,
+            ))
         });
         runner::run_stage(&mut results, "negative", heap, || {
             stage_result(cmd::negative::run(backend, heap))
