@@ -167,12 +167,20 @@ fn main() {
             fuzz,
             max_hold,
             seed,
+            trend_fail,
+            leak_threshold_mb,
+            max_error_rate,
         } => {
             let heap_names = probe::discover_heaps(heaps.as_deref());
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(report_interval);
+            let thresholds = cmd::aging::AgingThresholds {
+                trend_fail,
+                leak_threshold_mb,
+                max_error_rate,
+            };
             let start = Instant::now();
-            let (sub, err) = cmd::aging::run(
+            let (sub, err, _aging_result) = cmd::aging::run(
                 &backend,
                 &heap_names,
                 size,
@@ -183,6 +191,7 @@ fn main() {
                 fuzz,
                 max_hold,
                 seed,
+                &thresholds,
             );
             handle_cmd_output(
                 "aging",

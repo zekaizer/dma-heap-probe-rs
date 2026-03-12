@@ -19,7 +19,7 @@ use super::{AgingState, mark_init_error, should_stop};
 use crate::probe::HeapCaps;
 
 /// Allocation sizes covering page and order boundary values.
-const FUZZ_SIZES: &[u64] = &[
+pub(crate) const FUZZ_SIZES: &[u64] = &[
     1, 4095, 4096, 4097, // page boundary
     65535, 65536, 65537,     // order boundary
     1_048_576, // 1MB
@@ -134,14 +134,14 @@ fn pattern_byte(pat: WritePattern) -> u8 {
 // ── Hold pool ───────────────────────────────────────────────────────────────
 
 /// Minimum hold pool size — below this, hold tests lose meaning.
-const MIN_HOLD_SIZE: usize = 2;
+pub(super) const MIN_HOLD_SIZE: usize = 2;
 /// Consecutive ENOMEM count before shrinking `max_size`.
-const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
+pub(super) const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
 /// Successful allocs after a shrink before attempting grow-back.
-const RECOVERY_THRESHOLD: u32 = 100;
+pub(super) const RECOVERY_THRESHOLD: u32 = 100;
 
 /// FIFO buffer hold pool with adaptive sizing based on ENOMEM pressure.
-struct HoldPool<'a, B: DmaBufBackend> {
+pub(super) struct HoldPool<'a, B: DmaBufBackend> {
     bufs: VecDeque<DmaBuf<'a, B>>,
     state: &'a AgingState,
     max_size: usize,
@@ -151,7 +151,7 @@ struct HoldPool<'a, B: DmaBufBackend> {
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
-    fn new(max_size: usize, state: &'a AgingState) -> Self {
+    pub(super) fn new(max_size: usize, state: &'a AgingState) -> Self {
         Self {
             bufs: VecDeque::new(),
             state,
@@ -162,7 +162,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         }
     }
 
-    fn push(&mut self, buf: DmaBuf<'a, B>) {
+    pub(super) fn push(&mut self, buf: DmaBuf<'a, B>) {
         if self.bufs.len() >= self.max_size {
             tracing::trace!(pool_size = self.bufs.len(), "hold pool eviction");
             self.bufs.pop_front(); // FIFO eviction
@@ -172,16 +172,13 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
-    fn notify_enomem(&mut self, worker_id: u32) {
+    pub(super) fn notify_enomem(&mut self, worker_id: u32) {
         // Always drain half to free memory immediately.
-        let drain = self.bufs.len() / 2 + 1;
-        let actual_drain = drain.min(self.bufs.len());
-        for _ in 0..drain {
+        let to_drain = (self.bufs.len() / 2 + 1).min(self.bufs.len());
+        for _ in 0..to_drain {
             self.bufs.pop_front();
         }
-        self.state
-            .total_frees
-            .fetch_add(actual_drain as u64, Relaxed);
+        self.state.total_frees.fetch_add(to_drain as u64, Relaxed);
 
         self.consecutive_enomem += 1;
         self.success_since_shrink = 0;
@@ -209,7 +206,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         } else {
             tracing::debug!(
                 worker_id,
-                drained = drain,
+                drained = to_drain,
                 remaining = self.bufs.len(),
                 consecutive_enomem = self.consecutive_enomem,
                 "ENOMEM, evicting hold pool"
@@ -218,7 +215,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Handle successful alloc: reset ENOMEM counter, attempt grow-back.
-    fn notify_success(&mut self, worker_id: u32) {
+    pub(super) fn notify_success(&mut self, worker_id: u32) {
         self.consecutive_enomem = 0;
         if self.max_size < self.initial_max_size {
             self.success_since_shrink += 1;
@@ -237,7 +234,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Drain all remaining buffers, counting frees.
-    fn drain_all(&mut self) {
+    pub(super) fn drain_all(&mut self) {
         let count = self.bufs.len() as u64;
         self.bufs.clear();
         if count > 0 {
@@ -274,7 +271,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64)
     });
-    tracing::info!(seed = base_seed, "fuzz seed");
+    println!("fuzz seed: {base_seed}");
 
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -367,6 +364,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         {
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
+                state.total_enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
@@ -450,22 +448,26 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
         }
 
         Pipeline::PartialMmap => {
-            // Map a partial length (25-75% of buffer).
+            // Map a partial length (25-75% of buffer) with proper sync.
             let pct = rng.random_range(25u64..75);
             let partial_len = (size * pct / 100).max(1) as usize;
             let mut buf = DmaBuf::new(backend, fd, partial_len);
             if let Ok(ptr) = buf.mmap() {
                 let pat = random_write_pattern(rng);
+                let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for partial_len bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), partial_len);
+                    super::sparse_fill(ptr, partial_len, pattern_byte(pat), Some(rng));
                 }
+                let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
             drop(buf);
             false
         }
 
         Pipeline::WriteOnly => {
+            // Intentionally uses random sync flags (including READ for write ops)
+            // to stress-test mismatched sync direction handling in drivers.
             let mut buf = DmaBuf::new(backend, fd, size_usize);
             if let Ok(ptr) = buf.mmap() {
                 let flags = random_sync_flags(rng);
@@ -473,7 +475,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(flags);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(flags);
             }
@@ -519,7 +521,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let pat = random_write_pattern(rng);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
             }
             drop(buf);
@@ -537,7 +539,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 }
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 if caps.can_sync {
                     let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
@@ -557,7 +559,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                     let _ = dup_buf.sync_start(DMA_BUF_SYNC_WRITE);
                     // SAFETY: ptr valid for size_usize bytes.
                     unsafe {
-                        std::ptr::write_bytes(ptr, 0xBB, size_usize);
+                        super::sparse_fill(ptr, size_usize, 0xBB, Some(rng));
                     }
                     let _ = dup_buf.sync_end(DMA_BUF_SYNC_WRITE);
                 }
@@ -581,7 +583,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
@@ -596,7 +598,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }

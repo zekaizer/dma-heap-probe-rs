@@ -138,13 +138,25 @@ pub enum Command {
         #[arg(long)]
         fuzz: bool,
 
-        /// Max buffers held simultaneously (fuzz mode only).
+        /// Max buffers held simultaneously (0 = disable hold pool).
         #[arg(long, default_value_t = 32)]
         max_hold: usize,
 
         /// Random seed for fuzz mode (auto if omitted).
         #[arg(long)]
         seed: Option<u64>,
+
+        /// Latency trend ratio threshold for failure.
+        #[arg(long, default_value_t = 10.0)]
+        trend_fail: f64,
+
+        /// Memory leak threshold in MB (0 = disabled).
+        #[arg(long, default_value_t = 0)]
+        leak_threshold_mb: i64,
+
+        /// Maximum non-ENOMEM error rate (fraction, e.g. 0.01 = 1%).
+        #[arg(long, default_value_t = 0.01)]
+        max_error_rate: f64,
     },
 
     /// Run all tests including scenarios.
