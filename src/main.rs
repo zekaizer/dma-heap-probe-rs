@@ -45,6 +45,9 @@ fn main() {
 
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
 
+    // Pressure worker subprocess: run tests inline and exit immediately.
+    let is_pressure_worker = std::env::var(cmd::pressure::PRESSURE_WORKER_ENV).is_ok();
+
     match cli.command {
         Command::Basic {
             sizes,
@@ -99,9 +102,19 @@ fn main() {
             max_allocs,
         } => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| {
-                cmd::pressure::run(&backend, h, alloc_size, max_allocs)
-            });
+            let (sub, err) = if cfg!(target_os = "android") && !is_pressure_worker {
+                // On Android, use subprocess to survive OOM kills.
+                let limit =
+                    max_allocs.unwrap_or_else(|| cmd::pressure::safe_exhaust_limit(alloc_size));
+                run_per_heap(&heaps, |h| {
+                    cmd::pressure::run_subprocess(h, alloc_size, limit)
+                })
+            } else {
+                // On host or as worker subprocess, run inline.
+                run_per_heap(&heaps, |h| {
+                    cmd::pressure::run(&backend, h, alloc_size, max_allocs)
+                })
+            };
             handle_cmd_output(
                 "pressure",
                 &heaps,
