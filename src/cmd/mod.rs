@@ -6,5 +6,4 @@ pub mod histogram;
 pub mod info;
 pub mod negative;
 pub mod perf;
-pub mod pool;
 pub mod pressure;

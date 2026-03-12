@@ -111,18 +111,6 @@ fn main() {
                 start.elapsed(),
             );
         }
-        Command::Pool => {
-            let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::pool::run(&backend, h));
-            handle_cmd_output(
-                "pool",
-                &heaps,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
         Command::Info {
             detail,
             dump,
@@ -274,9 +262,6 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         });
         runner::run_stage(&mut results, "pressure", heap, || {
             stage_result(cmd::pressure::run(backend, heap, 4096, None))
-        });
-        runner::run_stage(&mut results, "pool", heap, || {
-            stage_result(cmd::pool::run(backend, heap))
         });
     }
 

@@ -50,11 +50,6 @@ fn pressure_defaults() {
 }
 
 #[test]
-fn pool_defaults() {
-    dhp().arg("pool").assert().success();
-}
-
-#[test]
 fn info_defaults() {
     dhp().arg("info").assert().success();
 }
@@ -196,8 +191,8 @@ fn output_all_json() {
     let json = read_json(tmp.path());
     let stages = json["stages"].as_array().unwrap();
     assert!(
-        stages.len() >= 5,
-        "expected >= 5 stages, got {}",
+        stages.len() >= 4,
+        "expected >= 4 stages, got {}",
         stages.len()
     );
     let total = json["total_passed"].as_u64().unwrap() + json["total_failed"].as_u64().unwrap();

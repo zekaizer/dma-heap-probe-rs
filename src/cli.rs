@@ -84,9 +84,6 @@ pub enum Command {
         max_allocs: Option<usize>,
     },
 
-    /// Pool/cache behavior tests.
-    Pool,
-
     /// Negative tests (error paths, invalid input, races).
     Negative,
 
@@ -361,7 +358,6 @@ mod tests {
         for cmd in &[
             "perf",
             "pressure",
-            "pool",
             "negative",
             "aging",
             "histogram",

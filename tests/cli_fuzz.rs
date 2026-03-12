@@ -79,8 +79,7 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--alloc-size".into(),
             "4096".into()
         ]),
-        Just(vec!["pool".into()]),
-        Just(vec!["info".into(), "--dump".into()]),
+        Just(vec!["info".into()]),
         (1..10u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string(),]),
         (1..10u64).prop_map(|i| vec![
             "aging".into(),
@@ -159,17 +158,21 @@ proptest! {
         if output.status.success() {
             let content = std::fs::read_to_string(tmp.path())
                 .expect("read output file");
-            // Some subcommands (e.g. sysfs-dump) ignore --output.
+            // Some subcommands (e.g. info --dump) ignore --output.
             if content.is_empty() {
                 return Ok(());
             }
             let json: serde_json::Value = serde_json::from_str(&content)
                 .expect("invalid JSON output");
             prop_assert!(json["heaps"].is_array());
-            prop_assert!(json["stages"].is_array());
-            prop_assert!(json["total_passed"].is_u64());
-            prop_assert!(json["total_failed"].is_u64());
-            prop_assert!(json["total_duration_ms"].is_u64());
+            // info writes InfoReport (no stages), other cmds write RunResult.
+            if json["stages"].is_array() {
+                prop_assert!(json["total_passed"].is_u64());
+                prop_assert!(json["total_failed"].is_u64());
+                prop_assert!(json["total_duration_ms"].is_u64());
+            } else {
+                prop_assert!(json["total_buffers"].is_number());
+            }
         }
     }
 }
