@@ -170,7 +170,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         self.bufs.push_back(buf);
     }
 
-    /// Handle ENOMEM: drain half the pool and shrink max_size if repeated.
+    /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
     fn notify_enomem(&mut self, worker_id: u32) {
         // Always drain half to free memory immediately.
         let drain = self.bufs.len() / 2 + 1;
@@ -631,7 +631,6 @@ mod tests {
     use std::sync::atomic::Ordering::Relaxed;
 
     fn make_buf(backend: &MockBackend) -> DmaBuf<'_, MockBackend> {
-        use crate::backend::HeapBackend;
         use crate::heap::DmaHeap;
         use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
         let heap = DmaHeap::open(backend, "system").unwrap();
