@@ -42,6 +42,34 @@ struct BufferState {
     sync_state: SyncState,
 }
 
+/// Simulation configuration for injecting faults into mock operations.
+///
+/// All fields default to disabled (no fault injection).
+#[derive(Debug, Clone)]
+pub struct SimConfig {
+    /// Max active buffers before alloc returns `ENOMEM`.
+    /// `None` = unlimited (default behavior).
+    pub enomem_threshold: Option<usize>,
+
+    /// Every Nth alloc returns `EIO` (non-ENOMEM error).
+    /// `0` = disabled.
+    pub fail_every_nth: u64,
+
+    /// Every Nth mmap, flip the first byte to simulate data corruption.
+    /// `0` = disabled. Useful for testing `WriteReadVerify` error detection.
+    pub corrupt_every_nth: u64,
+}
+
+impl Default for SimConfig {
+    fn default() -> Self {
+        Self {
+            enomem_threshold: None,
+            fail_every_nth: 0,
+            corrupt_every_nth: 0,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct MockState {
     buffers: HashMap<RawFd, BufferState>,
@@ -49,6 +77,12 @@ struct MockState {
     /// Tracks mock `sync_file` fds (from export).
     sync_file_fds: HashSet<RawFd>,
     next_fd: i32,
+    /// Simulation configuration for fault injection.
+    sim: Option<SimConfig>,
+    /// Total alloc calls (for fail_every_nth).
+    alloc_count: u64,
+    /// Total mmap calls (for corrupt_every_nth).
+    mmap_count: u64,
 }
 
 impl MockState {
@@ -58,6 +92,9 @@ impl MockState {
             heap_fds: HashSet::new(),
             sync_file_fds: HashSet::new(),
             next_fd: MOCK_FD_START,
+            sim: None,
+            alloc_count: 0,
+            mmap_count: 0,
         }
     }
 
@@ -92,6 +129,16 @@ impl MockBackend {
     pub fn new() -> Self {
         Self {
             state: Mutex::new(MockState::new()),
+        }
+    }
+
+    /// Create a mock backend with simulation/fault injection config.
+    #[must_use]
+    pub fn with_sim(sim: SimConfig) -> Self {
+        let mut mock_state = MockState::new();
+        mock_state.sim = Some(sim);
+        Self {
+            state: Mutex::new(mock_state),
         }
     }
 
@@ -152,6 +199,19 @@ impl HeapBackend for MockBackend {
             return Err(Errno::ENOMEM);
         }
 
+        // Simulation: fault injection
+        if let Some(sim) = state.sim.clone() {
+            state.alloc_count += 1;
+            if sim.fail_every_nth > 0 && state.alloc_count % sim.fail_every_nth == 0 {
+                return Err(Errno::EIO);
+            }
+            if let Some(threshold) = sim.enomem_threshold {
+                if state.buffers.len() >= threshold {
+                    return Err(Errno::ENOMEM);
+                }
+            }
+        }
+
         // Allocate zero-filled buffer
         #[allow(clippy::cast_possible_truncation)]
         let buf: Arc<[u8]> = vec![0u8; aligned_size as usize].into();
@@ -185,7 +245,11 @@ impl HeapBackend for MockBackend {
 
 impl DmaBufBackend for MockBackend {
     fn mmap(&self, fd: RawFd, len: usize) -> nix::Result<*mut u8> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+
+        // Extract corruption config before borrowing buffers.
+        let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
+
         let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
         if len > buf.data.len() {
@@ -196,6 +260,18 @@ impl DmaBufBackend for MockBackend {
         // Safe for mock: the Arc keeps data alive as long as any fd references it,
         // and buffer data is immovable once allocated.
         let ptr = buf.data.as_ptr().cast_mut();
+
+        // Simulation: data corruption injection
+        if corrupt_nth > 0 {
+            state.mmap_count += 1;
+            if state.mmap_count % corrupt_nth == 0 && len > 0 {
+                // SAFETY: ptr is valid for len bytes and we only flip byte 0.
+                unsafe {
+                    *ptr ^= 0xFF;
+                }
+            }
+        }
+
         Ok(ptr)
     }
 
