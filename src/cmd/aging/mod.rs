@@ -620,7 +620,9 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 backend, heaps, threads, &state, duration, iterations, max_hold, seed,
             );
         } else {
-            worker::run_workers(backend, heaps, size, threads, &state, duration, iterations);
+            worker::run_workers(
+                backend, heaps, size, threads, &state, duration, iterations, max_hold,
+            );
         }
     });
 

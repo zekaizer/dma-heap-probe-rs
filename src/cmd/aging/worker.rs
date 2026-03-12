@@ -1,4 +1,6 @@
 // Normal mode aging worker: full pipeline round-robin across heaps.
+// Every 3rd iteration holds a buffer in the pool instead of freeing,
+// simulating realistic long-lived allocation patterns.
 
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
@@ -10,9 +12,13 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
-
-use super::{AgingState, mark_init_error, should_stop};
 use crate::probe::HeapCaps;
+
+use super::fuzz::HoldPool;
+use super::{AgingState, mark_init_error, should_stop};
+
+/// Hold every Nth iteration's buffer instead of freeing immediately.
+const HOLD_EVERY_NTH: usize = 3;
 
 /// Context for a single heap: the opened device and its probed capabilities.
 struct HeapContext<'a, B: HeapBackend> {
@@ -21,7 +27,7 @@ struct HeapContext<'a, B: HeapBackend> {
 }
 
 /// Spawn `threads` workers, each round-robin allocating across `heaps`.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
@@ -30,6 +36,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     state: &AgingState,
     duration: Option<Duration>,
     iterations: Option<u64>,
+    max_hold: usize,
 ) {
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -55,6 +62,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         threads,
         heaps = contexts.len(),
         size,
+        max_hold,
         "normal workers starting"
     );
 
@@ -71,6 +79,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     state,
                     deadline,
                     iterations,
+                    max_hold,
                     worker_id,
                 );
             });
@@ -78,7 +87,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     });
 }
 
-/// Single worker loop: alloc → pipeline → close, round-robin across heaps.
+/// Single worker loop: alloc → pipeline → hold/close, round-robin across heaps.
 #[allow(clippy::cast_possible_truncation)]
 fn worker_loop<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -87,10 +96,12 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     state: &AgingState,
     deadline: Option<Instant>,
     max_iters: Option<u64>,
+    max_hold: usize,
     worker_id: u32,
 ) {
     let mut local_index = worker_id as usize;
-    tracing::debug!(worker_id, "worker started");
+    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(max_hold, state);
+    tracing::debug!(worker_id, max_hold, "worker started");
 
     loop {
         if should_stop(state, deadline, max_iters) {
@@ -108,6 +119,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
                 state.total_enomem.fetch_add(1, Relaxed);
+                hold_pool.notify_enomem(worker_id);
                 tracing::debug!(
                     worker_id,
                     heap = ctx.caps.name.as_str(),
@@ -130,6 +142,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         };
 
         state.total_allocs.fetch_add(1, Relaxed);
+        hold_pool.notify_success(worker_id);
         let mut buf = DmaBuf::new(backend, fd, size as usize);
 
         // Full pipeline if heap supports it, otherwise alloc-close only.
@@ -148,8 +161,13 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             let _ = buf.mmap();
         }
 
-        drop(buf);
-        state.total_frees.fetch_add(1, Relaxed);
+        // Hold every Nth buffer, free the rest immediately.
+        if max_hold > 0 && local_index % HOLD_EVERY_NTH == 0 {
+            hold_pool.push(buf);
+        } else {
+            drop(buf);
+            state.total_frees.fetch_add(1, Relaxed);
+        }
 
         let latency_us = start.elapsed().as_micros() as u64;
         state.interval_latencies.lock().unwrap().push(latency_us);
@@ -163,6 +181,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    hold_pool.drain_all();
     tracing::debug!(worker_id, "worker done");
 }
 
@@ -178,12 +197,11 @@ mod tests {
         let b = MockBackend::new();
         let state = AgingState::new();
         let heaps = vec!["system".to_string()];
-        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20));
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 8);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
         assert_eq!(allocs, frees, "normal mode: allocs must equal frees");
-        assert_eq!(allocs, state.total_iters.load(Relaxed));
     }
 
     #[test]
@@ -191,7 +209,7 @@ mod tests {
         let b = MockBackend::new();
         let state = AgingState::new();
         let heaps = vec!["system".to_string()];
-        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20));
+        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), 8);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
 
@@ -208,7 +226,23 @@ mod tests {
             &state,
             Some(Duration::from_millis(100)),
             None,
+            8,
         );
         assert_eq!(b.buffer_count(), 0);
+    }
+
+    #[test]
+    fn worker_no_hold() {
+        // max_hold=0: all buffers freed immediately, no hold pool behavior.
+        let b = MockBackend::new();
+        let state = AgingState::new();
+        let heaps = vec!["system".to_string()];
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 0);
+        assert_eq!(b.buffer_count(), 0);
+        let allocs = state.total_allocs.load(Relaxed);
+        let frees = state.total_frees.load(Relaxed);
+        assert_eq!(allocs, frees);
+        // With max_hold=0, all allocs = iters (no hold overhead)
+        assert_eq!(allocs, state.total_iters.load(Relaxed));
     }
 }

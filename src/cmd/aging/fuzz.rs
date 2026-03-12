@@ -134,14 +134,14 @@ fn pattern_byte(pat: WritePattern) -> u8 {
 // ── Hold pool ───────────────────────────────────────────────────────────────
 
 /// Minimum hold pool size — below this, hold tests lose meaning.
-const MIN_HOLD_SIZE: usize = 2;
+pub(super) const MIN_HOLD_SIZE: usize = 2;
 /// Consecutive ENOMEM count before shrinking `max_size`.
-const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
+pub(super) const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
 /// Successful allocs after a shrink before attempting grow-back.
-const RECOVERY_THRESHOLD: u32 = 100;
+pub(super) const RECOVERY_THRESHOLD: u32 = 100;
 
 /// FIFO buffer hold pool with adaptive sizing based on ENOMEM pressure.
-struct HoldPool<'a, B: DmaBufBackend> {
+pub(super) struct HoldPool<'a, B: DmaBufBackend> {
     bufs: VecDeque<DmaBuf<'a, B>>,
     state: &'a AgingState,
     max_size: usize,
@@ -151,7 +151,7 @@ struct HoldPool<'a, B: DmaBufBackend> {
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
-    fn new(max_size: usize, state: &'a AgingState) -> Self {
+    pub(super) fn new(max_size: usize, state: &'a AgingState) -> Self {
         Self {
             bufs: VecDeque::new(),
             state,
@@ -162,7 +162,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         }
     }
 
-    fn push(&mut self, buf: DmaBuf<'a, B>) {
+    pub(super) fn push(&mut self, buf: DmaBuf<'a, B>) {
         if self.bufs.len() >= self.max_size {
             tracing::trace!(pool_size = self.bufs.len(), "hold pool eviction");
             self.bufs.pop_front(); // FIFO eviction
@@ -172,7 +172,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
-    fn notify_enomem(&mut self, worker_id: u32) {
+    pub(super) fn notify_enomem(&mut self, worker_id: u32) {
         // Always drain half to free memory immediately.
         let drain = self.bufs.len() / 2 + 1;
         let actual_drain = drain.min(self.bufs.len());
@@ -218,7 +218,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Handle successful alloc: reset ENOMEM counter, attempt grow-back.
-    fn notify_success(&mut self, worker_id: u32) {
+    pub(super) fn notify_success(&mut self, worker_id: u32) {
         self.consecutive_enomem = 0;
         if self.max_size < self.initial_max_size {
             self.success_since_shrink += 1;
@@ -237,7 +237,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     }
 
     /// Drain all remaining buffers, counting frees.
-    fn drain_all(&mut self) {
+    pub(super) fn drain_all(&mut self) {
         let count = self.bufs.len() as u64;
         self.bufs.clear();
         if count > 0 {
