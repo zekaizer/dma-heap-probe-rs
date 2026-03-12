@@ -15,7 +15,8 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
-use super::{AgingState, HeapCaps, mark_init_error, should_stop};
+use super::{AgingState, mark_init_error, should_stop};
+use crate::probe::HeapCaps;
 
 /// Allocation sizes covering page and order boundary values.
 const FUZZ_SIZES: &[u64] = &[
@@ -275,7 +276,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     });
     tracing::info!(seed = base_seed, "fuzz seed");
 
-    let heap_caps = super::discover_and_probe(backend, Some(heaps));
+    let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
         mark_init_error(state);
         return;

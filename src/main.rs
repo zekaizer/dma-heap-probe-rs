@@ -10,6 +10,8 @@ mod heap;
 #[allow(dead_code)]
 mod ioctl;
 #[allow(dead_code)]
+mod probe;
+#[allow(dead_code)]
 mod procfs;
 mod runner;
 #[allow(dead_code)]
@@ -166,7 +168,7 @@ fn main() {
             max_hold,
             seed,
         } => {
-            let heap_names = cmd::aging::discover_heaps(heaps.as_deref());
+            let heap_names = probe::discover_heaps(heaps.as_deref());
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(report_interval);
             let start = Instant::now();
