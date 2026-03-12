@@ -24,6 +24,38 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         None => safe_exhaust_limit(alloc_size),
     };
 
+    let source = if max_allocs_override.is_some() {
+        "cli override"
+    } else {
+        "auto-detected"
+    };
+
+    println!("pressure sequence:");
+    println!("  heap: {heap_name}");
+    println!("  alloc_size: {alloc_size} bytes");
+    println!("  max_allocs: {max_allocs} ({source})");
+    println!();
+    println!("  1. gradual_exhaust");
+    println!("       alloc({alloc_size}) in loop until ENOMEM or max_allocs");
+    println!("       track per-alloc latency");
+    println!("       -> count, total_mb, avg_latency_us");
+    println!("  2. recovery");
+    println!("       exhaust -> release 50% -> re-alloc");
+    println!("       -> released, recovered, avg_recovery_us");
+    println!("  3. pressure_concurrent");
+    println!("       4 workers x 50 allocs each (concurrent)");
+    println!("       -> unexpected_failures (expect 0)");
+    println!();
+    println!("pressure result legend:");
+    println!("  count               buffers allocated before ENOMEM / limit");
+    println!("  total_mb            total allocated memory (count x alloc_size)");
+    println!("  avg_latency_us      mean per-alloc latency (us)");
+    println!("  released            buffers freed in recovery phase (50% of exhaust)");
+    println!("  recovered           successful re-allocs after release");
+    println!("  avg_recovery_us     mean re-alloc latency after release (us)");
+    println!("  unexpected_failures non-ENOMEM errors in concurrent test (pass = 0)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "gradual_exhaust",
