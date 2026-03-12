@@ -174,14 +174,11 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
     pub(super) fn notify_enomem(&mut self, worker_id: u32) {
         // Always drain half to free memory immediately.
-        let drain = self.bufs.len() / 2 + 1;
-        let actual_drain = drain.min(self.bufs.len());
-        for _ in 0..drain {
+        let to_drain = (self.bufs.len() / 2 + 1).min(self.bufs.len());
+        for _ in 0..to_drain {
             self.bufs.pop_front();
         }
-        self.state
-            .total_frees
-            .fetch_add(actual_drain as u64, Relaxed);
+        self.state.total_frees.fetch_add(to_drain as u64, Relaxed);
 
         self.consecutive_enomem += 1;
         self.success_since_shrink = 0;
@@ -209,7 +206,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         } else {
             tracing::debug!(
                 worker_id,
-                drained = drain,
+                drained = to_drain,
                 remaining = self.bufs.len(),
                 consecutive_enomem = self.consecutive_enomem,
                 "ENOMEM, evicting hold pool"
@@ -451,22 +448,26 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
         }
 
         Pipeline::PartialMmap => {
-            // Map a partial length (25-75% of buffer).
+            // Map a partial length (25-75% of buffer) with proper sync.
             let pct = rng.random_range(25u64..75);
             let partial_len = (size * pct / 100).max(1) as usize;
             let mut buf = DmaBuf::new(backend, fd, partial_len);
             if let Ok(ptr) = buf.mmap() {
                 let pat = random_write_pattern(rng);
+                let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for partial_len bytes.
                 unsafe {
                     std::ptr::write_bytes(ptr, pattern_byte(pat), partial_len);
                 }
+                let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
             drop(buf);
             false
         }
 
         Pipeline::WriteOnly => {
+            // Intentionally uses random sync flags (including READ for write ops)
+            // to stress-test mismatched sync direction handling in drivers.
             let mut buf = DmaBuf::new(backend, fd, size_usize);
             if let Ok(ptr) = buf.mmap() {
                 let flags = random_sync_flags(rng);
