@@ -357,13 +357,9 @@ fn run_pool_worker<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::debug!(
-            heap = heap_name,
-            buf_size,
-            pool_size,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "pool_worker"
+        println!(
+            "scenario pipeline: pool_worker heap={heap_name} buf_size={buf_size} pool_size={pool_size} p50_us={} p95_us={}",
+            stats.p50_us, stats.p95_us
         );
     }
 }
@@ -401,12 +397,9 @@ fn run_alloc_free_worker<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::debug!(
-            heap = heap_name,
-            buf_size,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "alloc_free_worker"
+        println!(
+            "scenario pipeline: alloc_free_worker heap={heap_name} buf_size={buf_size} p50_us={} p95_us={}",
+            stats.p50_us, stats.p95_us
         );
     }
 }
