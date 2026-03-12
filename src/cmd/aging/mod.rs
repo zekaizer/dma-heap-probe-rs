@@ -661,71 +661,16 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         tracing::warn!(size, "fuzz mode ignores --size, using built-in FUZZ_SIZES");
     }
 
-    // Print sequence diagram with actual runtime parameters.
-    let mode_desc = if fuzz_mode {
-        let seed_str = seed.map_or("random".to_string(), |s| s.to_string());
-        format!(
-            "fuzz (seed={seed_str}, {} size variants, weighted pipeline selection)",
-            fuzz::FUZZ_SIZES.len()
-        )
-    } else {
-        format!("normal (size={size}, hold every 3rd)")
-    };
-    let stop_desc = match (iterations, duration) {
-        (Some(n), Some(d)) => format!("{n} iterations or {}s, Ctrl-C", d.as_secs()),
-        (Some(n), None) => format!("{n} iterations, Ctrl-C"),
-        (None, Some(d)) => format!("{}s, Ctrl-C", d.as_secs()),
-        (None, None) => "Ctrl-C".to_string(),
-    };
-    println!("aging sequence:");
-    println!("  mode: {mode_desc}");
-    println!("  main ─┬─ {threads} workers");
-    if fuzz_mode {
-        println!("        │    loop {{ alloc → weighted pipeline → close/hold }}");
-        println!("        │    pipelines (weight, availability depends on heap caps):");
-        println!("        │      AllocHold(20)         alloc → hold");
-        println!("        │      WriteOnly(15)         mmap → sync(R|W|RW) → sparse_fill → sync");
-        println!(
-            "        │      WriteReadVerify(15)   mmap → sync(W) → fill(full) → sync(R) → verify"
-        );
-        println!("        │      AllocClose(10)        alloc → close");
-        println!("        │      AllocMmapClose(5)     mmap → close");
-        println!(
-            "        │      PartialMmap(5)        mmap(25-75%) → sync(W) → sparse_fill → sync"
-        );
-        println!("        │      WriteNoSync(5)        mmap → sparse_fill (no sync)");
-        println!("        │      DoubleMmap(5)         mmap → mmap → sync(W) → sparse_fill → sync");
-        println!("        │      DupAndOperate(5)      dup → mmap → sync(W) → sparse_fill → sync");
-        println!(
-            "        │      SetNameThenWrite(5)   set_name → mmap → sync(W) → sparse_fill → sync"
-        );
-        println!(
-            "        │      LlseekAfterWrite(5)   mmap → sync(W) → sparse_fill → sync → llseek"
-        );
-        println!("        │      SyncFileRoundtrip(5)  export → import");
-    } else {
-        println!(
-            "        │    loop {{ alloc → mmap → sync(W) → sparse_fill → sync(R) → close/hold }}"
-        );
-    }
-    println!("        ├─ reporter (every {}s)", report_interval.as_secs());
-    println!("        │    loop {{ drain latencies → snapshot → print }}");
-    println!("        └─ stop ({stop_desc})");
-    println!("             drain hold pool → final report → evaluate thresholds");
-    println!();
-    println!("aging report legend:");
-    println!("  elapsed   wall clock seconds since start");
-    println!("  iters     total completed iterations (cumulative)");
-    println!("  samples   latency samples collected this interval");
-    println!("  allocs    allocations this interval");
-    println!("  frees     frees this interval");
-    println!("  avg_us    mean alloc-to-close latency (us), this interval");
-    println!("  p99_us    99th percentile latency (us), this interval");
-    println!("  errs      non-ENOMEM errors (cumulative)");
-    println!("  enomem    ENOMEM count (cumulative)");
-    println!("  mem_mb    MemAvailable delta from start (MB, negative = leak)");
-    println!("  bufs      active dma-buf count (sysfs)");
-    println!("  trend     latency degradation ratio (final_avg / first_avg, 1.0x = stable)");
+    let mode_desc = if fuzz_mode { "fuzz" } else { "normal" };
+    tracing::debug!(
+        mode = mode_desc,
+        threads,
+        heaps = heaps.len(),
+        size,
+        ?duration,
+        ?iterations,
+        "aging sequence"
+    );
 
     let state = AgingState::new();
 
@@ -744,10 +689,11 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     let passed = evaluate_thresholds(&aging_result, thresholds);
 
+    let heap_label = heaps.join(",");
     let (sub_results, err) = if passed {
-        runner::collect_test_results("aging", &[("aging", Ok(()))])
+        runner::collect_test_results("aging", &heap_label, &[("aging", Ok(()))])
     } else {
-        runner::collect_test_results("aging", &[("aging", Err(Errno::EIO))])
+        runner::collect_test_results("aging", &heap_label, &[("aging", Err(Errno::EIO))])
     };
 
     (sub_results, err, Some(aging_result))

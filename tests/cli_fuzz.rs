@@ -24,7 +24,7 @@ fn arb_global_opts() -> impl Strategy<Value = Vec<String>> {
         .prop_map(|(heap, trace, sysfs, procfs, verbose)| {
             let mut args: Vec<String> = Vec::new();
             if let Some(h) = heap {
-                args.push("--heap".into());
+                args.push("--heaps".into());
                 args.push(h);
             }
             if trace {
@@ -59,8 +59,13 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--repeat".into(),
             r.to_string(),
         ]),
-        Just(vec!["sync-file".into()]),
-        (1..8u32).prop_map(|t| vec!["edge".into(), "--threads".into(), t.to_string(),]),
+        (1..8u32).prop_map(|t| vec![
+            "basic".into(),
+            "--sizes".into(),
+            "4096".into(),
+            "--threads".into(),
+            t.to_string(),
+        ]),
         Just(vec!["negative".into()]),
         (1..10u32, 0..3u32).prop_map(|(i, w)| vec![
             "perf".into(),
@@ -74,8 +79,7 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--alloc-size".into(),
             "4096".into()
         ]),
-        Just(vec!["pool".into()]),
-        Just(vec!["sysfs-dump".into()]),
+        Just(vec!["info".into()]),
         (1..10u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string(),]),
         (1..10u64).prop_map(|i| vec![
             "aging".into(),
@@ -100,7 +104,7 @@ fn arb_invalid_args() -> impl Strategy<Value = Vec<String>> {
             "--sizes".into(),
             "not_a_number".into()
         ]),
-        Just(vec!["edge".into(), "--threads".into(), "abc".into()]),
+        Just(vec!["basic".into(), "--threads".into(), "abc".into()]),
         "[a-z]{1,8}".prop_map(|s| vec![format!("--{s}"), "basic".into()]),
     ]
 }
@@ -154,17 +158,21 @@ proptest! {
         if output.status.success() {
             let content = std::fs::read_to_string(tmp.path())
                 .expect("read output file");
-            // Some subcommands (e.g. sysfs-dump) ignore --output.
+            // Some subcommands (e.g. info --dump) ignore --output.
             if content.is_empty() {
                 return Ok(());
             }
             let json: serde_json::Value = serde_json::from_str(&content)
                 .expect("invalid JSON output");
-            prop_assert!(json["heap"].is_string());
-            prop_assert!(json["stages"].is_array());
-            prop_assert!(json["total_passed"].is_u64());
-            prop_assert!(json["total_failed"].is_u64());
-            prop_assert!(json["total_duration_ms"].is_u64());
+            prop_assert!(json["heaps"].is_array());
+            // info writes InfoReport (no stages), other cmds write RunResult.
+            if json["stages"].is_array() {
+                prop_assert!(json["total_passed"].is_u64());
+                prop_assert!(json["total_failed"].is_u64());
+                prop_assert!(json["total_duration_ms"].is_u64());
+            } else {
+                prop_assert!(json["total_buffers"].is_number());
+            }
         }
     }
 }

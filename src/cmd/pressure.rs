@@ -1,4 +1,8 @@
 // Memory pressure tests: gradual exhaust, recovery, concurrent pressure.
+//
+// On Android, exhaust tests run in a subprocess so that OOM killer takes
+// out the child instead of the parent. The parent retries with a reduced
+// allocation count (100% -> 90% -> 80% -> 70%) if the child is killed.
 
 use std::time::Instant;
 
@@ -9,6 +13,15 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
+
+/// Environment variable that signals we are running as a pressure worker subprocess.
+pub const PRESSURE_WORKER_ENV: &str = "DHP_PRESSURE_WORKER";
+
+/// Minimum retry ratio (70%).
+const MIN_RETRY_RATIO: u32 = 70;
+
+/// Ratio step for adaptive retry (10%).
+const RETRY_STEP: u32 = 10;
 
 /// Run all pressure tests. Returns sub-test results (and the first error, if any).
 #[allow(clippy::cast_possible_truncation)]
@@ -23,37 +36,12 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         None => safe_exhaust_limit(alloc_size),
     };
 
-    let source = if max_allocs_override.is_some() {
-        "cli override"
-    } else {
-        "auto-detected"
-    };
-
-    println!("pressure sequence:");
-    println!("  heap: {heap_name}");
-    println!("  alloc_size: {alloc_size} bytes");
-    println!("  max_allocs: {max_allocs} ({source})");
-    println!();
-    println!("  1. gradual_exhaust");
-    println!("       alloc({alloc_size}) in loop until ENOMEM or max_allocs");
-    println!("       track per-alloc latency");
-    println!("       -> count, total_mb, avg_latency_us");
-    println!("  2. recovery");
-    println!("       exhaust -> release 50% -> re-alloc");
-    println!("       -> released, recovered, avg_recovery_us");
-    println!("  3. pressure_concurrent");
-    println!("       4 workers x 50 allocs each (concurrent)");
-    println!("       -> unexpected_failures (expect 0)");
-    println!();
-    println!("pressure result legend:");
-    println!("  count               buffers allocated before ENOMEM / limit");
-    println!("  total_mb            total allocated memory (count x alloc_size)");
-    println!("  avg_latency_us      mean per-alloc latency (us)");
-    println!("  released            buffers freed in recovery phase (50% of exhaust)");
-    println!("  recovered           successful re-allocs after release");
-    println!("  avg_recovery_us     mean re-alloc latency after release (us)");
-    println!("  unexpected_failures non-ENOMEM errors in concurrent test (pass = 0)");
-    println!();
+    tracing::debug!(
+        heap = heap_name,
+        alloc_size,
+        max_allocs,
+        "pressure sequence"
+    );
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
@@ -70,7 +58,140 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    runner::collect_test_results("pressure", &tests)
+    runner::collect_test_results("pressure", heap_name, &tests)
+}
+
+/// Run pressure tests as a subprocess with adaptive OOM retry.
+///
+/// Spawns `dhp pressure` as a child process. If the child is killed by
+/// OOM (exit code None / signal 9), reduce the allocation count by 10%
+/// and retry (down to 70% of the original).
+pub fn run_subprocess(
+    heap_name: &str,
+    alloc_size: u64,
+    max_allocs: usize,
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            return (
+                Vec::new(),
+                Some(anyhow::anyhow!("failed to get current exe: {e}")),
+            );
+        }
+    };
+
+    let mut ratio = 100u32;
+    loop {
+        let adjusted = max_allocs * ratio as usize / 100;
+        tracing::debug!(
+            adjusted,
+            ratio,
+            heap = heap_name,
+            "spawning pressure worker"
+        );
+
+        let output = std::process::Command::new(&exe)
+            .args([
+                "pressure",
+                "--heaps",
+                heap_name,
+                "--alloc-size",
+                &alloc_size.to_string(),
+                "--max-allocs",
+                &adjusted.to_string(),
+            ])
+            .env(PRESSURE_WORKER_ENV, "1")
+            .output();
+
+        match output {
+            Ok(out) => match out.status.code() {
+                Some(0) => {
+                    let stdout = String::from_utf8_lossy(&out.stdout);
+                    return parse_worker_output(&stdout, ratio);
+                }
+                Some(code) => {
+                    let stderr = String::from_utf8_lossy(&out.stderr);
+                    tracing::warn!(code, %stderr, "pressure worker exited with error");
+                    return (
+                        vec![SubTestResult {
+                            name: "pressure_subprocess".to_string(),
+                            passed: false,
+                            error: Some(format!("worker exit code {code}")),
+                        }],
+                        None,
+                    );
+                }
+                None => {
+                    // Killed by signal (likely OOM)
+                    if ratio > MIN_RETRY_RATIO {
+                        ratio -= RETRY_STEP;
+                        tracing::warn!(ratio, "worker OOM killed, retrying at {ratio}%");
+                        continue;
+                    }
+                    return (
+                        vec![SubTestResult {
+                            name: "pressure_subprocess".to_string(),
+                            passed: false,
+                            error: Some(format!(
+                                "worker OOM killed even at {ratio}% ({adjusted} allocs)"
+                            )),
+                        }],
+                        None,
+                    );
+                }
+            },
+            Err(e) => {
+                return (
+                    Vec::new(),
+                    Some(anyhow::anyhow!("failed to spawn pressure worker: {e}")),
+                );
+            }
+        }
+    }
+}
+
+/// Parse stdout lines from the worker process into `SubTestResult`s.
+fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
+    let mut results = Vec::new();
+    for line in stdout.lines() {
+        let trimmed = line.trim();
+        if trimmed.contains("[PASS]") {
+            let name = extract_test_name(trimmed);
+            results.push(SubTestResult {
+                name,
+                passed: true,
+                error: if ratio < 100 {
+                    Some(format!("at {ratio}% capacity"))
+                } else {
+                    None
+                },
+            });
+        } else if trimmed.contains("[FAIL]") {
+            let name = extract_test_name(trimmed);
+            results.push(SubTestResult {
+                name,
+                passed: false,
+                error: Some(trimmed.to_string()),
+            });
+        }
+    }
+    (results, None)
+}
+
+/// Extract test name from a `[heap] [PASS/FAIL] stage::test_name ...` line.
+fn extract_test_name(line: &str) -> String {
+    // Format: "[heap] [PASS] pressure::test_name ..."
+    if let Some(pos) = line.find("::") {
+        let after = &line[pos + 2..];
+        after
+            .split_whitespace()
+            .next()
+            .unwrap_or("unknown")
+            .to_string()
+    } else {
+        "unknown".to_string()
+    }
 }
 
 /// Absolute upper bound on exhaust allocations.
@@ -84,7 +205,7 @@ const MEM_USAGE_FRACTION: u64 = 4;
 
 /// Calculate a safe exhaust allocation limit based on available memory.
 #[allow(clippy::cast_possible_truncation)]
-fn safe_exhaust_limit(alloc_size: u64) -> usize {
+pub fn safe_exhaust_limit(alloc_size: u64) -> usize {
     if let Ok(meminfo) = crate::procfs::read_meminfo() {
         let available_bytes = meminfo.mem_available_kb * 1024;
         let usable = available_bytes / MEM_USAGE_FRACTION;
@@ -146,7 +267,7 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
     };
 
     println!(
-        "pressure: gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
+        "[{heap_name}] pressure::gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
         buffers.len(),
         total_bytes / (1024 * 1024),
     );
@@ -224,7 +345,7 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
     };
 
     println!(
-        "pressure: recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
+        "[{heap_name}] pressure::recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
     );
 
     drop(buffers);
@@ -273,7 +394,7 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     println!(
-        "pressure: pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
+        "[{heap_name}] pressure::pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
     );
 
     if failures > 0 {

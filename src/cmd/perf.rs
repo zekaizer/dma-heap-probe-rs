@@ -89,30 +89,13 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
-    println!("perf sequence:");
-    println!("  heap: {heap_name}");
-    println!("  sizes: {sizes:?} bytes");
-    println!("  iterations: {iterations}");
-    println!("  warmup: {warmup}");
-    println!();
-    println!("  for each size:");
-    println!("    1. alloc_only        warmup({warmup}) -> measure alloc ioctl x {iterations}");
-    println!(
-        "    2. full_pipeline     warmup -> alloc+mmap+sync(W)+write+sync(R)+close x {iterations}"
+    tracing::debug!(
+        heap = heap_name,
+        ?sizes,
+        iterations,
+        warmup,
+        "perf sequence"
     );
-    println!("    3. close             pre-alloc -> measure close x {iterations}");
-    println!("  4. order_boundary      sweep 15 sizes (4K-8M) across buddy allocator boundaries");
-    println!("  5. internal_frag       measure actual vs requested size via llseek");
-    println!();
-    println!("perf result legend:");
-    println!("  min_us      minimum latency (us)");
-    println!("  avg_us      mean latency (us)");
-    println!("  p50_us      median latency (us)");
-    println!("  p95_us      95th percentile latency (us)");
-    println!("  p99_us      99th percentile latency (us)");
-    println!("  max_us      maximum latency (us)");
-    println!("  frag_pct    internal fragmentation ((actual-requested)/requested x 100)");
-    println!();
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
@@ -135,9 +118,11 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             "bench_internal_frag",
             bench_internal_frag(backend, heap_name),
         ),
+        ("bench_pool_warmup", bench_pool_warmup(backend, heap_name)),
+        ("bench_size_switch", bench_size_switch(backend, heap_name)),
     ];
 
-    runner::collect_test_results("perf", &tests)
+    runner::collect_test_results("perf", heap_name, &tests)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
@@ -172,7 +157,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
+                "[{heap_name}] perf::alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
                 stats.min_us, stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us, stats.max_us
             );
         }
@@ -223,7 +208,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
@@ -264,7 +249,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
@@ -304,10 +289,121 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
+    }
+
+    Ok(())
+}
+
+/// Default pool test buffer count.
+const POOL_WARMUP_COUNT: u32 = 100;
+
+/// Size for pool warmup test.
+const POOL_WARMUP_SIZE: u64 = 65536; // 64 KB
+
+/// Iterations for pool latency measurements.
+const POOL_MEASURE_ITERS: u32 = 100;
+
+/// Measure alloc latency and return samples in microseconds (for pool benchmarks).
+#[allow(clippy::cast_possible_truncation)]
+fn measure_alloc_latency<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap: &DmaHeap<'_, B>,
+    size: u64,
+    count: u32,
+) -> nix::Result<Vec<u64>> {
+    let mut samples = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let start = Instant::now();
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let elapsed = start.elapsed().as_micros() as u64;
+        samples.push(elapsed);
+        let buf = DmaBuf::new(backend, fd, size as usize);
+        drop(buf);
+    }
+    Ok(samples)
+}
+
+/// Compare cold vs warm alloc latency to quantify pool/cache effect.
+#[allow(clippy::cast_possible_truncation)]
+fn bench_pool_warmup<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+
+    // Cold: first N allocations.
+    let cold_samples = measure_alloc_latency(backend, &heap, POOL_WARMUP_SIZE, POOL_MEASURE_ITERS)?;
+
+    // Warm: alloc/close cycle to fill pool, then measure.
+    for _ in 0..POOL_WARMUP_COUNT {
+        let fd = heap.alloc(
+            POOL_WARMUP_SIZE,
+            DMA_HEAP_ALLOC_FD_FLAGS,
+            DMA_HEAP_VALID_HEAP_FLAGS,
+        )?;
+        let buf = DmaBuf::new(backend, fd, POOL_WARMUP_SIZE as usize);
+        drop(buf);
+    }
+    let warm_samples = measure_alloc_latency(backend, &heap, POOL_WARMUP_SIZE, POOL_MEASURE_ITERS)?;
+
+    if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples)) {
+        println!(
+            "[{heap_name}] perf::pool_warmup cold_p50_us={} cold_p95_us={} warm_p50_us={} warm_p95_us={}",
+            cold.p50_us, cold.p95_us, warm.p50_us, warm.p95_us
+        );
+    }
+
+    Ok(())
+}
+
+/// Measure latency impact of switching allocation sizes.
+#[allow(clippy::cast_possible_truncation)]
+fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+    let size_a: u64 = 65536; // 64 KB
+    let size_b: u64 = 4096; // 4 KB
+    let phase_count = 500u32;
+
+    // Phase 1: Fill pool with size_a.
+    let phase1 = measure_alloc_latency(backend, &heap, size_a, phase_count)?;
+
+    // Phase 2: Switch to size_b.
+    let phase2 = measure_alloc_latency(backend, &heap, size_b, phase_count)?;
+
+    // Phase 3: Switch back to size_a.
+    let phase3 = measure_alloc_latency(backend, &heap, size_a, phase_count)?;
+
+    // Compare first 10 vs last 10 of each phase.
+    let first_10 = |samples: &[u64]| compute_stats(&samples[..10.min(samples.len())]);
+    let last_10 = |samples: &[u64]| {
+        let start = samples.len().saturating_sub(10);
+        compute_stats(&samples[start..])
+    };
+
+    if let (Some(p1_first), Some(p1_last)) = (first_10(&phase1), last_10(&phase1)) {
+        println!(
+            "[{heap_name}] perf::size_switch phase=1 size={size_a} first10_p50={} last10_p50={}",
+            p1_first.p50_us, p1_last.p50_us
+        );
+    }
+    if let (Some(p2_first), Some(p2_last)) = (first_10(&phase2), last_10(&phase2)) {
+        println!(
+            "[{heap_name}] perf::size_switch phase=2 size={size_b} first10_p50={} last10_p50={}",
+            p2_first.p50_us, p2_last.p50_us
+        );
+    }
+    if let (Some(p3_first), Some(p3_last)) = (first_10(&phase3), last_10(&phase3)) {
+        println!(
+            "[{heap_name}] perf::size_switch phase=3 size={size_a} first10_p50={} last10_p50={}",
+            p3_first.p50_us, p3_last.p50_us
+        );
     }
 
     Ok(())
@@ -336,7 +432,7 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
         };
 
         println!(
-            "perf: internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
+            "[{heap_name}] perf::internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
         );
     }
 
@@ -439,11 +535,30 @@ mod tests {
     }
 
     #[test]
+    fn pool_warmup_runs() {
+        let b = MockBackend::new();
+        bench_pool_warmup(&b, "system").unwrap();
+    }
+
+    #[test]
+    fn size_switch_runs() {
+        let b = MockBackend::new();
+        bench_size_switch(&b, "system").unwrap();
+    }
+
+    #[test]
+    fn pool_warmup_no_leak() {
+        let b = MockBackend::new();
+        bench_pool_warmup(&b, "system").unwrap();
+        assert_eq!(b.buffer_count(), 0);
+    }
+
+    #[test]
     fn run_passes() {
         let b = MockBackend::new();
         let (results, err) = run(&b, "system", Some(&[4096]), 5, 1);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
-        assert_eq!(results.len(), 5);
+        assert_eq!(results.len(), 7);
     }
 }

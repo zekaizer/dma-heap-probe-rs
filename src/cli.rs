@@ -15,9 +15,9 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Command,
 
-    /// Heap name.
-    #[arg(long, default_value = "system", global = true)]
-    pub heap: String,
+    /// Heap names, comma-separated (auto-discovers `/dev/dma_heap/` if omitted).
+    #[arg(long, value_delimiter = ',', global = true)]
+    pub heaps: Option<Vec<String>>,
 
     /// Enable Perfetto atrace markers.
     #[arg(long, global = true)]
@@ -42,7 +42,8 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
+    /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated,
+    /// `sync_file`, concurrent, dup, `set_name`).
     Basic {
         /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
@@ -51,13 +52,7 @@ pub enum Command {
         /// Repeat count for repeated alloc test.
         #[arg(long, default_value_t = 1024)]
         repeat: u32,
-    },
 
-    /// Sync-file export/import tests.
-    SyncFile,
-
-    /// Boundary condition tests (concurrent, dup, naming).
-    Edge {
         /// Concurrent alloc threads.
         #[arg(long, default_value_t = 100)]
         threads: u32,
@@ -89,9 +84,6 @@ pub enum Command {
         max_allocs: Option<usize>,
     },
 
-    /// Pool/cache behavior tests.
-    Pool,
-
     /// Negative tests (error paths, invalid input, races).
     Negative,
 
@@ -116,10 +108,6 @@ pub enum Command {
         /// Report interval in seconds.
         #[arg(long, default_value_t = 30)]
         report_interval: u64,
-
-        /// Comma-separated heap names (auto-discover `/dev/dma_heap/` if omitted).
-        #[arg(long, value_delimiter = ',')]
-        heaps: Option<Vec<String>>,
 
         /// Enable fuzz mode (random size, operation, timing).
         #[arg(long)]
@@ -152,10 +140,6 @@ pub enum Command {
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
         sizes: Vec<u64>,
 
-        /// Comma-separated heap names (uses --heap if omitted).
-        #[arg(long, value_delimiter = ',')]
-        heaps: Option<Vec<String>>,
-
         /// Number of samples per (heap, size) combination.
         #[arg(long, default_value_t = 10_000)]
         samples: u32,
@@ -173,7 +157,7 @@ pub enum Command {
         buckets: usize,
     },
 
-    /// Run all tests including scenarios.
+    /// Run all test stages (basic, negative, perf, pressure).
     All,
 
     /// Display system DMA heap information and buffer status.
@@ -181,10 +165,19 @@ pub enum Command {
         /// Show individual buffer list (requires debugfs access for full detail).
         #[arg(long)]
         detail: bool,
-    },
 
-    /// Standalone sysfs/procfs snapshot.
-    SysfsDump,
+        /// Dump raw sysfs/procfs snapshot (JSON).
+        #[arg(long)]
+        dump: bool,
+
+        /// Continuous monitoring mode (periodic compact status line).
+        #[arg(long)]
+        follow: bool,
+
+        /// Monitoring interval in seconds (used with `--follow`).
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
+    },
 }
 
 /// Histogram measurement mode.
@@ -222,9 +215,14 @@ mod tests {
     fn basic_defaults() {
         let cli = parse(&["dhp", "basic"]);
         match cli.command {
-            Command::Basic { sizes, repeat } => {
+            Command::Basic {
+                sizes,
+                repeat,
+                threads,
+            } => {
                 assert_eq!(sizes, vec![4096, 65536, 1_048_576]);
                 assert_eq!(repeat, 1024);
+                assert_eq!(threads, 100);
             }
             _ => panic!("expected Basic"),
         }
@@ -253,9 +251,24 @@ mod tests {
     }
 
     #[test]
-    fn global_heap_option() {
-        let cli = parse(&["dhp", "basic", "--heap", "my_heap"]);
-        assert_eq!(cli.heap, "my_heap");
+    fn global_heaps_option() {
+        let cli = parse(&["dhp", "basic", "--heaps", "my_heap"]);
+        assert_eq!(cli.heaps, Some(vec!["my_heap".to_string()]));
+    }
+
+    #[test]
+    fn global_heaps_multi() {
+        let cli = parse(&["dhp", "basic", "--heaps", "system,reserved"]);
+        assert_eq!(
+            cli.heaps,
+            Some(vec!["system".to_string(), "reserved".to_string()])
+        );
+    }
+
+    #[test]
+    fn global_heaps_omitted() {
+        let cli = parse(&["dhp", "basic"]);
+        assert!(cli.heaps.is_none());
     }
 
     #[test]
@@ -263,6 +276,8 @@ mod tests {
         let cli = parse(&[
             "dhp",
             "basic",
+            "--heaps",
+            "system",
             "--trace",
             "--sysfs",
             "--procfs",
@@ -270,6 +285,7 @@ mod tests {
             "/tmp/out.json",
             "-vv",
         ]);
+        assert_eq!(cli.heaps, Some(vec!["system".to_string()]));
         assert!(cli.trace);
         assert!(cli.sysfs);
         assert!(cli.procfs);
@@ -278,34 +294,29 @@ mod tests {
     }
 
     #[test]
-    fn edge_defaults() {
-        let cli = parse(&["dhp", "edge"]);
+    fn basic_custom_threads() {
+        let cli = parse(&["dhp", "basic", "--threads", "50"]);
         match cli.command {
-            Command::Edge { threads } => assert_eq!(threads, 100),
-            _ => panic!("expected Edge"),
+            Command::Basic { threads, .. } => assert_eq!(threads, 50),
+            _ => panic!("expected Basic"),
         }
-    }
-
-    #[test]
-    fn edge_custom_threads() {
-        let cli = parse(&["dhp", "edge", "--threads", "50"]);
-        match cli.command {
-            Command::Edge { threads } => assert_eq!(threads, 50),
-            _ => panic!("expected Edge"),
-        }
-    }
-
-    #[test]
-    fn sync_file_command() {
-        let cli = parse(&["dhp", "sync-file"]);
-        assert!(matches!(cli.command, Command::SyncFile));
     }
 
     #[test]
     fn info_defaults() {
         let cli = parse(&["dhp", "info"]);
         match cli.command {
-            Command::Info { detail } => assert!(!detail),
+            Command::Info {
+                detail,
+                dump,
+                follow,
+                interval,
+            } => {
+                assert!(!detail);
+                assert!(!dump);
+                assert!(!follow);
+                assert_eq!(interval, 5);
+            }
             _ => panic!("expected Info"),
         }
     }
@@ -314,7 +325,30 @@ mod tests {
     fn info_with_detail() {
         let cli = parse(&["dhp", "info", "--detail"]);
         match cli.command {
-            Command::Info { detail } => assert!(detail),
+            Command::Info { detail, .. } => assert!(detail),
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn info_with_dump() {
+        let cli = parse(&["dhp", "info", "--dump"]);
+        match cli.command {
+            Command::Info { dump, .. } => assert!(dump),
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn info_with_follow() {
+        let cli = parse(&["dhp", "info", "--follow", "--interval", "2"]);
+        match cli.command {
+            Command::Info {
+                follow, interval, ..
+            } => {
+                assert!(follow);
+                assert_eq!(interval, 2);
+            }
             _ => panic!("expected Info"),
         }
     }
@@ -324,13 +358,11 @@ mod tests {
         for cmd in &[
             "perf",
             "pressure",
-            "pool",
             "negative",
             "aging",
             "histogram",
             "all",
             "info",
-            "sysfs-dump",
         ] {
             let cli = Cli::try_parse_from(["dhp", cmd]);
             assert!(cli.is_ok(), "failed to parse: {cmd}");

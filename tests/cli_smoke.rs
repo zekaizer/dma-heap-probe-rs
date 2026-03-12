@@ -29,16 +29,6 @@ fn basic_defaults() {
 }
 
 #[test]
-fn sync_file_defaults() {
-    dhp().arg("sync-file").assert().success();
-}
-
-#[test]
-fn edge_defaults() {
-    dhp().args(["edge", "--threads", "4"]).assert().success();
-}
-
-#[test]
 fn negative_defaults() {
     dhp().arg("negative").assert().success();
 }
@@ -57,11 +47,6 @@ fn pressure_defaults() {
         .args(["pressure", "--alloc-size", "4096"])
         .assert()
         .success();
-}
-
-#[test]
-fn pool_defaults() {
-    dhp().arg("pool").assert().success();
 }
 
 #[test]
@@ -92,8 +77,8 @@ fn info_json_output() {
 }
 
 #[test]
-fn sysfs_dump_defaults() {
-    dhp().arg("sysfs-dump").assert().success();
+fn info_dump() {
+    dhp().args(["info", "--dump"]).assert().success();
 }
 
 #[test]
@@ -146,18 +131,18 @@ fn output_basic_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heap"], "system");
+    assert_eq!(json["heaps"][0], "system");
     assert!(json["stages"].is_array());
     assert!(json["stages"][0]["passed"].as_bool().unwrap());
     assert!(json["total_passed"].as_u64().unwrap() >= 1);
 }
 
 #[test]
-fn output_custom_heap_json() {
+fn output_custom_heaps_json() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     dhp()
         .args([
-            "--heap",
+            "--heaps",
             "myheap",
             "--output",
             tmp.path().to_str().unwrap(),
@@ -171,7 +156,7 @@ fn output_custom_heap_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heap"], "myheap");
+    assert_eq!(json["heaps"][0], "myheap");
 }
 
 #[test]
@@ -206,8 +191,8 @@ fn output_all_json() {
     let json = read_json(tmp.path());
     let stages = json["stages"].as_array().unwrap();
     assert!(
-        stages.len() >= 7,
-        "expected >= 7 stages, got {}",
+        stages.len() >= 4,
+        "expected >= 4 stages, got {}",
         stages.len()
     );
     let total = json["total_passed"].as_u64().unwrap() + json["total_failed"].as_u64().unwrap();
@@ -239,7 +224,7 @@ fn error_invalid_sizes_value() {
 #[test]
 fn error_invalid_threads_value() {
     dhp()
-        .args(["edge", "--threads", "notanum"])
+        .args(["basic", "--threads", "notanum"])
         .assert()
         .failure();
 }
@@ -267,7 +252,7 @@ fn global_all_flags_combined() {
 fn global_options_after_subcommand() {
     dhp()
         .args([
-            "basic", "--heap", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
+            "basic", "--heaps", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
         ])
         .assert()
         .success();

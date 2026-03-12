@@ -30,14 +30,15 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     };
     let bucket_source = if buckets == 0 { "auto" } else { "manual" };
 
-    print_sequence(
-        heaps,
-        sizes,
-        mode,
+    tracing::debug!(
+        heaps = heaps.len(),
+        ?sizes,
+        mode = mode.as_str(),
         samples,
         warmup,
         bucket_count,
         bucket_source,
+        "histogram sequence"
     );
 
     let mut results = Vec::new();
@@ -68,6 +69,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 bucket_count,
             ) {
                 Ok(()) => {
+                    println!("[{heap_name}] [PASS] histogram::{test_name}");
                     results.push(SubTestResult {
                         name: test_name,
                         passed: true,
@@ -76,6 +78,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 }
                 Err(e) => {
                     let err_str = e.to_string();
+                    println!("[{heap_name}] [FAIL] histogram::{test_name} — {err_str}");
                     results.push(SubTestResult {
                         name: test_name,
                         passed: false,
@@ -88,36 +91,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     }
 
     (results, None)
-}
-
-/// Print startup sequence diagram and legend.
-fn print_sequence(
-    heaps: &[String],
-    sizes: &[u64],
-    mode: HistMode,
-    samples: u32,
-    warmup: u32,
-    bucket_count: usize,
-    bucket_source: &str,
-) {
-    let heap_list: Vec<&str> = heaps.iter().map(String::as_str).collect();
-    println!("histogram sequence:");
-    println!("  heaps: [{}]", heap_list.join(", "));
-    println!("  sizes: {sizes:?} bytes");
-    println!("  mode: {}", mode.as_str());
-    println!("  samples: {samples} (warmup: {warmup})");
-    println!("  buckets: {bucket_count} ({bucket_source})");
-    println!();
-    println!("  for each (heap, size):");
-    println!("    warmup({warmup}) -> collect({samples}) -> sort -> bucket -> print");
-    println!();
-    println!("histogram legend:");
-    println!("  range_us    latency bucket range [low, high) in microseconds");
-    println!("  count       samples in this bucket");
-    println!("  pct         percentage of total samples");
-    println!("  cum_pct     cumulative percentage");
-    println!("  bar         visual distribution (each # ~ 2%)");
-    println!();
 }
 
 /// Collect samples for one (heap, size) combination, then print histogram.

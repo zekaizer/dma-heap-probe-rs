@@ -43,37 +43,24 @@ fn main() {
     #[cfg(not(target_os = "android"))]
     let backend = backend::mock::MockBackend::new();
 
+    let heaps = probe::discover_heaps(cli.heaps.as_deref());
+
+    // Pressure worker subprocess: run tests inline and exit immediately.
+    let is_pressure_worker = std::env::var(cmd::pressure::PRESSURE_WORKER_ENV).is_ok();
+
     match cli.command {
-        Command::Basic { sizes, repeat } => {
+        Command::Basic {
+            sizes,
+            repeat,
+            threads,
+        } => {
             let start = Instant::now();
-            let (sub, err) = cmd::basic::run(&backend, &cli.heap, &sizes, repeat);
+            let (sub, err) = run_per_heap(&heaps, |h| {
+                cmd::basic::run(&backend, h, &sizes, repeat, threads)
+            });
             handle_cmd_output(
                 "basic",
-                &cli.heap,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
-        Command::SyncFile => {
-            let start = Instant::now();
-            let (sub, err) = cmd::sync_file::run(&backend, &cli.heap);
-            handle_cmd_output(
-                "sync_file",
-                &cli.heap,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
-        Command::Edge { threads } => {
-            let start = Instant::now();
-            let (sub, err) = cmd::edge::run(&backend, &cli.heap, threads);
-            handle_cmd_output(
-                "edge",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
@@ -82,10 +69,10 @@ fn main() {
         }
         Command::Negative => {
             let start = Instant::now();
-            let (sub, err) = cmd::negative::run(&backend, &cli.heap);
+            let (sub, err) = run_per_heap(&heaps, |h| cmd::negative::run(&backend, h));
             handle_cmd_output(
                 "negative",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
@@ -98,11 +85,12 @@ fn main() {
             warmup,
         } => {
             let start = Instant::now();
-            let (sub, err) =
-                cmd::perf::run(&backend, &cli.heap, sizes.as_deref(), iterations, warmup);
+            let (sub, err) = run_per_heap(&heaps, |h| {
+                cmd::perf::run(&backend, h, sizes.as_deref(), iterations, warmup)
+            });
             handle_cmd_output(
                 "perf",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
@@ -114,37 +102,54 @@ fn main() {
             max_allocs,
         } => {
             let start = Instant::now();
-            let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size, max_allocs);
+            let (sub, err) = if cfg!(target_os = "android") && !is_pressure_worker {
+                // On Android, use subprocess to survive OOM kills.
+                let limit =
+                    max_allocs.unwrap_or_else(|| cmd::pressure::safe_exhaust_limit(alloc_size));
+                run_per_heap(&heaps, |h| {
+                    cmd::pressure::run_subprocess(h, alloc_size, limit)
+                })
+            } else {
+                // On host or as worker subprocess, run inline.
+                run_per_heap(&heaps, |h| {
+                    cmd::pressure::run(&backend, h, alloc_size, max_allocs)
+                })
+            };
             handle_cmd_output(
                 "pressure",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
                 start.elapsed(),
             );
         }
-        Command::Pool => {
-            let start = Instant::now();
-            let (sub, err) = cmd::pool::run(&backend, &cli.heap);
-            handle_cmd_output(
-                "pool",
-                &cli.heap,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
-        Command::Info { detail } => {
-            let heap_filter = if detail {
-                Some(cli.heap.as_str())
+        Command::Info {
+            detail,
+            dump,
+            follow,
+            interval,
+        } => {
+            if dump {
+                run_sysfs_dump();
+            } else if follow {
+                let dur = std::time::Duration::from_secs(interval);
+                cmd::info::run_follow(dur, detail, &heaps);
             } else {
-                None
-            };
-            if let Err(e) = cmd::info::run(detail, heap_filter, cli.procfs, cli.output.as_ref()) {
-                tracing::error!(error = %e, "info command failed");
-                std::process::exit(1);
+                let heap_filter: Option<Vec<&str>> = if detail {
+                    Some(heaps.iter().map(String::as_str).collect())
+                } else {
+                    None
+                };
+                if let Err(e) = cmd::info::run(
+                    detail,
+                    heap_filter.as_deref(),
+                    cli.procfs,
+                    cli.output.as_ref(),
+                ) {
+                    tracing::error!(error = %e, "info command failed");
+                    std::process::exit(1);
+                }
             }
         }
         Command::Aging {
@@ -153,7 +158,6 @@ fn main() {
             duration,
             iterations,
             report_interval,
-            heaps,
             fuzz,
             max_hold,
             seed,
@@ -161,7 +165,6 @@ fn main() {
             leak_threshold_mb,
             max_error_rate,
         } => {
-            let heap_names = probe::discover_heaps(heaps.as_deref());
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(report_interval);
             let thresholds = cmd::aging::AgingThresholds {
@@ -172,7 +175,7 @@ fn main() {
             let start = Instant::now();
             let (sub, err, _aging_result) = cmd::aging::run(
                 &backend,
-                &heap_names,
+                &heaps,
                 size,
                 threads,
                 dur,
@@ -185,7 +188,7 @@ fn main() {
             );
             handle_cmd_output(
                 "aging",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
@@ -194,19 +197,17 @@ fn main() {
         }
         Command::Histogram {
             sizes,
-            heaps,
             samples,
             warmup,
             mode,
             buckets,
         } => {
-            let heap_list = heaps.unwrap_or_else(|| vec![cli.heap.clone()]);
             let start = Instant::now();
             let (sub, err) =
-                cmd::histogram::run(&backend, &heap_list, &sizes, samples, warmup, mode, buckets);
+                cmd::histogram::run(&backend, &heaps, &sizes, samples, warmup, mode, buckets);
             handle_cmd_output(
                 "histogram",
-                &cli.heap,
+                &heaps,
                 cli.output.as_ref(),
                 &sub,
                 err,
@@ -214,16 +215,34 @@ fn main() {
             );
         }
         Command::All => {
-            run_all(&backend, &cli);
-        }
-        Command::SysfsDump => {
-            run_sysfs_dump();
+            run_all(&backend, &cli, &heaps);
         }
     }
 }
 
+/// Run a command across multiple heaps, aggregating sub-test results.
+fn run_per_heap<F>(heaps: &[String], f: F) -> (Vec<runner::SubTestResult>, Option<anyhow::Error>)
+where
+    F: Fn(&str) -> (Vec<runner::SubTestResult>, Option<anyhow::Error>),
+{
+    let mut all_sub = Vec::new();
+    let mut first_err: Option<anyhow::Error> = None;
+    for heap in heaps {
+        let (sub, err) = f(heap);
+        all_sub.extend(sub);
+        if first_err.is_none() {
+            first_err = err;
+        }
+    }
+    (all_sub, first_err)
+}
+
 /// Run all test stages sequentially with result tracking.
-fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backend: &B, cli: &Cli) {
+fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    backend: &B,
+    cli: &Cli,
+    heaps: &[String],
+) {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
         r: (Vec<runner::SubTestResult>, Option<anyhow::Error>),
@@ -236,35 +255,28 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
         }
     }
 
-    let mut results = runner::RunResult::new(&cli.heap);
-    let heap = cli.heap.clone();
+    let mut results = runner::RunResult::new(heaps);
 
-    runner::run_stage(&mut results, "basic", || {
-        stage_result(cmd::basic::run(
-            backend,
-            &heap,
-            &[4096, 65536, 1_048_576],
-            8,
-        ))
-    });
-    runner::run_stage(&mut results, "sync_file", || {
-        stage_result(cmd::sync_file::run(backend, &heap))
-    });
-    runner::run_stage(&mut results, "edge", || {
-        stage_result(cmd::edge::run(backend, &heap, 4))
-    });
-    runner::run_stage(&mut results, "negative", || {
-        stage_result(cmd::negative::run(backend, &heap))
-    });
-    runner::run_stage(&mut results, "perf", || {
-        stage_result(cmd::perf::run(backend, &heap, None, 10, 2))
-    });
-    runner::run_stage(&mut results, "pressure", || {
-        stage_result(cmd::pressure::run(backend, &heap, 4096, None))
-    });
-    runner::run_stage(&mut results, "pool", || {
-        stage_result(cmd::pool::run(backend, &heap))
-    });
+    for heap in heaps {
+        runner::run_stage(&mut results, "basic", heap, || {
+            stage_result(cmd::basic::run(
+                backend,
+                heap,
+                &[4096, 65536, 1_048_576],
+                8,
+                4,
+            ))
+        });
+        runner::run_stage(&mut results, "negative", heap, || {
+            stage_result(cmd::negative::run(backend, heap))
+        });
+        runner::run_stage(&mut results, "perf", heap, || {
+            stage_result(cmd::perf::run(backend, heap, None, 10, 2))
+        });
+        runner::run_stage(&mut results, "pressure", heap, || {
+            stage_result(cmd::pressure::run(backend, heap, 4096, None))
+        });
+    }
 
     tracing::info!(
         passed = results.total_passed,
@@ -287,7 +299,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(backe
 /// Handle a single subcommand's output: write JSON if --output, exit(1) on failure.
 fn handle_cmd_output(
     stage_name: &str,
-    heap: &str,
+    heaps: &[String],
     output: Option<&PathBuf>,
     sub_tests: &[runner::SubTestResult],
     err: Option<anyhow::Error>,
@@ -297,7 +309,7 @@ fn handle_cmd_output(
 
     if let Some(output_path) = output {
         let details = Some(runner::sub_tests_to_details(sub_tests));
-        let mut results = runner::RunResult::new(heap);
+        let mut results = runner::RunResult::new(heaps);
         #[allow(clippy::cast_possible_truncation)]
         let duration_ms = duration.as_millis() as u64;
         let mapped = match err {
