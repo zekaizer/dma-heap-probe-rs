@@ -376,7 +376,7 @@ const PAGE_SIZE: usize = 4096;
 ///
 /// # Safety
 /// `ptr` must be valid for `size` bytes.
-pub(super) unsafe fn sparse_fill(
+pub(crate) unsafe fn sparse_fill(
     ptr: *mut u8,
     size: usize,
     pattern: u8,

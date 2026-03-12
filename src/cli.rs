@@ -163,6 +163,33 @@ pub enum Command {
         max_error_rate: f64,
     },
 
+    /// Latency histogram analysis (per-heap, per-size distribution).
+    Histogram {
+        /// Allocation sizes, comma-separated (default: 4096,65536,1048576).
+        #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
+        sizes: Vec<u64>,
+
+        /// Comma-separated heap names (uses --heap if omitted).
+        #[arg(long, value_delimiter = ',')]
+        heaps: Option<Vec<String>>,
+
+        /// Number of samples per (heap, size) combination.
+        #[arg(long, default_value_t = 10_000)]
+        samples: u32,
+
+        /// Warmup iterations (excluded from analysis).
+        #[arg(long, default_value_t = 500)]
+        warmup: u32,
+
+        /// Measurement mode.
+        #[arg(long, value_enum, default_value_t = HistMode::AllocOnly)]
+        mode: HistMode,
+
+        /// Number of histogram buckets (0 = auto via Sturges' rule).
+        #[arg(long, default_value_t = 0)]
+        buckets: usize,
+    },
+
     /// Run all tests including scenarios.
     All,
 
@@ -184,6 +211,29 @@ pub enum FragPattern {
     Interleave,
     /// Sequential: free first half of buffers.
     Sequential,
+}
+
+/// Histogram measurement mode.
+#[derive(ValueEnum, Debug, Clone, Copy)]
+pub enum HistMode {
+    /// Measure alloc ioctl only.
+    AllocOnly,
+    /// Measure full pipeline (alloc + mmap + sync + fill + sync + close).
+    FullPipeline,
+    /// Measure close/release path only.
+    CloseOnly,
+}
+
+impl HistMode {
+    /// Return the mode name as a string slice.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AllocOnly => "alloc-only",
+            Self::FullPipeline => "full-pipeline",
+            Self::CloseOnly => "close-only",
+        }
+    }
 }
 
 impl FragPattern {
@@ -398,6 +448,7 @@ mod tests {
             "pool",
             "negative",
             "aging",
+            "histogram",
             "all",
             "info",
             "sysfs-dump",
