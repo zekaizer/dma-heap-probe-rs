@@ -83,12 +83,9 @@ fn log_buddyinfo_summary(label: &str, entries: &[BuddyInfoEntry]) {
     for entry in entries {
         // Sum order 4+ (64KB+) free chunks as fragmentation indicator.
         let high_order_sum: u64 = entry.free_counts.iter().skip(4).sum();
-        tracing::info!(
-            label,
-            node = entry.node,
-            zone = %entry.zone,
-            high_order_free = high_order_sum,
-            "buddyinfo"
+        println!(
+            "fragmentation: buddyinfo label={label} node={} zone={} high_order_free={high_order_sum}",
+            entry.node, entry.zone
         );
     }
 }
@@ -238,13 +235,9 @@ fn log_pagetypeinfo_summary(label: &str, entries: &[PageTypeInfoEntry]) {
         match entry.page_type.as_str() {
             "CMA" | "Movable" | "Unmovable" => {
                 let high_order_sum: u64 = entry.free_counts.iter().skip(4).sum();
-                tracing::info!(
-                    label,
-                    node = entry.node,
-                    zone = %entry.zone,
-                    page_type = %entry.page_type,
-                    high_order_free = high_order_sum,
-                    "pagetypeinfo"
+                println!(
+                    "fragmentation: pagetypeinfo label={label} node={} zone={} page_type={} high_order_free={high_order_sum}",
+                    entry.node, entry.zone, entry.page_type
                 );
             }
             _ => {}

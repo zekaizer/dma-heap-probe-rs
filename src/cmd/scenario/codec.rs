@@ -115,16 +115,9 @@ fn codec_decode<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&frame_latencies) {
-        tracing::info!(
-            width = config.width,
-            height = config.height,
-            dpb_size = config.dpb_size,
-            fps = config.fps,
-            frame_size,
-            dpb_alloc_us,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "decode"
+        println!(
+            "scenario codec: decode frame_size={frame_size} dpb_size={} dpb_alloc_us={dpb_alloc_us} p50_us={} p95_us={}",
+            config.dpb_size, stats.p50_us, stats.p95_us
         );
     }
 
@@ -149,14 +142,10 @@ fn codec_adaptive<B: HeapBackend + DmaBufBackend>(
         switch_latencies.push(total_us);
 
         if let Some(stats) = compute_stats(&alloc_lats) {
-            tracing::info!(
-                phase = i + 1,
-                width = w,
-                height = h,
-                frame_size,
-                total_us,
-                p50_us = stats.p50_us,
-                "adaptive"
+            println!(
+                "scenario codec: adaptive phase={} width={w} height={h} frame_size={frame_size} total_us={total_us} p50_us={}",
+                i + 1,
+                stats.p50_us
             );
         }
 
@@ -164,11 +153,11 @@ fn codec_adaptive<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&switch_latencies) {
-        tracing::info!(
-            switches = config.resolutions.len(),
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "adaptive_summary"
+        println!(
+            "scenario codec: adaptive_summary switches={} p50_us={} p95_us={}",
+            config.resolutions.len(),
+            stats.p50_us,
+            stats.p95_us
         );
     }
 
@@ -213,13 +202,9 @@ fn codec_transcode<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::info!(
-            frames = config.frames,
-            dec_frame_size = frame_size,
-            enc_frame_size = enc_size,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "transcode"
+        println!(
+            "scenario codec: transcode frames={} dec_frame_size={frame_size} enc_frame_size={enc_size} p50_us={} p95_us={}",
+            config.frames, stats.p50_us, stats.p95_us
         );
     }
 

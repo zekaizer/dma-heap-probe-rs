@@ -109,12 +109,9 @@ fn test_pool_warmup<B: HeapBackend + DmaBufBackend>(
     let warm_samples = measure_alloc_latency(backend, &heap, POOL_SIZE, MEASURE_ITERS)?;
 
     if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples)) {
-        tracing::info!(
-            cold_p50_us = cold.p50_us,
-            cold_p95_us = cold.p95_us,
-            warm_p50_us = warm.p50_us,
-            warm_p95_us = warm.p95_us,
-            "pool_warmup"
+        println!(
+            "pool: pool_warmup cold_p50_us={} cold_p95_us={} warm_p50_us={} warm_p95_us={}",
+            cold.p50_us, cold.p95_us, warm.p50_us, warm.p95_us
         );
     }
 
@@ -149,30 +146,21 @@ fn test_size_switch<B: HeapBackend + DmaBufBackend>(
     };
 
     if let (Some(p1_first), Some(p1_last)) = (first_10(&phase1), last_10(&phase1)) {
-        tracing::info!(
-            phase = 1,
-            size = size_a,
-            first10_p50 = p1_first.p50_us,
-            last10_p50 = p1_last.p50_us,
-            "size_switch"
+        println!(
+            "pool: size_switch phase=1 size={size_a} first10_p50={} last10_p50={}",
+            p1_first.p50_us, p1_last.p50_us
         );
     }
     if let (Some(p2_first), Some(p2_last)) = (first_10(&phase2), last_10(&phase2)) {
-        tracing::info!(
-            phase = 2,
-            size = size_b,
-            first10_p50 = p2_first.p50_us,
-            last10_p50 = p2_last.p50_us,
-            "size_switch"
+        println!(
+            "pool: size_switch phase=2 size={size_b} first10_p50={} last10_p50={}",
+            p2_first.p50_us, p2_last.p50_us
         );
     }
     if let (Some(p3_first), Some(p3_last)) = (first_10(&phase3), last_10(&phase3)) {
-        tracing::info!(
-            phase = 3,
-            size = size_a,
-            first10_p50 = p3_first.p50_us,
-            last10_p50 = p3_last.p50_us,
-            "size_switch"
+        println!(
+            "pool: size_switch phase=3 size={size_a} first10_p50={} last10_p50={}",
+            p3_first.p50_us, p3_last.p50_us
         );
     }
 
@@ -231,12 +219,9 @@ fn test_release_order<B: HeapBackend + DmaBufBackend>(
     for order in &["lifo", "fifo", "random"] {
         let samples = test_order(order)?;
         if let Some(stats) = compute_stats(&samples) {
-            tracing::info!(
-                order,
-                p50_us = stats.p50_us,
-                p95_us = stats.p95_us,
-                avg_us = stats.avg_us,
-                "release_order"
+            println!(
+                "pool: release_order order={order} p50_us={} p95_us={} avg_us={}",
+                stats.p50_us, stats.p95_us, stats.avg_us
             );
         }
     }
@@ -282,16 +267,12 @@ fn test_deferred_free<B: HeapBackend + DmaBufBackend>(
         } else {
             0.0
         };
-        tracing::info!(
-            before_free_kb = before.mem_free_kb,
-            after_free_kb = after.mem_free_kb,
-            freed_kb,
-            expected_kb,
-            recovery_pct = format!("{recovery_pct:.1}"),
-            "deferred_free"
+        println!(
+            "pool: deferred_free before_free_kb={} after_free_kb={} freed_kb={freed_kb} expected_kb={expected_kb} recovery_pct={recovery_pct:.1}",
+            before.mem_free_kb, after.mem_free_kb
         );
     } else {
-        tracing::info!(count, size, "deferred_free (meminfo unavailable on host)");
+        println!("pool: deferred_free count={count} size={size} (meminfo unavailable on host)");
     }
 
     Ok(())

@@ -121,16 +121,9 @@ fn display_flip<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&frame_latencies) {
-        tracing::info!(
-            width = config.width,
-            height = config.height,
-            buf_size,
-            buffers = config.buffers,
-            fps = config.fps,
-            frames = config.frames,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "flip"
+        println!(
+            "scenario display: flip buf_size={buf_size} buffers={} p50_us={} p95_us={}",
+            config.buffers, stats.p50_us, stats.p95_us
         );
     }
 
@@ -162,11 +155,9 @@ fn display_rotation<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&cycle_latencies) {
-        tracing::info!(
-            cycles = config.rotation_cycles,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "rotation"
+        println!(
+            "scenario display: rotation cycles={} p50_us={} p95_us={}",
+            config.rotation_cycles, stats.p50_us, stats.p95_us
         );
     }
 
@@ -209,13 +200,15 @@ fn display_multi_layer<B: HeapBackend + DmaBufBackend>(
     }
     let total_alloc_us = start.elapsed().as_micros() as u64;
 
-    tracing::info!(layers = config.layers, total_alloc_us, "multi_layer");
+    println!(
+        "scenario display: multi_layer layers={} total_alloc_us={total_alloc_us}",
+        config.layers
+    );
 
     if let Some(stats) = compute_stats(&alloc_latencies) {
-        tracing::info!(
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "multi_layer_per_layer"
+        println!(
+            "scenario display: multi_layer_per_layer p50_us={} p95_us={}",
+            stats.p50_us, stats.p95_us
         );
     }
 

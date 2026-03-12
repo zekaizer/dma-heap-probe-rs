@@ -145,13 +145,9 @@ fn npu_model_load<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::info!(
-            chunks = chunk_count,
-            chunk_size = actual_chunk,
-            total_alloc_us,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "model_load"
+        println!(
+            "scenario npu: model_load chunks={chunk_count} chunk_size={actual_chunk} total_alloc_us={total_alloc_us} p50_us={} p95_us={}",
+            stats.p50_us, stats.p95_us
         );
     }
 
@@ -165,11 +161,13 @@ fn npu_model_load<B: HeapBackend + DmaBufBackend>(
         ) {
             Ok(fd) => {
                 let probe_us = probe_start.elapsed().as_micros() as u64;
-                tracing::info!(probe_size, probe_us, "model_load_probe_ok");
+                println!(
+                    "scenario npu: model_load_probe_ok probe_size={probe_size} probe_us={probe_us}"
+                );
                 let _ = DmaBuf::new(backend, fd, probe_size as usize);
             }
             Err(Errno::ENOMEM) => {
-                tracing::warn!(probe_size, "model_load_probe_enomem");
+                println!("scenario npu: model_load_probe_enomem probe_size={probe_size}");
             }
             Err(e) => return Err(e),
         }
@@ -228,12 +226,9 @@ fn npu_inference_loop<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&iter_latencies) {
-        tracing::info!(
-            iterations = config.iterations,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            p99_us = stats.p99_us,
-            "inference_loop"
+        println!(
+            "scenario npu: inference_loop iterations={} p50_us={} p95_us={} p99_us={}",
+            config.iterations, stats.p50_us, stats.p95_us, stats.p99_us
         );
     }
 
@@ -255,7 +250,7 @@ fn npu_model_switch<B: HeapBackend + DmaBufBackend>(
 
     // Phase 1: Load model A (half model size).
     let (model_a, _) = bulk_alloc(backend, &heap, chunk, a_count)?;
-    tracing::info!(phase = 1, chunks = a_count, "model_a loaded");
+    println!("scenario npu: model_switch_phase1 chunks={a_count}");
 
     // Phase 2: Load model B (full model size) alongside A.
     let (b_count, _) = chunk_params(config.model_size, config.chunk_size);
@@ -263,12 +258,9 @@ fn npu_model_switch<B: HeapBackend + DmaBufBackend>(
     let (model_b, b_lats) = bulk_alloc(backend, &heap, chunk, b_count)?;
     let b_total_us = start_b.elapsed().as_micros() as u64;
     if let Some(stats) = compute_stats(&b_lats) {
-        tracing::info!(
-            phase = 2,
-            chunks = b_count,
-            total_us = b_total_us,
-            p50_us = stats.p50_us,
-            "model_b loaded under pressure"
+        println!(
+            "scenario npu: model_switch_phase2 chunks={b_count} total_us={b_total_us} p50_us={}",
+            stats.p50_us
         );
     }
 
@@ -276,19 +268,16 @@ fn npu_model_switch<B: HeapBackend + DmaBufBackend>(
     let release_start = Instant::now();
     drop(model_a);
     let release_us = release_start.elapsed().as_micros() as u64;
-    tracing::info!(phase = 3, release_us, "model_a released");
+    println!("scenario npu: model_switch_phase3 release_us={release_us}");
 
     // Phase 4: Load model C (same size as A) into freed space.
     let start_c = Instant::now();
     let (model_c, c_lats) = bulk_alloc(backend, &heap, chunk, a_count)?;
     let c_total_us = start_c.elapsed().as_micros() as u64;
     if let Some(stats) = compute_stats(&c_lats) {
-        tracing::info!(
-            phase = 4,
-            chunks = a_count,
-            total_us = c_total_us,
-            p50_us = stats.p50_us,
-            "model_c loaded (reuse check)"
+        println!(
+            "scenario npu: model_switch_phase4 chunks={a_count} total_us={c_total_us} p50_us={}",
+            stats.p50_us
         );
     }
 
@@ -337,13 +326,13 @@ fn npu_sustained<B: HeapBackend + DmaBufBackend>(
 
         if (i + 1) % snapshot_interval == 0 {
             if let Some(stats) = compute_stats(&window) {
-                tracing::info!(
-                    iteration = i + 1,
-                    window_size = window.len(),
-                    p50_us = stats.p50_us,
-                    p95_us = stats.p95_us,
-                    p99_us = stats.p99_us,
-                    "sustained_snapshot"
+                println!(
+                    "scenario npu: sustained_snapshot iteration={} window_size={} p50_us={} p95_us={} p99_us={}",
+                    i + 1,
+                    window.len(),
+                    stats.p50_us,
+                    stats.p95_us,
+                    stats.p99_us
                 );
             }
             window.clear();
@@ -396,12 +385,9 @@ fn npu_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 }
 
                 if let Some(stats) = compute_stats(&latencies) {
-                    tracing::info!(
-                        client_id,
-                        iterations = latencies.len(),
-                        p50_us = stats.p50_us,
-                        p95_us = stats.p95_us,
-                        "concurrent_client"
+                    println!(
+                        "scenario npu: concurrent_client client_id={client_id} iterations={} p50_us={} p95_us={}",
+                        latencies.len(), stats.p50_us, stats.p95_us
                     );
                 }
             });
