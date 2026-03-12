@@ -90,6 +90,31 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
+    println!("perf sequence:");
+    println!("  heap: {heap_name}");
+    println!("  sizes: {sizes:?} bytes");
+    println!("  iterations: {iterations}");
+    println!("  warmup: {warmup}");
+    println!();
+    println!("  for each size:");
+    println!("    1. alloc_only        warmup({warmup}) -> measure alloc ioctl x {iterations}");
+    println!(
+        "    2. full_pipeline     warmup -> alloc+mmap+sync(W)+write+sync(R)+close x {iterations}"
+    );
+    println!("    3. close             pre-alloc -> measure close x {iterations}");
+    println!("  4. order_boundary      sweep 15 sizes (4K-8M) across buddy allocator boundaries");
+    println!("  5. internal_frag       measure actual vs requested size via llseek");
+    println!();
+    println!("perf result legend:");
+    println!("  min_us      minimum latency (us)");
+    println!("  avg_us      mean latency (us)");
+    println!("  p50_us      median latency (us)");
+    println!("  p95_us      95th percentile latency (us)");
+    println!("  p99_us      99th percentile latency (us)");
+    println!("  max_us      maximum latency (us)");
+    println!("  frag_pct    internal fragmentation ((actual-requested)/requested x 100)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "bench_alloc_only",

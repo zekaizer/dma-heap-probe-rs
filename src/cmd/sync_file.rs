@@ -15,6 +15,17 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("sync_file sequence:");
+    println!("  heap: {heap_name}");
+    println!();
+    println!("  1. export           alloc -> sync_file_create -> verify fd >= 0");
+    println!("  2. import           export -> sync_file_import -> verify fd >= 0");
+    println!();
+    println!("sync_file result legend:");
+    println!("  sync_fd    exported sync_file descriptor");
+    println!("  import_fd  imported sync_file descriptor");
+    println!();
+
     let tests: [(&str, nix::Result<()>); 2] = [
         (
             "export_sync_file",

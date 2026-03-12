@@ -42,6 +42,44 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    let frame_size = nv12_size(config.width, config.height);
+    let enc_size = nv12_size(config.width / 2, config.height / 2);
+    println!("scenario codec sequence:");
+    println!("  heap: {heap_name}");
+    println!(
+        "  resolution: {}x{} NV12 (frame_size: {frame_size})",
+        config.width, config.height
+    );
+    println!(
+        "  dpb_size: {}, fps: {}, frames: {}",
+        config.dpb_size, config.fps, config.frames
+    );
+    println!("  resolutions: {:?}", config.resolutions);
+    println!();
+    println!(
+        "  phase 1: decode     alloc {}-slot DPB pool, cycle {} frames with mmap+write+sync",
+        config.dpb_size, config.frames
+    );
+    println!(
+        "  phase 2: adaptive   {} resolution switches, realloc DPB each time",
+        config.resolutions.len()
+    );
+    println!(
+        "  phase 3: transcode  decoder DPB({}) + encoder pool(4, half-res {enc_size}B), {} frames",
+        config.dpb_size, config.frames
+    );
+    println!("  cleanup: release all pools");
+    println!();
+    println!("scenario codec result legend:");
+    println!("  frame_size      NV12 frame buffer size (bytes)");
+    println!("  dpb_size        decoded picture buffer pool depth");
+    println!("  dpb_alloc_us    time to allocate entire DPB pool");
+    println!("  dec_frame_size  decoder frame size");
+    println!("  enc_frame_size  encoder frame size (half-res)");
+    println!("  switches        number of adaptive resolution changes");
+    println!("  p50/p95_us      per-frame or per-switch latency percentiles");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("decode", codec_decode(backend, heap_name, config)),
         ("adaptive", codec_adaptive(backend, heap_name, config)),

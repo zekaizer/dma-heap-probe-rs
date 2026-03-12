@@ -27,6 +27,34 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("pool sequence:");
+    println!("  heap: {heap_name}");
+    println!();
+    println!(
+        "  1. pool_warmup      cold alloc x {MEASURE_ITERS} -> warm pool ({POOL_COUNT} cycles)"
+    );
+    println!("                      -> warm alloc x {MEASURE_ITERS}");
+    println!("                      compare cold vs warm p50/p95 latency");
+    println!("  2. size_switch      alloc 64K x 500 -> switch 4K x 500 -> back 64K x 500");
+    println!("                      measure first-10 vs last-10 p50 per phase");
+    println!("  3. release_order    alloc {POOL_COUNT} bufs -> close in lifo / fifo / random");
+    println!("                      realloc {POOL_COUNT} -> compare latency across strategies");
+    println!("  4. deferred_free    alloc 200 x 1MB -> drop all");
+    println!("                      check MemAvailable recovery via /proc/meminfo");
+    println!();
+    println!("pool result legend:");
+    println!("  cold_p50_us         first-alloc latency median (cold cache)");
+    println!("  cold_p95_us         first-alloc latency 95th percentile");
+    println!("  warm_p50_us         re-alloc latency median (warm cache/pool)");
+    println!("  warm_p95_us         re-alloc latency 95th percentile");
+    println!("  phase               size transition phase label (1=64K, 2=4K, 3=64K)");
+    println!("  first10_p50         first 10 allocs median latency per phase");
+    println!("  last10_p50          last 10 allocs median latency per phase");
+    println!("  order               release strategy (lifo, fifo, random)");
+    println!("  p50_us / p95_us     realloc latency percentiles per strategy");
+    println!("  recovery_pct        memory returned to system after bulk free (%)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("pool_warmup", test_pool_warmup(backend, heap_name)),
         ("size_switch", test_size_switch(backend, heap_name)),

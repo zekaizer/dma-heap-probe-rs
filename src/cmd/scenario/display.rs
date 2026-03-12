@@ -51,6 +51,43 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    let fb_size = framebuffer_size(config.width, config.height);
+    println!("scenario display sequence:");
+    println!("  heap: {heap_name}");
+    println!(
+        "  resolution: {}x{} ARGB8888 (fb_size: {fb_size})",
+        config.width, config.height
+    );
+    println!(
+        "  buffers: {}, fps: {}, frames: {}",
+        config.buffers, config.fps, config.frames
+    );
+    println!("  rotation_cycles: {}", config.rotation_cycles);
+    println!("  layers: {}", config.layers);
+    println!();
+    println!(
+        "  phase 1: flip          alloc {}-buffer pool, cycle {} frames with mmap+write",
+        config.buffers, config.frames
+    );
+    println!(
+        "  phase 2: rotation      {} x alternate portrait/landscape pool alloc/free",
+        config.rotation_cycles
+    );
+    println!(
+        "  phase 3: multi_layer   alloc {} layers (full-screen + overlay at 1/4..1/16 size)",
+        config.layers
+    );
+    println!("  cleanup: release all buffers");
+    println!();
+    println!("scenario display result legend:");
+    println!("  buf_size        framebuffer size (bytes)");
+    println!("  buffers         flip chain depth (double/triple)");
+    println!("  cycles          number of rotation transitions");
+    println!("  layers          number of composition layers allocated");
+    println!("  total_alloc_us  time to allocate all layers");
+    println!("  p50/p95_us      per-frame or per-cycle latency percentiles");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("flip", display_flip(backend, heap_name, config)),
         ("rotation", display_rotation(backend, heap_name, config)),

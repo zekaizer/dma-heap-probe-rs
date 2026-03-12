@@ -24,6 +24,40 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("negative sequence:");
+    println!("  heap: {heap_name}");
+    println!();
+    println!("  layer 1: heap access");
+    println!("     1. neg_open_nonexistent         open(\"\") -> expect ENOENT");
+    println!("  layer 2: alloc ioctl");
+    println!("     2. neg_alloc_zero_size           alloc(len=0) -> expect EINVAL");
+    println!("     3. neg_alloc_overflow_size        alloc(len=u64::MAX) -> expect EINVAL|ENOMEM");
+    println!("     4. neg_alloc_invalid_fd_flags     alloc(O_APPEND) -> expect EINVAL");
+    println!("     5. neg_alloc_invalid_heap_flags   alloc(heap_flags=1) -> expect EINVAL");
+    println!("     6. neg_alloc_on_closed_heap       alloc on closed heap fd -> expect EBADF");
+    println!("  layer 3: dma-buf ops");
+    println!("     7. neg_sync_invalid_flags         sync(flags=0, bad bits) -> expect EINVAL");
+    println!("     8. neg_sync_on_closed_fd          sync on closed fd -> expect EBADF");
+    println!("     9. neg_llseek_invalid             llseek(SEEK_CUR, nonzero) -> expect EINVAL");
+    println!(
+        "    10. neg_set_name_too_long          set_name(>{DMA_BUF_NAME_LEN} chars) -> expect ENAMETOOLONG"
+    );
+    println!("  layer 4: mmap");
+    println!("    11. neg_mmap_beyond_size           mmap(2x buf size) -> expect EINVAL");
+    println!("  layer 5: sync_file");
+    println!("    12. neg_export_sync_file_invalid   export_sync_file(flags=0) -> expect EINVAL");
+    println!("    13. neg_import_sync_file_bad_fd    import_sync_file(fd=9999) -> expect EINVAL");
+    println!("  layer 6: resource leak");
+    println!("    14. neg_rapid_alloc_close          alloc+close x1000 -> expect no leak");
+    println!("  layer 7: concurrency");
+    println!("    15. neg_concurrent_close           2 threads close same fd -> 1 ok + 1 EBADF");
+    println!();
+    println!("negative result legend:");
+    println!("  expected    the errno or behavior the test expects");
+    println!("  got         actual errno returned by the kernel");
+    println!("  pass        expected == got (negative test succeeded)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         // Layer 1: Heap device access
         ("neg_open_nonexistent", neg_open_nonexistent(backend)),

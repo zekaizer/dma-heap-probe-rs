@@ -71,6 +71,46 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    let (chunk_count, _) = chunk_params(config.model_size, config.chunk_size);
+    let iters_per_client = config.iterations / config.clients;
+    println!("scenario npu sequence:");
+    println!("  heap: {heap_name}");
+    println!("  model_size: {}", config.model_size);
+    println!("  chunk_size: {} ({chunk_count} chunks)", config.chunk_size);
+    println!("  input_size: {}", config.input_size);
+    println!("  output_size: {}", config.output_size);
+    println!("  iterations: {}", config.iterations);
+    println!("  clients: {}", config.clients);
+    println!();
+    println!(
+        "  phase 1: model_load     bulk_alloc {chunk_count} weight chunks, mmap+write, probe 4K/64K/1M"
+    );
+    println!(
+        "  phase 2: inference_loop  hold model + {} x (input alloc -> compute -> output read -> release)",
+        config.iterations
+    );
+    println!(
+        "  phase 3: model_switch   load A(half) -> load B(full) alongside -> release A -> load C(half)"
+    );
+    println!(
+        "  phase 4: sustained      hold model + {} x alloc/free with periodic p50/p95/p99 snapshots",
+        config.iterations
+    );
+    println!(
+        "  phase 5: concurrent     {} threads x {} iters each, independent inference loops",
+        config.clients, iters_per_client
+    );
+    println!("  cleanup: release all model buffers");
+    println!();
+    println!("scenario npu result legend:");
+    println!("  chunks          number of model weight chunks loaded");
+    println!("  total_alloc_us  total model load time");
+    println!("  probe_us        small alloc latency while model is held");
+    println!("  p50/p95/p99_us  per-iteration alloc latency percentiles");
+    println!("  client_id       concurrent client thread index");
+    println!("  iterations      iterations completed (per client or total)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("model_load", npu_model_load(backend, heap_name, config)),
         (
