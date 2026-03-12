@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use anyhow::Context;
+
 use crate::cmd::scenario::{
     camera::CameraConfig, codec::CodecConfig, display::DisplayConfig, gpu::GpuConfig,
     npu::NpuConfig, pipeline::PipelineConfig,
@@ -26,8 +28,10 @@ pub struct ScenarioConfigs {
 
 /// Load scenario configurations from a JSON file.
 pub fn load_config(path: &Path) -> anyhow::Result<ScenarioConfigs> {
-    let content = std::fs::read_to_string(path)?;
-    let configs: ScenarioConfigs = serde_json::from_str(&content)?;
+    let content = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read config: {}", path.display()))?;
+    let configs: ScenarioConfigs =
+        serde_json::from_str(&content).context("invalid JSON in config file")?;
     Ok(configs)
 }
 

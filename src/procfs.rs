@@ -1,5 +1,6 @@
 // Parsers for /proc/buddyinfo, /proc/pagetypeinfo, /proc/meminfo, /proc/vmstat.
 
+use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 /// One line from `/proc/buddyinfo`.
@@ -311,13 +312,14 @@ pub fn parse_vmstat(content: &str) -> VmStat {
 
 /// Read and parse `/proc/meminfo`.
 pub fn read_meminfo() -> anyhow::Result<MemInfo> {
-    let content = std::fs::read_to_string("/proc/meminfo")?;
+    let content =
+        std::fs::read_to_string("/proc/meminfo").context("failed to read /proc/meminfo")?;
     parse_meminfo(&content)
 }
 
 /// Read and parse `/proc/vmstat`.
 pub fn read_vmstat() -> anyhow::Result<VmStat> {
-    let content = std::fs::read_to_string("/proc/vmstat")?;
+    let content = std::fs::read_to_string("/proc/vmstat").context("failed to read /proc/vmstat")?;
     Ok(parse_vmstat(&content))
 }
 
@@ -333,13 +335,15 @@ pub fn snapshot() -> anyhow::Result<ProcfsSnapshot> {
 
 /// Read and parse `/proc/buddyinfo`.
 pub fn read_buddyinfo() -> anyhow::Result<Vec<BuddyInfoEntry>> {
-    let content = std::fs::read_to_string("/proc/buddyinfo")?;
+    let content =
+        std::fs::read_to_string("/proc/buddyinfo").context("failed to read /proc/buddyinfo")?;
     parse_buddyinfo(&content)
 }
 
 /// Read and parse `/proc/pagetypeinfo`.
 pub fn read_pagetypeinfo() -> anyhow::Result<Vec<PageTypeInfoEntry>> {
-    let content = std::fs::read_to_string("/proc/pagetypeinfo")?;
+    let content = std::fs::read_to_string("/proc/pagetypeinfo")
+        .context("failed to read /proc/pagetypeinfo")?;
     parse_pagetypeinfo(&content)
 }
 

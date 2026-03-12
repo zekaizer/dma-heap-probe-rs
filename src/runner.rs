@@ -3,6 +3,8 @@
 use std::path::Path;
 use std::time::Instant;
 
+use anyhow::Context;
+
 use serde::{Deserialize, Serialize};
 
 /// Result of a single sub-test within a stage.
@@ -87,7 +89,8 @@ impl RunResult {
     /// Write results as JSON to the given path.
     pub fn write_json(&self, path: &Path) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(path, json)?;
+        std::fs::write(path, &json)
+            .with_context(|| format!("failed to write results to {}", path.display()))?;
         tracing::info!(path = %path.display(), "results written");
         Ok(())
     }

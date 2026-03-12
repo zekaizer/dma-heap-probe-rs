@@ -3,6 +3,8 @@
 use std::fmt::Write as FmtWrite;
 use std::path::PathBuf;
 
+use anyhow::Context;
+
 use serde::{Deserialize, Serialize};
 
 use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, VmStat};
@@ -273,7 +275,8 @@ pub fn parse_debugfs_bufinfo(content: &str) -> anyhow::Result<Vec<DebugfsBufEntr
 
 /// Read and parse `/sys/kernel/debug/dma_buf/bufinfo`.
 pub fn read_debugfs_bufinfo() -> anyhow::Result<Vec<DebugfsBufEntry>> {
-    let content = std::fs::read_to_string("/sys/kernel/debug/dma_buf/bufinfo")?;
+    let content = std::fs::read_to_string("/sys/kernel/debug/dma_buf/bufinfo")
+        .context("failed to read /sys/kernel/debug/dma_buf/bufinfo")?;
     parse_debugfs_bufinfo(&content)
 }
 
@@ -487,7 +490,8 @@ pub fn parse_zoneinfo(content: &str) -> anyhow::Result<Vec<ZoneEntry>> {
 
 /// Read and parse `/proc/zoneinfo`.
 pub fn read_zoneinfo() -> anyhow::Result<Vec<ZoneEntry>> {
-    let content = std::fs::read_to_string("/proc/zoneinfo")?;
+    let content =
+        std::fs::read_to_string("/proc/zoneinfo").context("failed to read /proc/zoneinfo")?;
     parse_zoneinfo(&content)
 }
 
@@ -1178,7 +1182,8 @@ pub fn run(
     // Output
     if let Some(output_path) = output {
         let json = serde_json::to_string_pretty(&report)?;
-        std::fs::write(output_path, &json)?;
+        std::fs::write(output_path, &json)
+            .with_context(|| format!("failed to write info report to {}", output_path.display()))?;
         println!(
             "Info report written to {} ({} heaps, {} buffers, {})",
             output_path.display(),

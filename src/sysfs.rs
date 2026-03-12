@@ -2,6 +2,8 @@
 
 use std::path::Path;
 
+use anyhow::Context;
+
 use serde::{Deserialize, Serialize};
 
 /// Information about a single dma-buf buffer from sysfs.
@@ -60,7 +62,7 @@ pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
     }
 
     let mut buffers = Vec::new();
-    for entry in std::fs::read_dir(base)? {
+    for entry in std::fs::read_dir(base).context("failed to read sysfs dmabuf directory")? {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -70,8 +72,10 @@ pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
         };
 
         let dir = entry.path();
-        let size_content = std::fs::read_to_string(dir.join("size"))?;
-        let exporter_content = std::fs::read_to_string(dir.join("exporter_name"))?;
+        let size_content = std::fs::read_to_string(dir.join("size"))
+            .with_context(|| format!("failed to read size for buffer ino {ino}"))?;
+        let exporter_content = std::fs::read_to_string(dir.join("exporter_name"))
+            .with_context(|| format!("failed to read exporter_name for buffer ino {ino}"))?;
 
         buffers.push(parse_buffer_entry(ino, &size_content, &exporter_content)?);
     }
