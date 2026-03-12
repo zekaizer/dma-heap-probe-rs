@@ -74,65 +74,8 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--alloc-size".into(),
             "4096".into()
         ]),
-        prop_oneof![Just("interleave"), Just("sequential")].prop_map(|p| vec![
-            "fragmentation".into(),
-            "--pattern".into(),
-            p.into()
-        ]),
         Just(vec!["pool".into()]),
         Just(vec!["sysfs-dump".into()]),
-        (1..5u32, 1..3u32).prop_map(|(i, c)| vec![
-            "scenario".into(),
-            "npu".into(),
-            "--iterations".into(),
-            i.to_string(),
-            "--clients".into(),
-            c.to_string(),
-        ]),
-        (1..3u32).prop_map(|f| vec![
-            "scenario".into(),
-            "camera".into(),
-            "--width".into(),
-            "64".into(),
-            "--height".into(),
-            "64".into(),
-            "--frames".into(),
-            f.to_string(),
-        ]),
-        (1..3u32).prop_map(|f| vec![
-            "scenario".into(),
-            "display".into(),
-            "--width".into(),
-            "64".into(),
-            "--height".into(),
-            "64".into(),
-            "--frames".into(),
-            f.to_string(),
-        ]),
-        (1..3u32).prop_map(|f| vec![
-            "scenario".into(),
-            "codec".into(),
-            "--width".into(),
-            "64".into(),
-            "--height".into(),
-            "64".into(),
-            "--frames".into(),
-            f.to_string(),
-        ]),
-        (1..5usize, 1024..8192u64).prop_map(|(b, t)| vec![
-            "scenario".into(),
-            "gpu".into(),
-            "--buffer-count".into(),
-            b.to_string(),
-            "--texture-size".into(),
-            t.to_string(),
-        ]),
-        (1..3u32).prop_map(|f| vec![
-            "scenario".into(),
-            "pipeline".into(),
-            "--frames".into(),
-            f.to_string(),
-        ]),
         (1..10u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string(),]),
         (1..10u64).prop_map(|i| vec![
             "aging".into(),
@@ -158,12 +101,6 @@ fn arb_invalid_args() -> impl Strategy<Value = Vec<String>> {
             "not_a_number".into()
         ]),
         Just(vec!["edge".into(), "--threads".into(), "abc".into()]),
-        Just(vec!["scenario".into()]),
-        Just(vec![
-            "fragmentation".into(),
-            "--pattern".into(),
-            "unknown".into(),
-        ]),
         "[a-z]{1,8}".prop_map(|s| vec![format!("--{s}"), "basic".into()]),
     ]
 }

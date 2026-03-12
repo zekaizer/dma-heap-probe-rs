@@ -35,10 +35,6 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub output: Option<PathBuf>,
 
-    /// JSON configuration file for scenario workload parameters.
-    #[arg(long, global = true)]
-    pub config: Option<PathBuf>,
-
     /// Increase verbosity (-v=info, -vv=debug, -vvv=trace).
     #[arg(short = 'v', long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
@@ -93,24 +89,11 @@ pub enum Command {
         max_allocs: Option<usize>,
     },
 
-    /// Fragmentation analysis.
-    Fragmentation {
-        /// Allocation pattern type.
-        #[arg(long, value_enum, default_value_t = FragPattern::Interleave)]
-        pattern: FragPattern,
-    },
-
     /// Pool/cache behavior tests.
     Pool,
 
     /// Negative tests (error paths, invalid input, races).
     Negative,
-
-    /// Workload scenario simulations.
-    Scenario {
-        #[command(subcommand)]
-        scenario: ScenarioCommand,
-    },
 
     /// Aging tests (sustained alloc/free with periodic reporting).
     Aging {
@@ -204,15 +187,6 @@ pub enum Command {
     SysfsDump,
 }
 
-/// Fragmentation allocation pattern.
-#[derive(ValueEnum, Debug, Clone, Copy)]
-pub enum FragPattern {
-    /// Interleave: free every other buffer.
-    Interleave,
-    /// Sequential: free first half of buffers.
-    Sequential,
-}
-
 /// Histogram measurement mode.
 #[derive(ValueEnum, Debug, Clone, Copy)]
 pub enum HistMode {
@@ -234,100 +208,6 @@ impl HistMode {
             Self::CloseOnly => "close-only",
         }
     }
-}
-
-impl FragPattern {
-    /// Return the pattern name as a string slice.
-    #[must_use]
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Interleave => "interleave",
-            Self::Sequential => "sequential",
-        }
-    }
-}
-
-#[derive(Subcommand, Debug)]
-pub enum ScenarioCommand {
-    /// NPU inference workload simulation.
-    Npu {
-        /// Inference iterations (default: 100).
-        #[arg(long)]
-        iterations: Option<u32>,
-
-        /// Concurrent client threads (default: 4).
-        #[arg(long)]
-        clients: Option<u32>,
-    },
-
-    /// Camera capture/preview workload simulation.
-    Camera {
-        /// Capture width (default: 1920).
-        #[arg(long)]
-        width: Option<u32>,
-
-        /// Capture height (default: 1080).
-        #[arg(long)]
-        height: Option<u32>,
-
-        /// Number of frames to simulate (default: 100).
-        #[arg(long)]
-        frames: Option<u32>,
-    },
-
-    /// Display compositor workload simulation.
-    Display {
-        /// Display width (default: 1440).
-        #[arg(long)]
-        width: Option<u32>,
-
-        /// Display height (default: 3200).
-        #[arg(long)]
-        height: Option<u32>,
-
-        /// Number of frames to simulate (default: 120).
-        #[arg(long)]
-        frames: Option<u32>,
-    },
-
-    /// Video codec (decoder DPB) workload simulation.
-    Codec {
-        /// Video width (default: 3840).
-        #[arg(long)]
-        width: Option<u32>,
-
-        /// Video height (default: 2160).
-        #[arg(long)]
-        height: Option<u32>,
-
-        /// Number of frames to simulate (default: 60).
-        #[arg(long)]
-        frames: Option<u32>,
-    },
-
-    /// GPU texture/render workload simulation.
-    Gpu {
-        /// Number of buffers (default: 50).
-        #[arg(long)]
-        buffer_count: Option<usize>,
-
-        /// Texture buffer size in bytes (default: 1048576).
-        #[arg(long)]
-        texture_size: Option<u64>,
-    },
-
-    /// Combined camera+display+codec+npu pipeline simulation.
-    Pipeline {
-        /// Number of frames to simulate (default: 30).
-        #[arg(long)]
-        frames: Option<u32>,
-    },
-
-    /// Dump default scenario configuration as JSON.
-    DumpConfig,
-
-    /// Run all scenario simulations.
-    All,
 }
 
 #[cfg(test)]
@@ -444,7 +324,6 @@ mod tests {
         for cmd in &[
             "perf",
             "pressure",
-            "fragmentation",
             "pool",
             "negative",
             "aging",
@@ -456,90 +335,6 @@ mod tests {
             let cli = Cli::try_parse_from(["dhp", cmd]);
             assert!(cli.is_ok(), "failed to parse: {cmd}");
         }
-    }
-
-    #[test]
-    fn scenario_subcommands() {
-        for sub in &[
-            "npu",
-            "camera",
-            "display",
-            "codec",
-            "gpu",
-            "pipeline",
-            "dump-config",
-            "all",
-        ] {
-            let cli = Cli::try_parse_from(["dhp", "scenario", sub]);
-            assert!(cli.is_ok(), "failed to parse: scenario {sub}");
-        }
-    }
-
-    #[test]
-    fn scenario_npu_custom_args() {
-        let cli = parse(&[
-            "dhp",
-            "scenario",
-            "npu",
-            "--iterations",
-            "50",
-            "--clients",
-            "2",
-        ]);
-        match cli.command {
-            Command::Scenario {
-                scenario:
-                    ScenarioCommand::Npu {
-                        iterations,
-                        clients,
-                    },
-            } => {
-                assert_eq!(iterations, Some(50));
-                assert_eq!(clients, Some(2));
-            }
-            _ => panic!("expected Scenario::Npu"),
-        }
-    }
-
-    #[test]
-    fn scenario_npu_defaults_none() {
-        let cli = parse(&["dhp", "scenario", "npu"]);
-        match cli.command {
-            Command::Scenario {
-                scenario:
-                    ScenarioCommand::Npu {
-                        iterations,
-                        clients,
-                    },
-            } => {
-                assert!(iterations.is_none());
-                assert!(clients.is_none());
-            }
-            _ => panic!("expected Scenario::Npu"),
-        }
-    }
-
-    #[test]
-    fn config_option() {
-        let cli = parse(&["dhp", "--config", "/tmp/cfg.json", "scenario", "npu"]);
-        assert_eq!(cli.config, Some(PathBuf::from("/tmp/cfg.json")));
-    }
-
-    #[test]
-    fn dump_config_subcommand() {
-        let cli = parse(&["dhp", "scenario", "dump-config"]);
-        assert!(matches!(
-            cli.command,
-            Command::Scenario {
-                scenario: ScenarioCommand::DumpConfig
-            }
-        ));
-    }
-
-    #[test]
-    fn scenario_requires_subcommand() {
-        let result = Cli::try_parse_from(["dhp", "scenario"]);
-        assert!(result.is_err());
     }
 
     #[test]
