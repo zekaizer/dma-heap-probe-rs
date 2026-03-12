@@ -66,7 +66,7 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
 }
 
 /// Compute the p-th percentile from a sorted slice using nearest-rank method.
-fn percentile(sorted: &[u64], p: u32) -> u64 {
+pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
     let n = sorted.len() as u64;
     #[allow(clippy::cast_possible_truncation)]
     let rank = (u64::from(p) * n).div_ceil(100) as usize;
