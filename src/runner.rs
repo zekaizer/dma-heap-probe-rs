@@ -96,12 +96,12 @@ impl RunResult {
     }
 }
 
-/// Run a stage and record the result.
-pub fn run_stage<F>(results: &mut RunResult, name: &str, f: F)
+/// Run a stage and record the result with unified output.
+pub fn run_stage<F>(results: &mut RunResult, name: &str, heap: &str, f: F)
 where
     F: FnOnce() -> anyhow::Result<Option<serde_json::Value>>,
 {
-    tracing::info!(stage = name, "starting");
+    tracing::debug!(stage = name, heap, "starting");
     let start = Instant::now();
     let result = f();
     #[allow(clippy::cast_possible_truncation)]
@@ -109,11 +109,11 @@ where
 
     let (mapped, details) = match result {
         Ok(details) => {
-            tracing::info!(stage = name, duration_ms, "PASS");
+            println!("[{heap}] [PASS] {name} ({duration_ms}ms)");
             (Ok(()), details)
         }
         Err(e) => {
-            tracing::error!(stage = name, duration_ms, error = %e, "FAIL");
+            println!("[{heap}] [FAIL] {name} ({duration_ms}ms) — {e}");
             (Err(e), None)
         }
     };
@@ -137,10 +137,12 @@ fn selinux_hint(errno: nix::errno::Errno) -> &'static str {
     }
 }
 
-/// Collect nix test results into `SubTestResult` entries, logging each.
+/// Collect nix test results into `SubTestResult` entries with unified output.
+/// Prints `[heap] [PASS/FAIL] stage::test_name` for each result.
 /// Returns the collected results and the first error (if any).
 pub fn collect_test_results(
     stage: &str,
+    heap: &str,
     tests: &[(&str, nix::Result<()>)],
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let mut results = Vec::with_capacity(tests.len());
@@ -149,7 +151,7 @@ pub fn collect_test_results(
     for (name, result) in tests {
         match result {
             Ok(()) => {
-                tracing::info!(name, "PASS");
+                println!("[{heap}] [PASS] {stage}::{name}");
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: true,
@@ -158,10 +160,7 @@ pub fn collect_test_results(
             }
             Err(e) => {
                 let hint = selinux_hint(*e);
-                tracing::error!(name, error = %e, "FAIL");
-                if !hint.is_empty() {
-                    tracing::warn!(name, "{hint}");
-                }
+                println!("[{heap}] [FAIL] {stage}::{name} — {e}{hint}");
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: false,
@@ -252,8 +251,10 @@ mod tests {
     #[test]
     fn run_stage_records() {
         let mut r = RunResult::new(&["system".into()]);
-        run_stage(&mut r, "ok_stage", || Ok(None));
-        run_stage(&mut r, "err_stage", || Err(anyhow::anyhow!("boom")));
+        run_stage(&mut r, "ok_stage", "system", || Ok(None));
+        run_stage(&mut r, "err_stage", "system", || {
+            Err(anyhow::anyhow!("boom"))
+        });
         assert_eq!(r.stages.len(), 2);
         assert!(r.stages[0].passed);
         assert!(!r.stages[1].passed);
@@ -262,7 +263,7 @@ mod tests {
     #[test]
     fn run_stage_with_details() {
         let mut r = RunResult::new(&["system".into()]);
-        run_stage(&mut r, "detailed", || {
+        run_stage(&mut r, "detailed", "system", || {
             let details = serde_json::json!({"tests": []});
             Ok(Some(details))
         });
@@ -313,7 +314,7 @@ mod tests {
     #[test]
     fn collect_eperm_includes_hint() {
         let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EPERM))];
-        let (results, err) = collect_test_results("stage", &tests);
+        let (results, err) = collect_test_results("stage", "system", &tests);
         assert!(!results[0].passed);
         let error_msg = results[0].error.as_ref().unwrap();
         assert!(
@@ -328,7 +329,7 @@ mod tests {
     #[test]
     fn collect_eacces_includes_hint() {
         let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EACCES))];
-        let (results, _) = collect_test_results("stage", &tests);
+        let (results, _) = collect_test_results("stage", "system", &tests);
         let error_msg = results[0].error.as_ref().unwrap();
         assert!(
             error_msg.contains("SELinux"),
@@ -339,7 +340,7 @@ mod tests {
     #[test]
     fn collect_einval_no_hint() {
         let tests: Vec<(&str, nix::Result<()>)> = vec![("t", Err(nix::errno::Errno::EINVAL))];
-        let (results, _) = collect_test_results("stage", &tests);
+        let (results, _) = collect_test_results("stage", "system", &tests);
         let error_msg = results[0].error.as_ref().unwrap();
         assert!(
             !error_msg.contains("SELinux"),

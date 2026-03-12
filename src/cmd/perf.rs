@@ -89,30 +89,13 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
-    println!("perf sequence:");
-    println!("  heap: {heap_name}");
-    println!("  sizes: {sizes:?} bytes");
-    println!("  iterations: {iterations}");
-    println!("  warmup: {warmup}");
-    println!();
-    println!("  for each size:");
-    println!("    1. alloc_only        warmup({warmup}) -> measure alloc ioctl x {iterations}");
-    println!(
-        "    2. full_pipeline     warmup -> alloc+mmap+sync(W)+write+sync(R)+close x {iterations}"
+    tracing::debug!(
+        heap = heap_name,
+        ?sizes,
+        iterations,
+        warmup,
+        "perf sequence"
     );
-    println!("    3. close             pre-alloc -> measure close x {iterations}");
-    println!("  4. order_boundary      sweep 15 sizes (4K-8M) across buddy allocator boundaries");
-    println!("  5. internal_frag       measure actual vs requested size via llseek");
-    println!();
-    println!("perf result legend:");
-    println!("  min_us      minimum latency (us)");
-    println!("  avg_us      mean latency (us)");
-    println!("  p50_us      median latency (us)");
-    println!("  p95_us      95th percentile latency (us)");
-    println!("  p99_us      99th percentile latency (us)");
-    println!("  max_us      maximum latency (us)");
-    println!("  frag_pct    internal fragmentation ((actual-requested)/requested x 100)");
-    println!();
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
@@ -137,7 +120,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
     ];
 
-    runner::collect_test_results("perf", &tests)
+    runner::collect_test_results("perf", heap_name, &tests)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
@@ -172,7 +155,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
+                "[{heap_name}] perf::alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
                 stats.min_us, stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us, stats.max_us
             );
         }
@@ -223,7 +206,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
@@ -264,7 +247,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
@@ -304,7 +287,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "perf: order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                "[{heap_name}] perf::order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
                 stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
@@ -336,7 +319,7 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
         };
 
         println!(
-            "perf: internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
+            "[{heap_name}] perf::internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
         );
     }
 

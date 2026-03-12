@@ -266,25 +266,25 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     let mut results = runner::RunResult::new(heaps);
 
     for heap in heaps {
-        runner::run_stage(&mut results, "basic", || {
+        runner::run_stage(&mut results, "basic", heap, || {
             stage_result(cmd::basic::run(backend, heap, &[4096, 65536, 1_048_576], 8))
         });
-        runner::run_stage(&mut results, "sync_file", || {
+        runner::run_stage(&mut results, "sync_file", heap, || {
             stage_result(cmd::sync_file::run(backend, heap))
         });
-        runner::run_stage(&mut results, "edge", || {
+        runner::run_stage(&mut results, "edge", heap, || {
             stage_result(cmd::edge::run(backend, heap, 4))
         });
-        runner::run_stage(&mut results, "negative", || {
+        runner::run_stage(&mut results, "negative", heap, || {
             stage_result(cmd::negative::run(backend, heap))
         });
-        runner::run_stage(&mut results, "perf", || {
+        runner::run_stage(&mut results, "perf", heap, || {
             stage_result(cmd::perf::run(backend, heap, None, 10, 2))
         });
-        runner::run_stage(&mut results, "pressure", || {
+        runner::run_stage(&mut results, "pressure", heap, || {
             stage_result(cmd::pressure::run(backend, heap, 4096, None))
         });
-        runner::run_stage(&mut results, "pool", || {
+        runner::run_stage(&mut results, "pool", heap, || {
             stage_result(cmd::pool::run(backend, heap))
         });
     }

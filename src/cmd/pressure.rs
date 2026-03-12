@@ -23,37 +23,12 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         None => safe_exhaust_limit(alloc_size),
     };
 
-    let source = if max_allocs_override.is_some() {
-        "cli override"
-    } else {
-        "auto-detected"
-    };
-
-    println!("pressure sequence:");
-    println!("  heap: {heap_name}");
-    println!("  alloc_size: {alloc_size} bytes");
-    println!("  max_allocs: {max_allocs} ({source})");
-    println!();
-    println!("  1. gradual_exhaust");
-    println!("       alloc({alloc_size}) in loop until ENOMEM or max_allocs");
-    println!("       track per-alloc latency");
-    println!("       -> count, total_mb, avg_latency_us");
-    println!("  2. recovery");
-    println!("       exhaust -> release 50% -> re-alloc");
-    println!("       -> released, recovered, avg_recovery_us");
-    println!("  3. pressure_concurrent");
-    println!("       4 workers x 50 allocs each (concurrent)");
-    println!("       -> unexpected_failures (expect 0)");
-    println!();
-    println!("pressure result legend:");
-    println!("  count               buffers allocated before ENOMEM / limit");
-    println!("  total_mb            total allocated memory (count x alloc_size)");
-    println!("  avg_latency_us      mean per-alloc latency (us)");
-    println!("  released            buffers freed in recovery phase (50% of exhaust)");
-    println!("  recovered           successful re-allocs after release");
-    println!("  avg_recovery_us     mean re-alloc latency after release (us)");
-    println!("  unexpected_failures non-ENOMEM errors in concurrent test (pass = 0)");
-    println!();
+    tracing::debug!(
+        heap = heap_name,
+        alloc_size,
+        max_allocs,
+        "pressure sequence"
+    );
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
@@ -70,7 +45,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    runner::collect_test_results("pressure", &tests)
+    runner::collect_test_results("pressure", heap_name, &tests)
 }
 
 /// Absolute upper bound on exhaust allocations.
@@ -146,7 +121,7 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
     };
 
     println!(
-        "pressure: gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
+        "[{heap_name}] pressure::gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
         buffers.len(),
         total_bytes / (1024 * 1024),
     );
@@ -224,7 +199,7 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
     };
 
     println!(
-        "pressure: recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
+        "[{heap_name}] pressure::recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
     );
 
     drop(buffers);
@@ -273,7 +248,7 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
     println!(
-        "pressure: pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
+        "[{heap_name}] pressure::pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
     );
 
     if failures > 0 {

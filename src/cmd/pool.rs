@@ -26,33 +26,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
-    println!("pool sequence:");
-    println!("  heap: {heap_name}");
-    println!();
-    println!(
-        "  1. pool_warmup      cold alloc x {MEASURE_ITERS} -> warm pool ({POOL_COUNT} cycles)"
-    );
-    println!("                      -> warm alloc x {MEASURE_ITERS}");
-    println!("                      compare cold vs warm p50/p95 latency");
-    println!("  2. size_switch      alloc 64K x 500 -> switch 4K x 500 -> back 64K x 500");
-    println!("                      measure first-10 vs last-10 p50 per phase");
-    println!("  3. release_order    alloc {POOL_COUNT} bufs -> close in lifo / fifo / random");
-    println!("                      realloc {POOL_COUNT} -> compare latency across strategies");
-    println!("  4. deferred_free    alloc 200 x 1MB -> drop all");
-    println!("                      check MemAvailable recovery via /proc/meminfo");
-    println!();
-    println!("pool result legend:");
-    println!("  cold_p50_us         first-alloc latency median (cold cache)");
-    println!("  cold_p95_us         first-alloc latency 95th percentile");
-    println!("  warm_p50_us         re-alloc latency median (warm cache/pool)");
-    println!("  warm_p95_us         re-alloc latency 95th percentile");
-    println!("  phase               size transition phase label (1=64K, 2=4K, 3=64K)");
-    println!("  first10_p50         first 10 allocs median latency per phase");
-    println!("  last10_p50          last 10 allocs median latency per phase");
-    println!("  order               release strategy (lifo, fifo, random)");
-    println!("  p50_us / p95_us     realloc latency percentiles per strategy");
-    println!("  recovery_pct        memory returned to system after bulk free (%)");
-    println!();
+    tracing::debug!(heap = heap_name, "pool sequence");
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("pool_warmup", test_pool_warmup(backend, heap_name)),
@@ -61,7 +35,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("deferred_free", test_deferred_free(backend, heap_name)),
     ];
 
-    runner::collect_test_results("pool", &tests)
+    runner::collect_test_results("pool", heap_name, &tests)
 }
 
 /// Measure alloc latency and return samples in microseconds.
@@ -109,7 +83,7 @@ fn test_pool_warmup<B: HeapBackend + DmaBufBackend>(
 
     if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples)) {
         println!(
-            "pool: pool_warmup cold_p50_us={} cold_p95_us={} warm_p50_us={} warm_p95_us={}",
+            "[{heap_name}] pool::pool_warmup cold_p50_us={} cold_p95_us={} warm_p50_us={} warm_p95_us={}",
             cold.p50_us, cold.p95_us, warm.p50_us, warm.p95_us
         );
     }
@@ -146,19 +120,19 @@ fn test_size_switch<B: HeapBackend + DmaBufBackend>(
 
     if let (Some(p1_first), Some(p1_last)) = (first_10(&phase1), last_10(&phase1)) {
         println!(
-            "pool: size_switch phase=1 size={size_a} first10_p50={} last10_p50={}",
+            "[{heap_name}] pool::size_switch phase=1 size={size_a} first10_p50={} last10_p50={}",
             p1_first.p50_us, p1_last.p50_us
         );
     }
     if let (Some(p2_first), Some(p2_last)) = (first_10(&phase2), last_10(&phase2)) {
         println!(
-            "pool: size_switch phase=2 size={size_b} first10_p50={} last10_p50={}",
+            "[{heap_name}] pool::size_switch phase=2 size={size_b} first10_p50={} last10_p50={}",
             p2_first.p50_us, p2_last.p50_us
         );
     }
     if let (Some(p3_first), Some(p3_last)) = (first_10(&phase3), last_10(&phase3)) {
         println!(
-            "pool: size_switch phase=3 size={size_a} first10_p50={} last10_p50={}",
+            "[{heap_name}] pool::size_switch phase=3 size={size_a} first10_p50={} last10_p50={}",
             p3_first.p50_us, p3_last.p50_us
         );
     }
@@ -219,7 +193,7 @@ fn test_release_order<B: HeapBackend + DmaBufBackend>(
         let samples = test_order(order)?;
         if let Some(stats) = compute_stats(&samples) {
             println!(
-                "pool: release_order order={order} p50_us={} p95_us={} avg_us={}",
+                "[{heap_name}] pool::release_order order={order} p50_us={} p95_us={} avg_us={}",
                 stats.p50_us, stats.p95_us, stats.avg_us
             );
         }
@@ -267,11 +241,13 @@ fn test_deferred_free<B: HeapBackend + DmaBufBackend>(
             0.0
         };
         println!(
-            "pool: deferred_free before_free_kb={} after_free_kb={} freed_kb={freed_kb} expected_kb={expected_kb} recovery_pct={recovery_pct:.1}",
+            "[{heap_name}] pool::deferred_free before_free_kb={} after_free_kb={} freed_kb={freed_kb} expected_kb={expected_kb} recovery_pct={recovery_pct:.1}",
             before.mem_free_kb, after.mem_free_kb
         );
     } else {
-        println!("pool: deferred_free count={count} size={size} (meminfo unavailable on host)");
+        println!(
+            "[{heap_name}] pool::deferred_free count={count} size={size} (meminfo unavailable on host)"
+        );
     }
 
     Ok(())
