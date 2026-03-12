@@ -205,6 +205,27 @@ fn main() {
                 start.elapsed(),
             );
         }
+        Command::Histogram {
+            sizes,
+            heaps,
+            samples,
+            warmup,
+            mode,
+            buckets,
+        } => {
+            let heap_list = heaps.unwrap_or_else(|| vec![cli.heap.clone()]);
+            let start = Instant::now();
+            let (sub, err) =
+                cmd::histogram::run(&backend, &heap_list, &sizes, samples, warmup, mode, buckets);
+            handle_cmd_output(
+                "histogram",
+                &cli.heap,
+                cli.output.as_ref(),
+                &sub,
+                err,
+                start.elapsed(),
+            );
+        }
         Command::All => {
             let json_cfg = load_scenario_config(&cli);
             run_all(&backend, &cli, json_cfg.as_ref());
