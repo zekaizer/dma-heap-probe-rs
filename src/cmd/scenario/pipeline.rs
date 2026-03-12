@@ -56,6 +56,37 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    println!("scenario pipeline sequence:");
+    println!("  heap: {heap_name}");
+    println!("  frames: {}", config.frames);
+    if config.workloads.is_empty() {
+        println!("  workloads: (all roles use default heap)");
+    } else {
+        for (role, heap) in &config.workloads {
+            println!("  workload: {role} -> {heap}");
+        }
+    }
+    println!();
+    println!(
+        "  phase 1: camera_preview  camera(1080p NV12,4) + display(1080p ARGB,3) + gpu(1080p ARGB,2)"
+    );
+    println!(
+        "  phase 2: video_call      camera(720p,4) + encoder(720p,4) + decoder(720p,8) + display(720p,3)"
+    );
+    println!(
+        "  phase 3: ai_camera       camera(1080p,4) + npu(alloc/free 600K) + display(1080p,3)"
+    );
+    println!("  phase 4: heavy           camera + codec + gpu + npu + display (all concurrent)");
+    println!("  cleanup: all threads join, pools released");
+    println!();
+    println!("scenario pipeline result legend:");
+    println!("  heap              heap name used by each worker thread");
+    println!("  buf_size          per-buffer size for each worker");
+    println!("  pool_size         number of buffers in each worker's pool");
+    println!("  p50/p95_us        per-frame mmap+write latency percentiles");
+    println!("  thread failures   number of worker threads that encountered errors");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "camera_preview",

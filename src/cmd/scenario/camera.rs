@@ -118,6 +118,59 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    let preview_buf_size = config.format.buffer_size(config.width, config.height);
+    let capture_buf_size = config.burst_format.buffer_size(4000, 3000);
+    println!("scenario camera sequence:");
+    println!("  heap: {heap_name}");
+    println!(
+        "  preview: {}x{} {:?} (buf_size: {preview_buf_size})",
+        config.width, config.height, config.format
+    );
+    println!(
+        "  pool_size: {}, fps: {}, frames: {}",
+        config.pool_size, config.fps, config.frames
+    );
+    println!(
+        "  burst: {:?} x {} (buf_size: {capture_buf_size})",
+        config.burst_format, config.burst_count
+    );
+    println!("  resolutions: {:?}", config.resolutions);
+    println!("  streams: {} concurrent", config.streams.len());
+    for (i, s) in config.streams.iter().enumerate() {
+        println!(
+            "    stream {i}: {}x{} {:?} pool={} frames={}",
+            s.width, s.height, s.format, s.pool_size, s.frames
+        );
+    }
+    println!();
+    println!(
+        "  phase 1: preview       alloc {}-buffer pool, cycle {} frames with mmap+write",
+        config.pool_size, config.frames
+    );
+    println!(
+        "  phase 2: capture       burst alloc {} x high-res {:?} buffers, measure close latency",
+        config.burst_count, config.burst_format
+    );
+    println!(
+        "  phase 3: switch        {} resolution transitions, realloc pool each time",
+        config.resolutions.len()
+    );
+    println!(
+        "  phase 4: multi_stream  {} concurrent streams with independent buffer pools",
+        config.streams.len()
+    );
+    println!("  cleanup: release all pools");
+    println!();
+    println!("scenario camera result legend:");
+    println!("  buf_size        per-frame buffer size (bytes)");
+    println!("  pool_size       number of buffers in rotation pool");
+    println!("  capture_size    burst capture buffer size");
+    println!("  close_us        time to release all burst buffers");
+    println!("  p50/p95_us      per-frame or per-switch latency percentiles");
+    println!("  max_us          worst-case alloc latency in burst");
+    println!("  stream_id       concurrent stream thread index");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("preview", camera_preview(backend, heap_name, config)),
         ("capture", camera_capture(backend, heap_name, config)),

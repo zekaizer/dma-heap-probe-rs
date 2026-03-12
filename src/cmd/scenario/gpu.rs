@@ -54,6 +54,45 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     Vec<crate::runner::SubTestResult>,
     Option<Box<dyn std::error::Error>>,
 ) {
+    let evict_count = (config.pool_size as u64 * u64::from(config.evict_pct) / 100) as usize;
+    println!("scenario gpu sequence:");
+    println!("  heap: {heap_name}");
+    println!("  buffer_count: {}", config.buffer_count);
+    println!("  switch_count: {}", config.switch_count);
+    println!("  texture_size: {}", config.texture_size);
+    println!("  pool_size: {}", config.pool_size);
+    println!(
+        "  evict_pct: {}% ({evict_count} textures per round)",
+        config.evict_pct
+    );
+    println!("  evict_rounds: {}", config.evict_rounds);
+    println!();
+    println!(
+        "  phase 1: app_launch    burst alloc {} mixed-size buffers (4K..16M)",
+        config.buffer_count
+    );
+    println!(
+        "  phase 2: app_switch    {} x (alloc {} buffers @ 256K -> release all)",
+        config.switch_count, config.buffer_count
+    );
+    println!(
+        "  phase 3: game_texture  {} pool, {} rounds x evict {evict_count} + reload",
+        config.pool_size, config.evict_rounds
+    );
+    println!("  cleanup: release all buffers");
+    println!();
+    println!("scenario gpu result legend:");
+    println!("  buffer_count        number of buffers in launch burst");
+    println!("  total_us            total burst allocation time");
+    println!("  switches            number of app switch cycles");
+    println!("  buffers_per_switch  buffers allocated per switch");
+    println!("  pool_size           texture pool capacity");
+    println!("  evict_pct           percentage of pool evicted per round");
+    println!("  rounds              number of evict/reload cycles");
+    println!("  p50/p95_us          per-alloc or per-round latency percentiles");
+    println!("  max_us              worst-case single alloc latency");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("app_launch", gpu_app_launch(backend, heap_name, config)),
         ("app_switch", gpu_app_switch(backend, heap_name, config)),
