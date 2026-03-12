@@ -786,4 +786,115 @@ mod tests {
         let b = setup();
         assert_eq!(b.close_heap(9999), Err(Errno::EBADF));
     }
+
+    // ── SimConfig fault injection tests ──
+
+    #[test]
+    fn sim_enomem_triggers() {
+        let b = MockBackend::with_sim(SimConfig {
+            enomem_threshold: Some(3),
+            ..Default::default()
+        });
+        let heap_fd = b.open("system").unwrap();
+        // First 3 allocs succeed (threshold=3 means fail when buffers.len() >= 3)
+        for _ in 0..3 {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(heap_fd, &mut data).unwrap();
+        }
+        // 4th alloc should fail with ENOMEM
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(heap_fd, &mut data), Err(Errno::ENOMEM));
+    }
+
+    #[test]
+    fn sim_fail_every_nth() {
+        let b = MockBackend::with_sim(SimConfig {
+            fail_every_nth: 3,
+            ..Default::default()
+        });
+        let heap_fd = b.open("system").unwrap();
+        let mut results = Vec::new();
+        for _ in 0..6 {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            results.push(b.alloc(heap_fd, &mut data));
+        }
+        // Every 3rd alloc (index 2, 5) returns EIO
+        assert!(results[0].is_ok());
+        assert!(results[1].is_ok());
+        assert_eq!(results[2], Err(Errno::EIO));
+        assert!(results[3].is_ok());
+        assert!(results[4].is_ok());
+        assert_eq!(results[5], Err(Errno::EIO));
+    }
+
+    #[test]
+    fn sim_corruption_detected() {
+        let b = MockBackend::with_sim(SimConfig {
+            corrupt_every_nth: 1,
+            ..Default::default()
+        });
+        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
+        // Buffer starts zeroed, mmap with corrupt_every_nth=1 flips byte 0
+        let ptr = b.mmap(buf_fd, 4096).unwrap();
+        let first_byte = unsafe { *ptr };
+        assert_eq!(first_byte, 0xFF, "first byte should be flipped from 0x00");
+    }
+
+    #[test]
+    fn sim_no_corruption_without_config() {
+        let b = MockBackend::new();
+        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
+        let ptr = b.mmap(buf_fd, 4096).unwrap();
+        let first_byte = unsafe { *ptr };
+        assert_eq!(first_byte, 0x00, "no corruption without SimConfig");
+    }
+
+    #[test]
+    fn sim_enomem_recovers_after_free() {
+        let b = MockBackend::with_sim(SimConfig {
+            enomem_threshold: Some(2),
+            ..Default::default()
+        });
+        let heap_fd = b.open("system").unwrap();
+        // Alloc 2 buffers
+        let mut fds = Vec::new();
+        for _ in 0..2 {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(heap_fd, &mut data).unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            fds.push(data.fd as i32);
+        }
+        // Next alloc fails
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(heap_fd, &mut data), Err(Errno::ENOMEM));
+        // Free one buffer
+        b.close(fds[0]).unwrap();
+        // Now alloc should succeed again
+        let mut data2 = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data2).unwrap();
+    }
 }

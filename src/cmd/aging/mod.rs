@@ -904,6 +904,181 @@ mod tests {
     }
 
     #[test]
+    fn threshold_error_rate_pass() {
+        let result = AgingResult {
+            mode: "fuzz".to_string(),
+            elapsed_secs: 10,
+            total_iters: 1000,
+            threads: 1,
+            total_allocs: 1000,
+            total_frees: 1000,
+            total_errors: 0,
+            enomem_count: 0,
+            throughput_iters_per_sec: None,
+            latency: None,
+            first_interval_avg_us: None,
+            final_interval_avg_us: None,
+            peak_p99_us: 0,
+            trend: 1.0,
+            mem_available_delta_mb: None,
+            cma_free_delta_kb: None,
+            slab_delta_kb: None,
+            buf_count_start: 0,
+            buf_count_end: 0,
+            compaction_stall_delta: None,
+            high_order_free_delta: None,
+            warnings: vec![],
+        };
+        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
+    }
+
+    #[test]
+    fn aging_with_enomem_pressure() {
+        use crate::backend::mock::{MockBackend, SimConfig};
+        let b = MockBackend::with_sim(SimConfig {
+            enomem_threshold: Some(5),
+            ..Default::default()
+        });
+        let heaps = vec!["system".to_string()];
+        reset_sigint();
+        let (results, err, aging_result) = run(
+            &b,
+            &heaps,
+            4096,
+            1,
+            None,
+            Some(30),
+            Duration::from_secs(60),
+            false,
+            8,
+            None,
+            &AgingThresholds::default(),
+        );
+        assert!(err.is_none(), "unexpected error: {err:?}");
+        assert!(results.iter().all(|t| t.passed));
+        let ar = aging_result.unwrap();
+        assert!(ar.enomem_count > 0, "should have seen ENOMEM");
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+    }
+
+    #[test]
+    fn aging_with_error_injection() {
+        use crate::backend::mock::{MockBackend, SimConfig};
+        let b = MockBackend::with_sim(SimConfig {
+            fail_every_nth: 5,
+            ..Default::default()
+        });
+        let heaps = vec!["system".to_string()];
+        reset_sigint();
+        let (_results, _err, aging_result) = run(
+            &b,
+            &heaps,
+            4096,
+            1,
+            None,
+            Some(50),
+            Duration::from_secs(60),
+            false,
+            8,
+            None,
+            &AgingThresholds::default(),
+        );
+        let ar = aging_result.unwrap();
+        assert!(ar.total_errors > 0, "should have injected errors");
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+    }
+
+    #[test]
+    fn aging_fuzz_with_enomem_pressure() {
+        use crate::backend::mock::{MockBackend, SimConfig};
+        let b = MockBackend::with_sim(SimConfig {
+            enomem_threshold: Some(4),
+            ..Default::default()
+        });
+        let heaps = vec!["system".to_string()];
+        reset_sigint();
+        let (results, err, aging_result) = run(
+            &b,
+            &heaps,
+            4096,
+            1,
+            None,
+            Some(30),
+            Duration::from_secs(60),
+            true,
+            8,
+            Some(42),
+            &AgingThresholds::default(),
+        );
+        assert!(err.is_none(), "unexpected error: {err:?}");
+        assert!(results.iter().all(|t| t.passed));
+        let ar = aging_result.unwrap();
+        assert!(ar.enomem_count > 0, "fuzz should have seen ENOMEM");
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+    }
+
+    #[test]
+    fn reporter_updates_cumulative_stats() {
+        let state = AgingState::new();
+        // Push latencies and simulate what reporter does
+        {
+            let mut lat = state.interval_latencies.lock().unwrap();
+            lat.extend_from_slice(&[10, 20, 30, 40, 50]);
+        }
+        let latencies = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
+        let stats = perf::compute_stats(&latencies).unwrap();
+        state.update_cumulative(&stats);
+
+        assert!(state.first_interval_set.load(Relaxed));
+        assert_eq!(state.first_interval_avg.load(Relaxed), stats.avg_us);
+        assert_eq!(state.peak_p99.load(Relaxed), stats.p99_us);
+
+        // Second interval with higher p99
+        {
+            let mut lat = state.interval_latencies.lock().unwrap();
+            lat.extend_from_slice(&[100, 200, 300, 400, 500]);
+        }
+        let latencies2 = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
+        let stats2 = perf::compute_stats(&latencies2).unwrap();
+        state.update_cumulative(&stats2);
+
+        // first_interval_avg should not change
+        assert_eq!(state.first_interval_avg.load(Relaxed), stats.avg_us);
+        // final_interval_avg should be updated
+        assert_eq!(state.final_interval_avg.load(Relaxed), stats2.avg_us);
+        // peak_p99 should be the higher one
+        assert!(state.peak_p99.load(Relaxed) >= stats2.p99_us);
+    }
+
+    #[test]
+    fn normal_hold_pool_balance() {
+        let b = crate::backend::mock::MockBackend::new();
+        let heaps = vec!["system".to_string()];
+        reset_sigint();
+        let (results, err, aging_result) = run(
+            &b,
+            &heaps,
+            4096,
+            2,
+            None,
+            Some(30),
+            Duration::from_secs(60),
+            false,
+            16,
+            None,
+            &AgingThresholds::default(),
+        );
+        assert!(err.is_none(), "unexpected error: {err:?}");
+        assert!(results.iter().all(|t| t.passed));
+        let ar = aging_result.unwrap();
+        assert_eq!(
+            ar.total_allocs, ar.total_frees,
+            "allocs must equal frees after drain"
+        );
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+    }
+
+    #[test]
     fn cumulative_stats_accuracy() {
         let state = AgingState::new();
         // Simulate two intervals
