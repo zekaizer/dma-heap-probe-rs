@@ -80,7 +80,7 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "4096".into()
         ]),
         Just(vec!["pool".into()]),
-        Just(vec!["sysfs-dump".into()]),
+        Just(vec!["info".into(), "--dump".into()]),
         (1..10u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string(),]),
         (1..10u64).prop_map(|i| vec![
             "aging".into(),

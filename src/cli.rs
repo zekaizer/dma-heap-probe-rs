@@ -168,10 +168,11 @@ pub enum Command {
         /// Show individual buffer list (requires debugfs access for full detail).
         #[arg(long)]
         detail: bool,
-    },
 
-    /// Standalone sysfs/procfs snapshot.
-    SysfsDump,
+        /// Dump raw sysfs/procfs snapshot (JSON).
+        #[arg(long)]
+        dump: bool,
+    },
 }
 
 /// Histogram measurement mode.
@@ -300,7 +301,10 @@ mod tests {
     fn info_defaults() {
         let cli = parse(&["dhp", "info"]);
         match cli.command {
-            Command::Info { detail } => assert!(!detail),
+            Command::Info { detail, dump } => {
+                assert!(!detail);
+                assert!(!dump);
+            }
             _ => panic!("expected Info"),
         }
     }
@@ -309,7 +313,19 @@ mod tests {
     fn info_with_detail() {
         let cli = parse(&["dhp", "info", "--detail"]);
         match cli.command {
-            Command::Info { detail } => assert!(detail),
+            Command::Info { detail, dump } => {
+                assert!(detail);
+                assert!(!dump);
+            }
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn info_with_dump() {
+        let cli = parse(&["dhp", "info", "--dump"]);
+        match cli.command {
+            Command::Info { dump, .. } => assert!(dump),
             _ => panic!("expected Info"),
         }
     }
@@ -325,7 +341,6 @@ mod tests {
             "histogram",
             "all",
             "info",
-            "sysfs-dump",
         ] {
             let cli = Cli::try_parse_from(["dhp", cmd]);
             assert!(cli.is_ok(), "failed to parse: {cmd}");

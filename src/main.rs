@@ -123,20 +123,24 @@ fn main() {
                 start.elapsed(),
             );
         }
-        Command::Info { detail } => {
-            let heap_filter: Option<Vec<&str>> = if detail {
-                Some(heaps.iter().map(String::as_str).collect())
+        Command::Info { detail, dump } => {
+            if dump {
+                run_sysfs_dump();
             } else {
-                None
-            };
-            if let Err(e) = cmd::info::run(
-                detail,
-                heap_filter.as_deref(),
-                cli.procfs,
-                cli.output.as_ref(),
-            ) {
-                tracing::error!(error = %e, "info command failed");
-                std::process::exit(1);
+                let heap_filter: Option<Vec<&str>> = if detail {
+                    Some(heaps.iter().map(String::as_str).collect())
+                } else {
+                    None
+                };
+                if let Err(e) = cmd::info::run(
+                    detail,
+                    heap_filter.as_deref(),
+                    cli.procfs,
+                    cli.output.as_ref(),
+                ) {
+                    tracing::error!(error = %e, "info command failed");
+                    std::process::exit(1);
+                }
             }
         }
         Command::Aging {
@@ -203,9 +207,6 @@ fn main() {
         }
         Command::All => {
             run_all(&backend, &cli, &heaps);
-        }
-        Command::SysfsDump => {
-            run_sysfs_dump();
         }
     }
 }

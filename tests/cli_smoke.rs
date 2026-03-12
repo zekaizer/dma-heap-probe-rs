@@ -82,8 +82,8 @@ fn info_json_output() {
 }
 
 #[test]
-fn sysfs_dump_defaults() {
-    dhp().arg("sysfs-dump").assert().success();
+fn info_dump() {
+    dhp().args(["info", "--dump"]).assert().success();
 }
 
 #[test]
