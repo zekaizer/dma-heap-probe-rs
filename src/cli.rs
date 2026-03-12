@@ -87,6 +87,10 @@ pub enum Command {
         /// Allocation size for gradual exhaust (bytes).
         #[arg(long, default_value_t = 1_048_576)]
         alloc_size: u64,
+
+        /// Max allocation count for exhaust tests (overrides auto-detection).
+        #[arg(long)]
+        max_allocs: Option<usize>,
     },
 
     /// Fragmentation analysis.

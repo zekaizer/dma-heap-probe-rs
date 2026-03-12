@@ -110,9 +110,12 @@ fn main() {
                 start.elapsed(),
             );
         }
-        Command::Pressure { alloc_size } => {
+        Command::Pressure {
+            alloc_size,
+            max_allocs,
+        } => {
             let start = Instant::now();
-            let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size);
+            let (sub, err) = cmd::pressure::run(&backend, &cli.heap, alloc_size, max_allocs);
             handle_cmd_output(
                 "pressure",
                 &cli.heap,
@@ -400,7 +403,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         stage_result(cmd::perf::run(backend, &heap, None, 10, 2))
     });
     runner::run_stage(&mut results, "pressure", || {
-        stage_result(cmd::pressure::run(backend, &heap, 4096))
+        stage_result(cmd::pressure::run(backend, &heap, 4096, None))
     });
     runner::run_stage(&mut results, "fragmentation", || {
         stage_result(cmd::fragmentation::run(backend, &heap, "interleave"))

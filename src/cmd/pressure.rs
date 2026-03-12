@@ -17,8 +17,12 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     alloc_size: u64,
+    max_allocs_override: Option<usize>,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
-    let max_allocs = safe_exhaust_limit(alloc_size);
+    let max_allocs = match max_allocs_override {
+        Some(n) => n,
+        None => safe_exhaust_limit(alloc_size),
+    };
 
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
@@ -283,7 +287,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system", 4096);
+        let (results, err) = run(&b, "system", 4096, None);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 3);
