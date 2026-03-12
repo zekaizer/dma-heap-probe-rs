@@ -30,6 +30,27 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     sizes: &[u64],
     repeat: u32,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("basic sequence:");
+    println!("  heap: {heap_name}");
+    println!("  sizes: {sizes:?} bytes");
+    println!("  repeat: {repeat}");
+    println!();
+    println!("  for each size:");
+    println!(
+        "    1. alloc_and_map     alloc -> mmap -> sync(W) -> write -> sync(R) -> read -> verify"
+    );
+    println!("    2. alloc_zeroed      alloc -> mmap -> verify all zeros");
+    println!("    3. llseek_size       alloc -> llseek(END) -> verify == alloc_size");
+    println!("  4. repeated_alloc      alloc x {repeat} -> verify all succeed");
+    println!();
+    println!("basic result legend:");
+    println!("  size       allocation size under test (bytes)");
+    println!("  verified   data integrity check (write 0xAA, read back)");
+    println!("  zeroed     newly allocated buffer contains all zeros");
+    println!("  llseek     reported size matches requested allocation");
+    println!("  repeat     number of sequential allocs completed");
+    println!();
+
     let tests: [(&str, nix::Result<()>); 4] = [
         (
             "alloc_and_map",
