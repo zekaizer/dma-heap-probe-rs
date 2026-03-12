@@ -19,7 +19,7 @@ use super::{AgingState, mark_init_error, should_stop};
 use crate::probe::HeapCaps;
 
 /// Allocation sizes covering page and order boundary values.
-const FUZZ_SIZES: &[u64] = &[
+pub(crate) const FUZZ_SIZES: &[u64] = &[
     1, 4095, 4096, 4097, // page boundary
     65535, 65536, 65537,     // order boundary
     1_048_576, // 1MB
