@@ -146,11 +146,10 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
         latencies_us.iter().sum::<u64>() / latencies_us.len() as u64
     };
 
-    tracing::info!(
-        count = buffers.len(),
-        total_mb = total_bytes / (1024 * 1024),
-        avg_latency_us = avg_latency,
-        "gradual_exhaust"
+    println!(
+        "pressure: gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
+        buffers.len(),
+        total_bytes / (1024 * 1024),
     );
 
     // Clean up all buffers (Drop handles close).
@@ -225,12 +224,8 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
         recovery_latencies.iter().sum::<u64>() / recovery_latencies.len() as u64
     };
 
-    tracing::info!(
-        total_before,
-        released = release_count,
-        recovered,
-        avg_recovery_us = avg_recovery,
-        "recovery"
+    println!(
+        "pressure: recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
     );
 
     drop(buffers);
@@ -278,11 +273,8 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
     });
 
     let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
-    tracing::info!(
-        workers = worker_count,
-        allocs_per_worker,
-        unexpected_failures = failures,
-        "pressure_concurrent"
+    println!(
+        "pressure: pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
     );
 
     if failures > 0 {
