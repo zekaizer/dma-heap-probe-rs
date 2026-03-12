@@ -172,6 +172,14 @@ pub enum Command {
         /// Dump raw sysfs/procfs snapshot (JSON).
         #[arg(long)]
         dump: bool,
+
+        /// Continuous monitoring mode (periodic compact status line).
+        #[arg(long)]
+        follow: bool,
+
+        /// Monitoring interval in seconds (used with `--follow`).
+        #[arg(long, default_value_t = 5)]
+        interval: u64,
     },
 }
 
@@ -301,9 +309,16 @@ mod tests {
     fn info_defaults() {
         let cli = parse(&["dhp", "info"]);
         match cli.command {
-            Command::Info { detail, dump } => {
+            Command::Info {
+                detail,
+                dump,
+                follow,
+                interval,
+            } => {
                 assert!(!detail);
                 assert!(!dump);
+                assert!(!follow);
+                assert_eq!(interval, 5);
             }
             _ => panic!("expected Info"),
         }
@@ -313,10 +328,7 @@ mod tests {
     fn info_with_detail() {
         let cli = parse(&["dhp", "info", "--detail"]);
         match cli.command {
-            Command::Info { detail, dump } => {
-                assert!(detail);
-                assert!(!dump);
-            }
+            Command::Info { detail, .. } => assert!(detail),
             _ => panic!("expected Info"),
         }
     }
@@ -326,6 +338,20 @@ mod tests {
         let cli = parse(&["dhp", "info", "--dump"]);
         match cli.command {
             Command::Info { dump, .. } => assert!(dump),
+            _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn info_with_follow() {
+        let cli = parse(&["dhp", "info", "--follow", "--interval", "2"]);
+        match cli.command {
+            Command::Info {
+                follow, interval, ..
+            } => {
+                assert!(follow);
+                assert_eq!(interval, 2);
+            }
             _ => panic!("expected Info"),
         }
     }

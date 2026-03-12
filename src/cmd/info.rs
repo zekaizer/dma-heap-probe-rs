@@ -1198,6 +1198,121 @@ pub fn run(
     Ok(())
 }
 
+/// Compact snapshot for follow mode: buffer count + total size + available memory.
+struct FollowSnapshot {
+    heap_count: usize,
+    total_buffers: usize,
+    total_size: u64,
+    mem_available_kb: Option<u64>,
+}
+
+/// Collect a lightweight snapshot for follow mode.
+fn collect_follow_snapshot() -> FollowSnapshot {
+    let heaps = enumerate_heaps(DMA_HEAP_BASE);
+    let heap_count = heaps.len();
+
+    let (total_buffers, total_size) = if let Ok(entries) = read_debugfs_bufinfo() {
+        let total = entries.len();
+        let size: u64 = entries.iter().map(|e| e.size).sum();
+        (total, size)
+    } else if let Ok(snap) = sysfs::snapshot() {
+        let total = snap.buffers.len();
+        let size: u64 = snap.buffers.iter().map(|b| b.size).sum();
+        (total, size)
+    } else {
+        (0, 0)
+    };
+
+    let mem_available_kb = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
+
+    FollowSnapshot {
+        heap_count,
+        total_buffers,
+        total_size,
+        mem_available_kb,
+    }
+}
+
+/// Run info in follow mode: periodically print a compact status line.
+pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String]) {
+    let mut prev: Option<FollowSnapshot> = None;
+
+    loop {
+        let snap = collect_follow_snapshot();
+        let ts = chrono_now();
+        let mem_str = snap
+            .mem_available_kb
+            .map_or_else(|| "N/A".to_string(), |kb| format_size(kb * 1024));
+
+        #[allow(clippy::cast_possible_wrap)]
+        let delta = if let Some(ref p) = prev {
+            let buf_diff = snap.total_buffers as i64 - p.total_buffers as i64;
+            let size_diff = snap.total_size as i64 - p.total_size as i64;
+            if buf_diff == 0 && size_diff == 0 {
+                "  (no change)".to_string()
+            } else {
+                format!("  ({:+} bufs, {})", buf_diff, format_size_signed(size_diff),)
+            }
+        } else {
+            String::new()
+        };
+
+        println!(
+            "[{}] heaps={} bufs={} size={} mem_avail={}{}",
+            ts,
+            snap.heap_count,
+            snap.total_buffers,
+            format_size(snap.total_size),
+            mem_str,
+            delta,
+        );
+
+        if detail && !heaps.is_empty() {
+            // Per-heap summary from debugfs
+            if let Ok(entries) = read_debugfs_bufinfo() {
+                for heap in heaps {
+                    let matching: Vec<_> = entries.iter().filter(|e| e.exp_name == *heap).collect();
+                    let count = matching.len();
+                    let size: u64 = matching.iter().map(|e| e.size).sum();
+                    let buf_diff = if prev.is_some() {
+                        format!(" ({count})")
+                    } else {
+                        String::new()
+                    };
+                    print!("  {heap}: {count} bufs {}{buf_diff}", format_size(size));
+                }
+                if !heaps.is_empty() {
+                    println!();
+                }
+            }
+        }
+
+        prev = Some(snap);
+        std::thread::sleep(interval);
+    }
+}
+
+/// Format a signed byte delta with units.
+fn format_size_signed(bytes: i64) -> String {
+    let sign = if bytes >= 0 { "+" } else { "-" };
+    let abs = bytes.unsigned_abs();
+    format!("{sign}{}", format_size(abs))
+}
+
+/// Simple timestamp (HH:MM:SS) without external crate.
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    // UTC HH:MM:SS
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    let s = secs % 60;
+    format!("{h:02}:{m:02}:{s:02}")
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------

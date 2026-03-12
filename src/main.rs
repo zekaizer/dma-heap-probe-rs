@@ -123,9 +123,17 @@ fn main() {
                 start.elapsed(),
             );
         }
-        Command::Info { detail, dump } => {
+        Command::Info {
+            detail,
+            dump,
+            follow,
+            interval,
+        } => {
             if dump {
                 run_sysfs_dump();
+            } else if follow {
+                let dur = std::time::Duration::from_secs(interval);
+                cmd::info::run_follow(dur, detail, &heaps);
             } else {
                 let heap_filter: Option<Vec<&str>> = if detail {
                     Some(heaps.iter().map(String::as_str).collect())
