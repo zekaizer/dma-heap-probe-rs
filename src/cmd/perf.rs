@@ -172,15 +172,9 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            tracing::info!(
-                size,
-                min_us = stats.min_us,
-                avg_us = stats.avg_us,
-                p50_us = stats.p50_us,
-                p95_us = stats.p95_us,
-                p99_us = stats.p99_us,
-                max_us = stats.max_us,
-                "alloc_only"
+            println!(
+                "perf: alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
+                stats.min_us, stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us, stats.max_us
             );
         }
     }
@@ -229,13 +223,9 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            tracing::info!(
-                size,
-                avg_us = stats.avg_us,
-                p50_us = stats.p50_us,
-                p95_us = stats.p95_us,
-                p99_us = stats.p99_us,
-                "full_pipeline"
+            println!(
+                "perf: full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
     }
@@ -274,13 +264,9 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            tracing::info!(
-                size,
-                avg_us = stats.avg_us,
-                p50_us = stats.p50_us,
-                p95_us = stats.p95_us,
-                p99_us = stats.p99_us,
-                "close"
+            println!(
+                "perf: close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
     }
@@ -318,13 +304,9 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            tracing::info!(
-                size,
-                avg_us = stats.avg_us,
-                p50_us = stats.p50_us,
-                p95_us = stats.p95_us,
-                p99_us = stats.p99_us,
-                "order_boundary"
+            println!(
+                "perf: order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
+                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
             );
         }
     }
@@ -354,12 +336,8 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
             0.0
         };
 
-        tracing::info!(
-            requested = size,
-            actual = actual,
-            expected = expected_aligned,
-            frag_pct = format!("{frag_ratio:.1}"),
-            "internal_frag"
+        println!(
+            "perf: internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
         );
     }
 
