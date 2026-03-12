@@ -24,6 +24,35 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     pattern: &str,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("fragmentation sequence:");
+    println!("  heap: {heap_name}");
+    println!("  pattern: {pattern}");
+    println!();
+    println!("  1. buddyinfo_track      snapshot /proc/buddyinfo before/after 100x1MB alloc/free");
+    println!("                           -> high_order_free before vs after");
+    println!("  2. interleave_pattern    4-phase fragmentation inducer:");
+    if pattern == "sequential" {
+        println!(
+            "                           alloc 100 mixed -> free first half -> realloc 32KB -> cleanup"
+        );
+    } else {
+        println!(
+            "                           alloc 100 mixed -> free even indices -> realloc 32KB -> cleanup"
+        );
+    }
+    println!("                           -> released, reallocated, buddyinfo per phase");
+    println!(
+        "  3. pagetypeinfo_track    snapshot /proc/pagetypeinfo before/during/after 50x1MB cycle"
+    );
+    println!("                           -> CMA/Movable/Unmovable high-order counts");
+    println!();
+    println!("fragmentation result legend:");
+    println!("  high_order_free   free pages at order >= 4 (higher = less fragmented)");
+    println!("  released          buffers freed in pattern phase");
+    println!("  reallocated       successful reallocs after release");
+    println!("  page_type         migration type (CMA/Movable/Unmovable)");
+    println!();
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         ("buddyinfo_track", test_buddyinfo_track(backend, heap_name)),
         (
