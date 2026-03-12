@@ -123,13 +123,9 @@ fn gpu_app_launch<B: HeapBackend + DmaBufBackend>(
     let total_us = total_start.elapsed().as_micros() as u64;
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::info!(
-            buffer_count = config.buffer_count,
-            total_us,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            max_us = stats.max_us,
-            "app_launch"
+        println!(
+            "scenario gpu: app_launch buffer_count={} total_us={total_us} p50_us={} p95_us={} max_us={}",
+            config.buffer_count, stats.p50_us, stats.p95_us, stats.max_us
         );
     }
 
@@ -161,12 +157,9 @@ fn gpu_app_switch<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&switch_latencies) {
-        tracing::info!(
-            switches = config.switch_count,
-            buffers_per_switch = config.buffer_count,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "app_switch"
+        println!(
+            "scenario gpu: app_switch switches={} buffers_per_switch={} p50_us={} p95_us={}",
+            config.switch_count, config.buffer_count, stats.p50_us, stats.p95_us
         );
     }
 
@@ -228,13 +221,9 @@ fn gpu_game_texture<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&round_latencies) {
-        tracing::info!(
-            pool_size = config.pool_size,
-            evict_pct = config.evict_pct,
-            rounds = config.evict_rounds,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "game_texture"
+        println!(
+            "scenario gpu: game_texture pool_size={} evict_pct={} rounds={} p50_us={} p95_us={}",
+            config.pool_size, config.evict_pct, config.evict_rounds, stats.p50_us, stats.p95_us
         );
     }
 
