@@ -7,7 +7,6 @@
 pub(crate) mod fuzz;
 pub(crate) mod worker;
 
-use std::error::Error;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
@@ -643,7 +642,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     thresholds: &AgingThresholds,
 ) -> (
     Vec<SubTestResult>,
-    Option<Box<dyn Error>>,
+    Option<anyhow::Error>,
     Option<AgingResult>,
 ) {
     let mode = if fuzz_mode { "fuzz" } else { "normal" };

@@ -1,7 +1,5 @@
 // Stage 1 basic tests: alloc, mmap, sync, llseek, zeroed, repeated.
 
-use std::error::Error;
-
 use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
@@ -29,7 +27,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     sizes: &[u64],
     repeat: u32,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("basic sequence:");
     println!("  heap: {heap_name}");
     println!("  sizes: {sizes:?} bytes");

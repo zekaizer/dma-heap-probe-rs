@@ -38,10 +38,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &CodecConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     let frame_size = nv12_size(config.width, config.height);
     let enc_size = nv12_size(config.width / 2, config.height / 2);
     println!("scenario codec sequence:");

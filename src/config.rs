@@ -1,6 +1,5 @@
 // JSON configuration file loading and scenario config resolution.
 
-use std::error::Error;
 use std::path::Path;
 
 use crate::cmd::scenario::{
@@ -26,7 +25,7 @@ pub struct ScenarioConfigs {
 }
 
 /// Load scenario configurations from a JSON file.
-pub fn load_config(path: &Path) -> Result<ScenarioConfigs, Box<dyn Error>> {
+pub fn load_config(path: &Path) -> anyhow::Result<ScenarioConfigs> {
     let content = std::fs::read_to_string(path)?;
     let configs: ScenarioConfigs = serde_json::from_str(&content)?;
     Ok(configs)

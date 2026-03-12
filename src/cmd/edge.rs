@@ -1,6 +1,5 @@
 // Stage 2 edge tests: concurrent alloc, dup fd, set_name.
 
-use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nix::errno::Errno;
@@ -21,7 +20,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     threads: u32,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("edge sequence:");
     println!("  heap: {heap_name}");
     println!("  threads: {threads}");

@@ -47,10 +47,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &DisplayConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     let fb_size = framebuffer_size(config.width, config.height);
     println!("scenario display sequence:");
     println!("  heap: {heap_name}");

@@ -1,6 +1,5 @@
 // Memory pressure tests: gradual exhaust, recovery, concurrent pressure.
 
-use std::error::Error;
 use std::time::Instant;
 
 use nix::errno::Errno;
@@ -18,7 +17,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     alloc_size: u64,
     max_allocs_override: Option<usize>,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let max_allocs = match max_allocs_override {
         Some(n) => n,
         None => safe_exhaust_limit(alloc_size),

@@ -1,6 +1,5 @@
 // Parser for /sys/kernel/dmabuf/buffers/ directory.
 
-use std::error::Error;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -31,14 +30,14 @@ pub fn parse_buffer_entry(
     ino: u64,
     size_content: &str,
     exporter_content: &str,
-) -> Result<DmaBufInfo, Box<dyn Error>> {
+) -> anyhow::Result<DmaBufInfo> {
     let size: u64 = size_content
         .trim()
         .parse()
-        .map_err(|e| format!("sysfs: invalid size for ino {ino}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("sysfs: invalid size for ino {ino}: {e}"))?;
     let exporter_name = exporter_content.trim().to_string();
     if exporter_name.is_empty() {
-        return Err(format!("sysfs: empty exporter_name for ino {ino}").into());
+        anyhow::bail!("sysfs: empty exporter_name for ino {ino}");
     }
     Ok(DmaBufInfo {
         ino,
@@ -52,7 +51,7 @@ const SYSFS_DMABUF_PATH: &str = "/sys/kernel/dmabuf/buffers";
 /// Read all buffer entries from `/sys/kernel/dmabuf/buffers/`.
 ///
 /// Returns an empty snapshot if the path does not exist (e.g. on host).
-pub fn snapshot() -> Result<SysfsSnapshot, Box<dyn Error>> {
+pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
     let base = Path::new(SYSFS_DMABUF_PATH);
     if !base.exists() {
         return Ok(SysfsSnapshot {

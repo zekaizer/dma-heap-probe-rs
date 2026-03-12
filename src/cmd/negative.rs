@@ -3,7 +3,6 @@
 // Systematically verifies that the kernel returns correct errno values
 // and does not crash or panic on invalid operations.
 
-use std::error::Error;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use nix::errno::Errno;
@@ -23,7 +22,7 @@ const NEG_ALLOC_SIZE: u64 = 4096;
 pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("negative sequence:");
     println!("  heap: {heap_name}");
     println!();

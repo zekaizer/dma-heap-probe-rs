@@ -1,7 +1,5 @@
 // Stage 2 sync_file tests: export/import sync_file operations.
 
-use std::error::Error;
-
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -14,7 +12,7 @@ use crate::runner::{self, SubTestResult};
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("sync_file sequence:");
     println!("  heap: {heap_name}");
     println!();

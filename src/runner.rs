@@ -1,6 +1,5 @@
 // Test execution engine and result aggregation.
 
-use std::error::Error;
 use std::path::Path;
 use std::time::Instant;
 
@@ -54,7 +53,7 @@ impl RunResult {
     pub fn record(
         &mut self,
         name: &str,
-        result: Result<(), Box<dyn Error>>,
+        result: anyhow::Result<()>,
         duration_ms: u64,
         details: Option<serde_json::Value>,
     ) {
@@ -86,7 +85,7 @@ impl RunResult {
     }
 
     /// Write results as JSON to the given path.
-    pub fn write_json(&self, path: &Path) -> Result<(), Box<dyn Error>> {
+    pub fn write_json(&self, path: &Path) -> anyhow::Result<()> {
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
         tracing::info!(path = %path.display(), "results written");
@@ -97,7 +96,7 @@ impl RunResult {
 /// Run a stage and record the result.
 pub fn run_stage<F>(results: &mut RunResult, name: &str, f: F)
 where
-    F: FnOnce() -> Result<Option<serde_json::Value>, Box<dyn Error>>,
+    F: FnOnce() -> anyhow::Result<Option<serde_json::Value>>,
 {
     tracing::info!(stage = name, "starting");
     let start = Instant::now();
@@ -140,9 +139,9 @@ fn selinux_hint(errno: nix::errno::Errno) -> &'static str {
 pub fn collect_test_results(
     stage: &str,
     tests: &[(&str, nix::Result<()>)],
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let mut results = Vec::with_capacity(tests.len());
-    let mut first_error: Option<Box<dyn Error>> = None;
+    let mut first_error: Option<anyhow::Error> = None;
 
     for (name, result) in tests {
         match result {
@@ -166,7 +165,7 @@ pub fn collect_test_results(
                     error: Some(format!("{e}{hint}")),
                 });
                 if first_error.is_none() {
-                    first_error = Some(format!("{stage} test '{name}' failed: {e}{hint}").into());
+                    first_error = Some(anyhow::anyhow!("{stage} test '{name}' failed: {e}{hint}"));
                 }
             }
         }
@@ -195,7 +194,7 @@ mod tests {
     #[test]
     fn record_fail() {
         let mut r = RunResult::new("system");
-        r.record("test1", Err("oops".into()), 50, None);
+        r.record("test1", Err(anyhow::anyhow!("oops")), 50, None);
         assert_eq!(r.total_passed, 0);
         assert_eq!(r.total_failed, 1);
         assert!(!r.all_passed());
@@ -206,7 +205,7 @@ mod tests {
     fn record_mixed() {
         let mut r = RunResult::new("custom");
         r.record("a", Ok(()), 10, None);
-        r.record("b", Err("fail".into()), 20, None);
+        r.record("b", Err(anyhow::anyhow!("fail")), 20, None);
         r.record("c", Ok(()), 30, None);
         assert_eq!(r.total_passed, 2);
         assert_eq!(r.total_failed, 1);
@@ -226,7 +225,7 @@ mod tests {
     fn serde_roundtrip() {
         let mut r = RunResult::new("system");
         r.record("stage1", Ok(()), 100, None);
-        r.record("stage2", Err("error".into()), 50, None);
+        r.record("stage2", Err(anyhow::anyhow!("error")), 50, None);
 
         let json = serde_json::to_string(&r).unwrap();
         let deserialized: RunResult = serde_json::from_str(&json).unwrap();
@@ -251,7 +250,7 @@ mod tests {
     fn run_stage_records() {
         let mut r = RunResult::new("system");
         run_stage(&mut r, "ok_stage", || Ok(None));
-        run_stage(&mut r, "err_stage", || Err("boom".into()));
+        run_stage(&mut r, "err_stage", || Err(anyhow::anyhow!("boom")));
         assert_eq!(r.stages.len(), 2);
         assert!(r.stages[0].passed);
         assert!(!r.stages[1].passed);

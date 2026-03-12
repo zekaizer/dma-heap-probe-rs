@@ -114,10 +114,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &CameraConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     let preview_buf_size = config.format.buffer_size(config.width, config.height);
     let capture_buf_size = config.burst_format.buffer_size(4000, 3000);
     println!("scenario camera sequence:");

@@ -1,7 +1,5 @@
 // Parsers for /proc/buddyinfo, /proc/pagetypeinfo, /proc/meminfo, /proc/vmstat.
 
-use std::error::Error;
-
 use serde::{Deserialize, Serialize};
 
 /// One line from `/proc/buddyinfo`.
@@ -31,7 +29,7 @@ pub struct PageTypeInfoEntry {
 /// Parse `/proc/buddyinfo` content.
 ///
 /// Each line has the format: `Node <n>, zone <name> <count0> <count1> ... <count10>`
-pub fn parse_buddyinfo(content: &str) -> Result<Vec<BuddyInfoEntry>, Box<dyn Error>> {
+pub fn parse_buddyinfo(content: &str) -> anyhow::Result<Vec<BuddyInfoEntry>> {
     let mut entries = Vec::new();
     for line in content.lines() {
         let line = line.trim();
@@ -41,32 +39,32 @@ pub fn parse_buddyinfo(content: &str) -> Result<Vec<BuddyInfoEntry>, Box<dyn Err
         // "Node 0, zone   Normal   512  320  ..."
         let rest = line
             .strip_prefix("Node")
-            .ok_or_else(|| format!("buddyinfo: unexpected line format: {line}"))?
+            .ok_or_else(|| anyhow::anyhow!("buddyinfo: unexpected line format: {line}"))?
             .trim_start();
 
         // Split at comma: "0" and "zone   Normal   512  320  ..."
         let (node_str, rest) = rest
             .split_once(',')
-            .ok_or_else(|| format!("buddyinfo: missing comma: {line}"))?;
+            .ok_or_else(|| anyhow::anyhow!("buddyinfo: missing comma: {line}"))?;
         let node: u32 = node_str.trim().parse()?;
 
         let rest = rest
             .trim_start()
             .strip_prefix("zone")
-            .ok_or_else(|| format!("buddyinfo: missing 'zone' keyword: {line}"))?;
+            .ok_or_else(|| anyhow::anyhow!("buddyinfo: missing 'zone' keyword: {line}"))?;
 
         // Remaining tokens: zone name followed by numbers.
         // Zone name is the first non-numeric token(s), but in practice it's a single word.
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         if tokens.is_empty() {
-            return Err(format!("buddyinfo: no tokens after zone: {line}").into());
+            anyhow::bail!("buddyinfo: no tokens after zone: {line}");
         }
 
         // Find where numeric values start.
         let num_start = tokens
             .iter()
             .position(|t| t.parse::<u64>().is_ok())
-            .ok_or_else(|| format!("buddyinfo: no numeric values: {line}"))?;
+            .ok_or_else(|| anyhow::anyhow!("buddyinfo: no numeric values: {line}"))?;
 
         let zone = tokens[..num_start].join(" ");
         let free_counts: Vec<u64> = tokens[num_start..]
@@ -87,7 +85,7 @@ pub fn parse_buddyinfo(content: &str) -> Result<Vec<BuddyInfoEntry>, Box<dyn Err
 ///
 /// Skips header lines. Parses lines matching:
 /// `Node <n>, zone <name>, type <type> <count0> ... <count10>`
-pub fn parse_pagetypeinfo(content: &str) -> Result<Vec<PageTypeInfoEntry>, Box<dyn Error>> {
+pub fn parse_pagetypeinfo(content: &str) -> anyhow::Result<Vec<PageTypeInfoEntry>> {
     let mut entries = Vec::new();
     let mut in_free_pages_section = false;
 
@@ -117,43 +115,43 @@ pub fn parse_pagetypeinfo(content: &str) -> Result<Vec<PageTypeInfoEntry>, Box<d
         // "Node    0, zone      DMA, type    Unmovable      1      0 ..."
         let rest = trimmed
             .strip_prefix("Node")
-            .ok_or_else(|| format!("pagetypeinfo: unexpected format: {trimmed}"))?
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: unexpected format: {trimmed}"))?
             .trim_start();
 
         // Split at first comma: node number.
         let (node_str, rest) = rest
             .split_once(',')
-            .ok_or_else(|| format!("pagetypeinfo: missing first comma: {trimmed}"))?;
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: missing first comma: {trimmed}"))?;
         let node: u32 = node_str.trim().parse()?;
 
         // "zone      DMA, type    Unmovable      1      0 ..."
         let rest = rest
             .trim_start()
             .strip_prefix("zone")
-            .ok_or_else(|| format!("pagetypeinfo: missing 'zone': {trimmed}"))?;
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: missing 'zone': {trimmed}"))?;
 
         // Split at second comma: zone name.
         let (zone_str, rest) = rest
             .split_once(',')
-            .ok_or_else(|| format!("pagetypeinfo: missing second comma: {trimmed}"))?;
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: missing second comma: {trimmed}"))?;
         let zone = zone_str.trim().to_string();
 
         // "type    Unmovable      1      0 ..."
         let rest = rest
             .trim_start()
             .strip_prefix("type")
-            .ok_or_else(|| format!("pagetypeinfo: missing 'type': {trimmed}"))?;
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: missing 'type': {trimmed}"))?;
 
         let tokens: Vec<&str> = rest.split_whitespace().collect();
         if tokens.is_empty() {
-            return Err(format!("pagetypeinfo: no tokens after type: {trimmed}").into());
+            anyhow::bail!("pagetypeinfo: no tokens after type: {trimmed}");
         }
 
         // Find where numeric values start.
         let num_start = tokens
             .iter()
             .position(|t| t.parse::<u64>().is_ok())
-            .ok_or_else(|| format!("pagetypeinfo: no numeric values: {trimmed}"))?;
+            .ok_or_else(|| anyhow::anyhow!("pagetypeinfo: no numeric values: {trimmed}"))?;
 
         let page_type = tokens[..num_start].join(" ");
         let free_counts: Vec<u64> = tokens[num_start..]
@@ -214,7 +212,7 @@ pub struct ProcfsSnapshot {
 ///
 /// Required: `MemTotal`, `MemFree`, `MemAvailable`.
 /// Optional: `CmaTotal`, `CmaFree`.
-pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
+pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
     let mut mem_total_kb = None;
     let mut mem_free_kb = None;
     let mut mem_available_kb = None;
@@ -255,9 +253,10 @@ pub fn parse_meminfo(content: &str) -> Result<MemInfo, Box<dyn Error>> {
     }
 
     Ok(MemInfo {
-        mem_total_kb: mem_total_kb.ok_or("meminfo: MemTotal not found")?,
-        mem_free_kb: mem_free_kb.ok_or("meminfo: MemFree not found")?,
-        mem_available_kb: mem_available_kb.ok_or("meminfo: MemAvailable not found")?,
+        mem_total_kb: mem_total_kb.ok_or_else(|| anyhow::anyhow!("meminfo: MemTotal not found"))?,
+        mem_free_kb: mem_free_kb.ok_or_else(|| anyhow::anyhow!("meminfo: MemFree not found"))?,
+        mem_available_kb: mem_available_kb
+            .ok_or_else(|| anyhow::anyhow!("meminfo: MemAvailable not found"))?,
         cma_total_kb,
         cma_free_kb,
         buffers_kb,
@@ -311,19 +310,19 @@ pub fn parse_vmstat(content: &str) -> VmStat {
 }
 
 /// Read and parse `/proc/meminfo`.
-pub fn read_meminfo() -> Result<MemInfo, Box<dyn Error>> {
+pub fn read_meminfo() -> anyhow::Result<MemInfo> {
     let content = std::fs::read_to_string("/proc/meminfo")?;
     parse_meminfo(&content)
 }
 
 /// Read and parse `/proc/vmstat`.
-pub fn read_vmstat() -> Result<VmStat, Box<dyn Error>> {
+pub fn read_vmstat() -> anyhow::Result<VmStat> {
     let content = std::fs::read_to_string("/proc/vmstat")?;
     Ok(parse_vmstat(&content))
 }
 
 /// Collect a full procfs snapshot (buddyinfo + pagetypeinfo + meminfo + vmstat).
-pub fn snapshot() -> Result<ProcfsSnapshot, Box<dyn Error>> {
+pub fn snapshot() -> anyhow::Result<ProcfsSnapshot> {
     Ok(ProcfsSnapshot {
         buddyinfo: read_buddyinfo()?,
         pagetypeinfo: read_pagetypeinfo()?,
@@ -333,13 +332,13 @@ pub fn snapshot() -> Result<ProcfsSnapshot, Box<dyn Error>> {
 }
 
 /// Read and parse `/proc/buddyinfo`.
-pub fn read_buddyinfo() -> Result<Vec<BuddyInfoEntry>, Box<dyn Error>> {
+pub fn read_buddyinfo() -> anyhow::Result<Vec<BuddyInfoEntry>> {
     let content = std::fs::read_to_string("/proc/buddyinfo")?;
     parse_buddyinfo(&content)
 }
 
 /// Read and parse `/proc/pagetypeinfo`.
-pub fn read_pagetypeinfo() -> Result<Vec<PageTypeInfoEntry>, Box<dyn Error>> {
+pub fn read_pagetypeinfo() -> anyhow::Result<Vec<PageTypeInfoEntry>> {
     let content = std::fs::read_to_string("/proc/pagetypeinfo")?;
     parse_pagetypeinfo(&content)
 }

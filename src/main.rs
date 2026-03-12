@@ -349,10 +349,7 @@ fn run_all_scenarios<B: backend::HeapBackend + backend::DmaBufBackend + Send + S
     backend: &B,
     heap: &str,
     json: Option<&config::ScenarioConfigs>,
-) -> (
-    Vec<runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<runner::SubTestResult>, Option<anyhow::Error>) {
     use cmd::scenario::{camera, codec, display, gpu, npu, pipeline};
 
     let cfgs = config::resolve_all_defaults(json);
@@ -387,11 +384,8 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
 ) {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
-        r: (
-            Vec<runner::SubTestResult>,
-            Option<Box<dyn std::error::Error>>,
-        ),
-    ) -> Result<Option<serde_json::Value>, Box<dyn std::error::Error>> {
+        r: (Vec<runner::SubTestResult>, Option<anyhow::Error>),
+    ) -> anyhow::Result<Option<serde_json::Value>> {
         let (sub, err) = r;
         let details = Some(runner::sub_tests_to_details(&sub));
         match err {
@@ -478,7 +472,7 @@ fn handle_cmd_output(
     heap: &str,
     output: Option<&PathBuf>,
     sub_tests: &[runner::SubTestResult],
-    err: Option<Box<dyn std::error::Error>>,
+    err: Option<anyhow::Error>,
     duration: std::time::Duration,
 ) {
     let has_failure = err.is_some();

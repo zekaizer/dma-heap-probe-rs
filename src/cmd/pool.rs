@@ -1,7 +1,6 @@
 // Pool/cache behavior tests: warmup, drain, size switch, release order,
 // deferred free.
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
@@ -26,7 +25,7 @@ const MEASURE_ITERS: u32 = 100;
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("pool sequence:");
     println!("  heap: {heap_name}");
     println!();
