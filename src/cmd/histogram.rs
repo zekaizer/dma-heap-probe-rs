@@ -1,7 +1,6 @@
 // Latency histogram analysis: per-heap, per-size distribution with ASCII
 // visualization and extended percentiles.
 
-use std::error::Error;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
@@ -23,7 +22,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     warmup: u32,
     mode: HistMode,
     buckets: usize,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let bucket_count = if buckets == 0 {
         auto_buckets(samples as usize)
     } else {
@@ -52,7 +51,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     passed: false,
                     error: Some(e.to_string()),
                 });
-                return (results, Some(Box::new(e)));
+                return (results, Some(anyhow::Error::from(e)));
             }
         };
 
@@ -82,7 +81,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                         passed: false,
                         error: Some(err_str.clone()),
                     });
-                    return (results, Some(Box::<dyn Error>::from(err_str)));
+                    return (results, Some(anyhow::anyhow!("{err_str}")));
                 }
             }
         }

@@ -1,7 +1,6 @@
 // Stage 3 performance tests: alloc latency, full pipeline, close, order boundary,
 // fallback path, and internal fragmentation measurement.
 
-use std::error::Error;
 use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
@@ -87,7 +86,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     sizes: Option<&[u64]>,
     iterations: u32,
     warmup: u32,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
     println!("perf sequence:");

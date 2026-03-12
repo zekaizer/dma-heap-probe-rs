@@ -1,8 +1,6 @@
 // Fragmentation observation tests: buddyinfo tracking, interleave pattern,
 // pagetypeinfo tracking.
 
-use std::error::Error;
-
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -23,7 +21,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     pattern: &str,
-) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     println!("fragmentation sequence:");
     println!("  heap: {heap_name}");
     println!("  pattern: {pattern}");

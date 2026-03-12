@@ -1,7 +1,8 @@
 // Parser for /sys/kernel/dmabuf/buffers/ directory.
 
-use std::error::Error;
 use std::path::Path;
+
+use anyhow::Context;
 
 use serde::{Deserialize, Serialize};
 
@@ -31,14 +32,14 @@ pub fn parse_buffer_entry(
     ino: u64,
     size_content: &str,
     exporter_content: &str,
-) -> Result<DmaBufInfo, Box<dyn Error>> {
+) -> anyhow::Result<DmaBufInfo> {
     let size: u64 = size_content
         .trim()
         .parse()
-        .map_err(|e| format!("sysfs: invalid size for ino {ino}: {e}"))?;
+        .map_err(|e| anyhow::anyhow!("sysfs: invalid size for ino {ino}: {e}"))?;
     let exporter_name = exporter_content.trim().to_string();
     if exporter_name.is_empty() {
-        return Err(format!("sysfs: empty exporter_name for ino {ino}").into());
+        anyhow::bail!("sysfs: empty exporter_name for ino {ino}");
     }
     Ok(DmaBufInfo {
         ino,
@@ -52,7 +53,7 @@ const SYSFS_DMABUF_PATH: &str = "/sys/kernel/dmabuf/buffers";
 /// Read all buffer entries from `/sys/kernel/dmabuf/buffers/`.
 ///
 /// Returns an empty snapshot if the path does not exist (e.g. on host).
-pub fn snapshot() -> Result<SysfsSnapshot, Box<dyn Error>> {
+pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
     let base = Path::new(SYSFS_DMABUF_PATH);
     if !base.exists() {
         return Ok(SysfsSnapshot {
@@ -61,7 +62,7 @@ pub fn snapshot() -> Result<SysfsSnapshot, Box<dyn Error>> {
     }
 
     let mut buffers = Vec::new();
-    for entry in std::fs::read_dir(base)? {
+    for entry in std::fs::read_dir(base).context("failed to read sysfs dmabuf directory")? {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -71,8 +72,10 @@ pub fn snapshot() -> Result<SysfsSnapshot, Box<dyn Error>> {
         };
 
         let dir = entry.path();
-        let size_content = std::fs::read_to_string(dir.join("size"))?;
-        let exporter_content = std::fs::read_to_string(dir.join("exporter_name"))?;
+        let size_content = std::fs::read_to_string(dir.join("size"))
+            .with_context(|| format!("failed to read size for buffer ino {ino}"))?;
+        let exporter_content = std::fs::read_to_string(dir.join("exporter_name"))
+            .with_context(|| format!("failed to read exporter_name for buffer ino {ino}"))?;
 
         buffers.push(parse_buffer_entry(ino, &size_content, &exporter_content)?);
     }

@@ -19,6 +19,7 @@ libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt"] }
 rand = "0.9"
+anyhow = "1"
 
 [dev-dependencies]
 assert_cmd = "2"

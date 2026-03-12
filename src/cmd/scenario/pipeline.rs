@@ -52,10 +52,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &PipelineConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     println!("scenario pipeline sequence:");
     println!("  heap: {heap_name}");
     println!("  frames: {}", config.frames);

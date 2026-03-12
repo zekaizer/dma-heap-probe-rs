@@ -50,10 +50,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     config: &GpuConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     let evict_count = (config.pool_size as u64 * u64::from(config.evict_pct) / 100) as usize;
     println!("scenario gpu sequence:");
     println!("  heap: {heap_name}");

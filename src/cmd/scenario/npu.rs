@@ -67,10 +67,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     config: &NpuConfig,
-) -> (
-    Vec<crate::runner::SubTestResult>,
-    Option<Box<dyn std::error::Error>>,
-) {
+) -> (Vec<crate::runner::SubTestResult>, Option<anyhow::Error>) {
     let (chunk_count, _) = chunk_params(config.model_size, config.chunk_size);
     let iters_per_client = config.iterations / config.clients;
     println!("scenario npu sequence:");
