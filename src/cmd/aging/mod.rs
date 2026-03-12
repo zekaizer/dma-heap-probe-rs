@@ -125,17 +125,17 @@ pub(crate) fn evaluate_thresholds(result: &AgingResult, thresholds: &AgingThresh
     }
 
     // Memory leak check (only when enabled and allocs == frees)
-    if thresholds.leak_threshold_mb > 0 && result.total_allocs == result.total_frees {
-        if let Some(delta) = result.mem_available_delta_mb {
-            if delta < -thresholds.leak_threshold_mb {
-                tracing::error!(
-                    delta_mb = delta,
-                    threshold = thresholds.leak_threshold_mb,
-                    "memory leak detected"
-                );
-                passed = false;
-            }
-        }
+    if thresholds.leak_threshold_mb > 0
+        && result.total_allocs == result.total_frees
+        && let Some(delta) = result.mem_available_delta_mb
+        && delta < -thresholds.leak_threshold_mb
+    {
+        tracing::error!(
+            delta_mb = delta,
+            threshold = thresholds.leak_threshold_mb,
+            "memory leak detected"
+        );
+        passed = false;
     }
 
     passed
@@ -160,7 +160,7 @@ pub(crate) struct AgingState {
     pub peak_p99: AtomicU64,
     pub first_interval_avg: AtomicU64,
     pub final_interval_avg: AtomicU64,
-    /// Sentinel: 0 means first_interval_avg not yet set.
+    /// Sentinel: 0 means `first_interval_avg` not yet set.
     pub first_interval_set: AtomicBool,
 }
 
@@ -244,7 +244,7 @@ impl AgingState {
         })
     }
 
-    /// Compute latency trend ratio (final_avg / first_avg).
+    /// Compute latency trend ratio (`final_avg` / `first_avg`).
     fn trend(&self) -> f64 {
         if !self.first_interval_set.load(Relaxed) {
             return 1.0;
@@ -361,7 +361,7 @@ pub(crate) fn mark_init_error(state: &AgingState) {
 // ── System snapshot ─────────────────────────────────────────────────────────
 
 /// Snapshot of system metrics at a point in time.
-struct SystemSnapshot {
+pub(crate) struct SystemSnapshot {
     mem_available_kb: Option<u64>,
     cma_free_kb: Option<u64>,
     slab_kb: Option<u64>,
@@ -1018,6 +1018,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(clippy::similar_names)]
     fn reporter_updates_cumulative_stats() {
         let state = AgingState::new();
         // Push latencies and simulate what reporter does

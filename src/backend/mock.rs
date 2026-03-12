@@ -45,7 +45,7 @@ struct BufferState {
 /// Simulation configuration for injecting faults into mock operations.
 ///
 /// All fields default to disabled (no fault injection).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SimConfig {
     /// Max active buffers before alloc returns `ENOMEM`.
     /// `None` = unlimited (default behavior).
@@ -60,16 +60,6 @@ pub struct SimConfig {
     pub corrupt_every_nth: u64,
 }
 
-impl Default for SimConfig {
-    fn default() -> Self {
-        Self {
-            enomem_threshold: None,
-            fail_every_nth: 0,
-            corrupt_every_nth: 0,
-        }
-    }
-}
-
 #[derive(Debug)]
 struct MockState {
     buffers: HashMap<RawFd, BufferState>,
@@ -79,9 +69,9 @@ struct MockState {
     next_fd: i32,
     /// Simulation configuration for fault injection.
     sim: Option<SimConfig>,
-    /// Total alloc calls (for fail_every_nth).
+    /// Total alloc calls (for `fail_every_nth`).
     alloc_count: u64,
-    /// Total mmap calls (for corrupt_every_nth).
+    /// Total mmap calls (for `corrupt_every_nth`).
     mmap_count: u64,
 }
 
@@ -202,13 +192,13 @@ impl HeapBackend for MockBackend {
         // Simulation: fault injection
         if let Some(sim) = state.sim.clone() {
             state.alloc_count += 1;
-            if sim.fail_every_nth > 0 && state.alloc_count % sim.fail_every_nth == 0 {
+            if sim.fail_every_nth > 0 && state.alloc_count.is_multiple_of(sim.fail_every_nth) {
                 return Err(Errno::EIO);
             }
-            if let Some(threshold) = sim.enomem_threshold {
-                if state.buffers.len() >= threshold {
-                    return Err(Errno::ENOMEM);
-                }
+            if let Some(threshold) = sim.enomem_threshold
+                && state.buffers.len() >= threshold
+            {
+                return Err(Errno::ENOMEM);
             }
         }
 
@@ -264,7 +254,7 @@ impl DmaBufBackend for MockBackend {
         // Simulation: data corruption injection
         if corrupt_nth > 0 {
             state.mmap_count += 1;
-            if state.mmap_count % corrupt_nth == 0 && len > 0 {
+            if state.mmap_count.is_multiple_of(corrupt_nth) && len > 0 {
                 // SAFETY: ptr is valid for len bytes and we only flip byte 0.
                 unsafe {
                     *ptr ^= 0xFF;

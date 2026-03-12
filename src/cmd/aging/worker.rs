@@ -88,7 +88,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
 }
 
 /// Single worker loop: alloc → pipeline → hold/close, round-robin across heaps.
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
 fn worker_loop<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     contexts: &[HeapContext<'_, B>],
@@ -162,7 +162,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         }
 
         // Hold every Nth buffer, free the rest immediately.
-        if max_hold > 0 && local_index % HOLD_EVERY_NTH == 0 {
+        if max_hold > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
             hold_pool.push(buf);
         } else {
             drop(buf);
