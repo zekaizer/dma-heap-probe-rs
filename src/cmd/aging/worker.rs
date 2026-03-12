@@ -151,7 +151,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr is valid and mapped to `size` bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, 0xAA, size as usize);
+                    super::sparse_fill(ptr, size as usize, 0xAA, None);
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
                 let _ = buf.sync_start(DMA_BUF_SYNC_READ);

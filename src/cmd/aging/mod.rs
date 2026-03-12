@@ -13,6 +13,8 @@ use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
+use rand::Rng;
+use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{DmaBufBackend, HeapBackend};
@@ -358,6 +360,58 @@ pub(crate) fn mark_init_error(state: &AgingState) {
     state.running.store(false, Relaxed);
 }
 
+// ── Sparse fill ──────────────────────────────────────────────────────────────
+
+const CACHE_LINE: usize = 64;
+const PAGE_SIZE: usize = 4096;
+
+/// Sparse fill: first + last cache line, plus interior cache lines at
+/// page-aligned offsets.  Exercises the mmap/sync/coherency path without
+/// the cost of a full memset (320 B vs 8 MB for an 8 MB buffer).
+///
+/// - `rng = None`  → deterministic evenly-spaced interior pages (normal mode)
+/// - `rng = Some(_)` → random interior page offsets (fuzz mode)
+///
+/// For buffers ≤ 4 cache lines (256 B) the entire buffer is filled.
+///
+/// # Safety
+/// `ptr` must be valid for `size` bytes.
+pub(super) unsafe fn sparse_fill(
+    ptr: *mut u8,
+    size: usize,
+    pattern: u8,
+    rng: Option<&mut SmallRng>,
+) {
+    if size <= CACHE_LINE * 4 {
+        unsafe { std::ptr::write_bytes(ptr, pattern, size) };
+        return;
+    }
+    // First cache line
+    unsafe { std::ptr::write_bytes(ptr, pattern, CACHE_LINE) };
+    // Last cache line
+    unsafe { std::ptr::write_bytes(ptr.add(size - CACHE_LINE), pattern, CACHE_LINE) };
+    // Interior: cache-line writes at page-aligned offsets
+    let num_pages = size / PAGE_SIZE;
+    if num_pages <= 2 {
+        return;
+    }
+    let count = ((num_pages - 2) / 4).clamp(1, 3);
+    match rng {
+        Some(rng) => {
+            for _ in 0..count {
+                let idx = rng.random_range(1..num_pages - 1);
+                unsafe { std::ptr::write_bytes(ptr.add(idx * PAGE_SIZE), pattern, CACHE_LINE) };
+            }
+        }
+        None => {
+            for i in 0..count {
+                let idx = 1 + (i * (num_pages - 2)) / count;
+                unsafe { std::ptr::write_bytes(ptr.add(idx * PAGE_SIZE), pattern, CACHE_LINE) };
+            }
+        }
+    }
+}
+
 // ── System snapshot ─────────────────────────────────────────────────────────
 
 /// Snapshot of system metrics at a point in time.
@@ -631,19 +685,29 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         println!("        │    loop {{ alloc → weighted pipeline → close/hold }}");
         println!("        │    pipelines (weight, availability depends on heap caps):");
         println!("        │      AllocHold(20)         alloc → hold");
-        println!("        │      WriteOnly(15)         mmap → sync(R|W|RW) → fill → sync");
-        println!("        │      WriteReadVerify(15)   mmap → sync(W) → fill → sync(R) → verify");
+        println!("        │      WriteOnly(15)         mmap → sync(R|W|RW) → sparse_fill → sync");
+        println!(
+            "        │      WriteReadVerify(15)   mmap → sync(W) → fill(full) → sync(R) → verify"
+        );
         println!("        │      AllocClose(10)        alloc → close");
         println!("        │      AllocMmapClose(5)     mmap → close");
-        println!("        │      PartialMmap(5)        mmap(25-75%) → sync(W) → fill → sync");
-        println!("        │      WriteNoSync(5)        mmap → fill (no sync)");
-        println!("        │      DoubleMmap(5)         mmap → mmap → sync(W) → fill → sync");
-        println!("        │      DupAndOperate(5)      dup → mmap → sync(W) → fill → sync");
-        println!("        │      SetNameThenWrite(5)   set_name → mmap → sync(W) → fill → sync");
-        println!("        │      LlseekAfterWrite(5)   mmap → sync(W) → fill → sync → llseek");
+        println!(
+            "        │      PartialMmap(5)        mmap(25-75%) → sync(W) → sparse_fill → sync"
+        );
+        println!("        │      WriteNoSync(5)        mmap → sparse_fill (no sync)");
+        println!("        │      DoubleMmap(5)         mmap → mmap → sync(W) → sparse_fill → sync");
+        println!("        │      DupAndOperate(5)      dup → mmap → sync(W) → sparse_fill → sync");
+        println!(
+            "        │      SetNameThenWrite(5)   set_name → mmap → sync(W) → sparse_fill → sync"
+        );
+        println!(
+            "        │      LlseekAfterWrite(5)   mmap → sync(W) → sparse_fill → sync → llseek"
+        );
         println!("        │      SyncFileRoundtrip(5)  export → import");
     } else {
-        println!("        │    loop {{ alloc → mmap → sync(W) → fill → sync(R) → close/hold }}");
+        println!(
+            "        │    loop {{ alloc → mmap → sync(W) → sparse_fill → sync(R) → close/hold }}"
+        );
     }
     println!("        ├─ reporter (every {}s)", report_interval.as_secs());
     println!("        │    loop {{ drain latencies → snapshot → print }}");
@@ -1055,7 +1119,7 @@ mod tests {
             4096,
             1,
             None,
-            Some(30),
+            Some(100),
             Duration::from_secs(60),
             true,
             8,

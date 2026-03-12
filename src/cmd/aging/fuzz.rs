@@ -457,7 +457,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for partial_len bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), partial_len);
+                    super::sparse_fill(ptr, partial_len, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
@@ -475,7 +475,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(flags);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(flags);
             }
@@ -521,7 +521,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let pat = random_write_pattern(rng);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
             }
             drop(buf);
@@ -539,7 +539,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 }
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 if caps.can_sync {
                     let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
@@ -559,7 +559,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                     let _ = dup_buf.sync_start(DMA_BUF_SYNC_WRITE);
                     // SAFETY: ptr valid for size_usize bytes.
                     unsafe {
-                        std::ptr::write_bytes(ptr, 0xBB, size_usize);
+                        super::sparse_fill(ptr, size_usize, 0xBB, Some(rng));
                     }
                     let _ = dup_buf.sync_end(DMA_BUF_SYNC_WRITE);
                 }
@@ -583,7 +583,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
@@ -598,7 +598,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
-                    std::ptr::write_bytes(ptr, pattern_byte(pat), size_usize);
+                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
             }
