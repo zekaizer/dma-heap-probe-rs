@@ -612,6 +612,10 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         "aging start"
     );
 
+    if fuzz_mode && size != 4096 {
+        tracing::warn!(size, "fuzz mode ignores --size, using built-in FUZZ_SIZES");
+    }
+
     let state = AgingState::new();
 
     let (initial_snap, final_snap, elapsed) = run_with_reporter(&state, report_interval, || {
