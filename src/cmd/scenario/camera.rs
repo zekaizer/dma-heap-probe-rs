@@ -205,16 +205,9 @@ fn camera_preview<B: HeapBackend + DmaBufBackend>(
     }
 
     if let Some(stats) = compute_stats(&frame_latencies) {
-        tracing::info!(
-            width = config.width,
-            height = config.height,
-            buf_size,
-            pool_size = config.pool_size,
-            fps = config.fps,
-            frames = config.frames,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            "preview"
+        println!(
+            "scenario camera: preview buf_size={buf_size} pool_size={} p50_us={} p95_us={}",
+            config.pool_size, stats.p50_us, stats.p95_us
         );
     }
 
@@ -235,13 +228,9 @@ fn camera_capture<B: HeapBackend + DmaBufBackend>(
         bulk_alloc(backend, &heap, capture_size, config.burst_count as usize)?;
 
     if let Some(stats) = compute_stats(&latencies) {
-        tracing::info!(
-            capture_size,
-            burst_count = config.burst_count,
-            p50_us = stats.p50_us,
-            p95_us = stats.p95_us,
-            max_us = stats.max_us,
-            "capture"
+        println!(
+            "scenario camera: capture capture_size={capture_size} burst_count={} p50_us={} p95_us={} max_us={}",
+            config.burst_count, stats.p50_us, stats.p95_us, stats.max_us
         );
     }
 
@@ -249,7 +238,7 @@ fn camera_capture<B: HeapBackend + DmaBufBackend>(
     let close_start = Instant::now();
     drop(buffers);
     let close_us = close_start.elapsed().as_micros() as u64;
-    tracing::info!(close_us, "capture_release");
+    println!("scenario camera: capture_release close_us={close_us}");
 
     Ok(())
 }
@@ -270,14 +259,10 @@ fn camera_switch<B: HeapBackend + DmaBufBackend>(
         let alloc_us = start.elapsed().as_micros() as u64;
 
         if let Some(stats) = compute_stats(&latencies) {
-            tracing::info!(
-                phase = i + 1,
-                width = w,
-                height = h,
-                buf_size,
-                alloc_us,
-                p50_us = stats.p50_us,
-                "switch"
+            println!(
+                "scenario camera: switch phase={} width={w} height={h} buf_size={buf_size} alloc_us={alloc_us} p50_us={}",
+                i + 1,
+                stats.p50_us
             );
         }
 
@@ -324,14 +309,9 @@ fn camera_multi_stream<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 }
 
                 if let Some(stats) = compute_stats(&latencies) {
-                    tracing::info!(
-                        stream_id,
-                        width = stream.width,
-                        height = stream.height,
-                        frames = latencies.len(),
-                        p50_us = stats.p50_us,
-                        p95_us = stats.p95_us,
-                        "multi_stream"
+                    println!(
+                        "scenario camera: multi_stream stream_id={stream_id} frames={} p50_us={} p95_us={}",
+                        latencies.len(), stats.p50_us, stats.p95_us
                     );
                 }
             });
