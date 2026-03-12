@@ -1,11 +1,12 @@
-// Stage 1 basic tests: alloc, mmap, sync, llseek, zeroed, repeated.
+// Basic deterministic tests: alloc, mmap, sync, llseek, zeroed, repeated,
+// sync_file export/import.
 
 use nix::errno::Errno;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
+use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
@@ -20,7 +21,7 @@ fn page_align(size: u64) -> u64 {
     size.next_multiple_of(PAGE_SIZE)
 }
 
-/// Run all stage 1 basic tests. Executes all tests even if some fail;
+/// Run all basic deterministic tests. Executes all tests even if some fail;
 /// returns sub-test results (and the first error, if any).
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -30,7 +31,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, ?sizes, repeat, "basic sequence");
 
-    let tests: [(&str, nix::Result<()>); 4] = [
+    let tests: [(&str, nix::Result<()>); 6] = [
         (
             "alloc_and_map",
             test_alloc_and_map(backend, heap_name, sizes),
@@ -41,6 +42,14 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             test_repeated_alloc(backend, heap_name, sizes, repeat),
         ),
         ("llseek_size", test_llseek_size(backend, heap_name, sizes)),
+        (
+            "export_sync_file",
+            test_export_sync_file(backend, heap_name),
+        ),
+        (
+            "import_sync_file",
+            test_import_sync_file(backend, heap_name),
+        ),
     ];
 
     runner::collect_test_results("basic", heap_name, &tests)
@@ -206,6 +215,51 @@ fn test_llseek_size<B: HeapBackend + DmaBufBackend>(
     Ok(())
 }
 
+// ── Sync-file tests ─────────────────────────────────────────────────────────
+
+/// Export `sync_file` with each valid flag combination and verify returned fd.
+#[allow(clippy::cast_possible_truncation)]
+fn test_export_sync_file<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+    let size: u64 = 4096;
+    let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let buf = DmaBuf::new(backend, buf_fd, size as usize);
+
+    for &flags in &[DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE, DMA_BUF_SYNC_RW] {
+        let sync_fd = buf.export_sync_file(flags as u32)?;
+        tracing::debug!(flags, sync_fd, "exported sync_file");
+        if sync_fd < 0 {
+            tracing::error!(flags, sync_fd, "invalid sync_file fd");
+            return Err(Errno::EIO);
+        }
+    }
+
+    Ok(())
+}
+
+/// Export then import a `sync_file` to verify the full roundtrip.
+#[allow(clippy::cast_possible_truncation)]
+fn test_import_sync_file<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+    let size: u64 = 4096;
+    let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+    let buf = DmaBuf::new(backend, buf_fd, size as usize);
+
+    let sync_fd = buf.export_sync_file(DMA_BUF_SYNC_READ as u32)?;
+    tracing::debug!(sync_fd, "exported for import test");
+
+    buf.import_sync_file(DMA_BUF_SYNC_READ as u32, sync_fd)?;
+    tracing::debug!(sync_fd, "imported sync_file");
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -290,6 +344,36 @@ mod tests {
         test_llseek_size(&backend, "system", &[1, 4097]).unwrap();
     }
 
+    // ── test_export_sync_file ──
+
+    #[test]
+    fn export_returns_valid_fd() {
+        let backend = MockBackend::new();
+        test_export_sync_file(&backend, "system").unwrap();
+    }
+
+    #[test]
+    fn import_after_export() {
+        let backend = MockBackend::new();
+        test_import_sync_file(&backend, "system").unwrap();
+    }
+
+    #[test]
+    #[allow(clippy::cast_possible_truncation)]
+    fn export_multiple_sizes() {
+        let backend = MockBackend::new();
+        let heap = DmaHeap::open(&backend, "system").unwrap();
+
+        for size in [4096_u64, 65536, 1_048_576] {
+            let fd = heap
+                .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+                .unwrap();
+            let buf = DmaBuf::new(&backend, fd, size as usize);
+            let sync_fd = buf.export_sync_file(DMA_BUF_SYNC_RW as u32).unwrap();
+            assert!(sync_fd >= 0);
+        }
+    }
+
     // ── run() integration ──
 
     #[test]
@@ -298,7 +382,7 @@ mod tests {
         let (results, err) = run(&backend, "system", &[4096, 65536], 10);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
-        assert_eq!(results.len(), 4);
+        assert_eq!(results.len(), 6);
     }
 
     #[test]

@@ -29,11 +29,6 @@ fn basic_defaults() {
 }
 
 #[test]
-fn sync_file_defaults() {
-    dhp().arg("sync-file").assert().success();
-}
-
-#[test]
 fn edge_defaults() {
     dhp().args(["edge", "--threads", "4"]).assert().success();
 }
@@ -206,8 +201,8 @@ fn output_all_json() {
     let json = read_json(tmp.path());
     let stages = json["stages"].as_array().unwrap();
     assert!(
-        stages.len() >= 7,
-        "expected >= 7 stages, got {}",
+        stages.len() >= 6,
+        "expected >= 6 stages, got {}",
         stages.len()
     );
     let total = json["total_passed"].as_u64().unwrap() + json["total_failed"].as_u64().unwrap();

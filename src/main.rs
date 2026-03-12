@@ -58,18 +58,6 @@ fn main() {
                 start.elapsed(),
             );
         }
-        Command::SyncFile => {
-            let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::sync_file::run(&backend, h));
-            handle_cmd_output(
-                "sync_file",
-                &heaps,
-                cli.output.as_ref(),
-                &sub,
-                err,
-                start.elapsed(),
-            );
-        }
         Command::Edge { threads } => {
             let start = Instant::now();
             let (sub, err) = run_per_heap(&heaps, |h| cmd::edge::run(&backend, h, threads));
@@ -268,9 +256,6 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     for heap in heaps {
         runner::run_stage(&mut results, "basic", heap, || {
             stage_result(cmd::basic::run(backend, heap, &[4096, 65536, 1_048_576], 8))
-        });
-        runner::run_stage(&mut results, "sync_file", heap, || {
-            stage_result(cmd::sync_file::run(backend, heap))
         });
         runner::run_stage(&mut results, "edge", heap, || {
             stage_result(cmd::edge::run(backend, heap, 4))

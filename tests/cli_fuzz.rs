@@ -59,7 +59,6 @@ fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
             "--repeat".into(),
             r.to_string(),
         ]),
-        Just(vec!["sync-file".into()]),
         (1..8u32).prop_map(|t| vec!["edge".into(), "--threads".into(), t.to_string(),]),
         Just(vec!["negative".into()]),
         (1..10u32, 0..3u32).prop_map(|(i, w)| vec![

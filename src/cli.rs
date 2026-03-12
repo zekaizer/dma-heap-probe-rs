@@ -42,7 +42,7 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Basic tests (alloc, mmap, sync, llseek, zeroed, repeated).
+    /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated, `sync_file`).
     Basic {
         /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
@@ -52,9 +52,6 @@ pub enum Command {
         #[arg(long, default_value_t = 1024)]
         repeat: u32,
     },
-
-    /// Sync-file export/import tests.
-    SyncFile,
 
     /// Boundary condition tests (concurrent, dup, naming).
     Edge {
@@ -303,12 +300,6 @@ mod tests {
             Command::Edge { threads } => assert_eq!(threads, 50),
             _ => panic!("expected Edge"),
         }
-    }
-
-    #[test]
-    fn sync_file_command() {
-        let cli = parse(&["dhp", "sync-file"]);
-        assert!(matches!(cli.command, Command::SyncFile));
     }
 
     #[test]
