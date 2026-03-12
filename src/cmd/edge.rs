@@ -22,6 +22,23 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     threads: u32,
 ) -> (Vec<SubTestResult>, Option<Box<dyn Error>>) {
+    println!("edge sequence:");
+    println!("  heap: {heap_name}");
+    println!("  threads: {threads}");
+    println!();
+    println!("  1. concurrent_alloc");
+    println!("       {threads} threads alloc simultaneously -> verify no errors");
+    println!("  2. dup_fd");
+    println!("       alloc -> dup -> mmap both -> write via dup -> read via original");
+    println!("  3. set_name");
+    println!("       alloc -> set_name(\"dhp_test\") -> verify success");
+    println!();
+    println!("edge result legend:");
+    println!("  threads         concurrent allocation thread count");
+    println!("  dup_verified    data written via dup fd readable from original");
+    println!("  name_set        DMA_BUF_SET_NAME ioctl succeeded");
+    println!();
+
     let tests: [(&str, nix::Result<()>); 3] = [
         (
             "concurrent_alloc",
