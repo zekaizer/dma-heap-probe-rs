@@ -1,6 +1,6 @@
 // Unified output formatting for metric tables, single-line metrics, and PASS/FAIL results.
 
-use std::fmt::Display;
+use std::fmt::{Display, Write};
 
 /// Compute heap display width from a list of heap names.
 ///
@@ -86,7 +86,7 @@ pub fn print_metric(heap: &str, heap_w: usize, label: &str, kvs: &[(&str, &dyn D
     let prefix = heap_prefix(heap, heap_w);
     let mut line = format!("{prefix}  {label}");
     for (k, v) in kvs {
-        line.push_str(&format!("  {k}: {v}"));
+        let _ = write!(line, "  {k}: {v}");
     }
     println!("{line}");
 }
@@ -105,12 +105,14 @@ pub fn print_fail(heap: &str, heap_w: usize, label: &str, error: &str) {
 
 /// Right-align an integer value into a string of given minimum width.
 #[must_use]
+#[allow(dead_code)]
 pub fn ri(v: impl Display, w: usize) -> String {
     format!("{v:>w$}")
 }
 
 /// Right-align a float with 1 decimal place.
 #[must_use]
+#[allow(dead_code)]
 pub fn rf1(v: f64, w: usize) -> String {
     format!("{v:>w$.1}")
 }

@@ -457,12 +457,12 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
         compute_stats(&samples[start..])
     };
 
-    let phases: [(u32, u64, &[u64]); 3] = [
+    let switch_data: [(u32, u64, &[u64]); 3] = [
         (1, size_a, &phase1),
         (2, size_b, &phase2),
         (3, size_a, &phase3),
     ];
-    for (ph, size, samples) in &phases {
+    for (ph, size, samples) in &switch_data {
         if let (Some(first), Some(last)) = (first_10(samples), last_10(samples)) {
             crate::fmt::print_metric(
                 heap_name,

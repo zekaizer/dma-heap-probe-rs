@@ -449,7 +449,7 @@ pub(crate) fn reporter_loop(
     state: &AgingState,
     report_interval: Duration,
     start_time: Instant,
-    initial_mem_available_kb: Option<u64>,
+    _initial_mem_available_kb: Option<u64>,
     heap_label: &str,
     heap_w: usize,
 ) {
@@ -480,8 +480,6 @@ pub(crate) fn reporter_loop(
             state.update_cumulative(stats);
         }
 
-        let mem_available = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
-        let mem_delta_mb = compute_delta_mb(initial_mem_available_kb, mem_available);
         let buf_count = sysfs::snapshot()
             .ok()
             .map_or(0, |snap| sysfs::buffer_count(&snap));
