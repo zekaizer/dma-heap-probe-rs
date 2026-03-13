@@ -45,6 +45,7 @@ fn main() {
     let backend = backend::mock::MockBackend::new();
 
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
+    let heap_w = fmt::heap_width(&heaps);
 
     // Pressure worker subprocess: run tests inline and exit immediately.
     let is_pressure_worker = std::env::var(cmd::pressure::PRESSURE_WORKER_ENV).is_ok();
@@ -57,7 +58,7 @@ fn main() {
         } => {
             let start = Instant::now();
             let (sub, err) = run_per_heap(&heaps, |h| {
-                cmd::basic::run(&backend, h, &sizes, repeat, threads)
+                cmd::basic::run(&backend, h, &sizes, repeat, threads, heap_w)
             });
             handle_cmd_output(
                 "basic",
@@ -70,7 +71,7 @@ fn main() {
         }
         Command::Negative => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::negative::run(&backend, h));
+            let (sub, err) = run_per_heap(&heaps, |h| cmd::negative::run(&backend, h, heap_w));
             handle_cmd_output(
                 "negative",
                 &heaps,
@@ -87,7 +88,7 @@ fn main() {
         } => {
             let start = Instant::now();
             let (sub, err) = run_per_heap(&heaps, |h| {
-                cmd::perf::run(&backend, h, sizes.as_deref(), iterations, warmup)
+                cmd::perf::run(&backend, h, sizes.as_deref(), iterations, warmup, heap_w)
             });
             handle_cmd_output(
                 "perf",
@@ -113,7 +114,7 @@ fn main() {
             } else {
                 // On host or as worker subprocess, run inline.
                 run_per_heap(&heaps, |h| {
-                    cmd::pressure::run(&backend, h, alloc_size, max_allocs)
+                    cmd::pressure::run(&backend, h, alloc_size, max_allocs, heap_w)
                 })
             };
             handle_cmd_output(
@@ -186,6 +187,7 @@ fn main() {
                 max_hold,
                 seed,
                 &thresholds,
+                heap_w,
             );
             handle_cmd_output(
                 "aging",
@@ -257,25 +259,27 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     }
 
     let mut results = runner::RunResult::new(heaps);
+    let heap_w = fmt::heap_width(heaps);
 
     for heap in heaps {
-        runner::run_stage(&mut results, "basic", heap, || {
+        runner::run_stage(&mut results, "basic", heap, heap_w, || {
             stage_result(cmd::basic::run(
                 backend,
                 heap,
                 &[4096, 65536, 1_048_576],
                 8,
                 4,
+                heap_w,
             ))
         });
-        runner::run_stage(&mut results, "negative", heap, || {
-            stage_result(cmd::negative::run(backend, heap))
+        runner::run_stage(&mut results, "negative", heap, heap_w, || {
+            stage_result(cmd::negative::run(backend, heap, heap_w))
         });
-        runner::run_stage(&mut results, "perf", heap, || {
-            stage_result(cmd::perf::run(backend, heap, None, 10, 2))
+        runner::run_stage(&mut results, "perf", heap, heap_w, || {
+            stage_result(cmd::perf::run(backend, heap, None, 10, 2, heap_w))
         });
-        runner::run_stage(&mut results, "pressure", heap, || {
-            stage_result(cmd::pressure::run(backend, heap, 4096, None))
+        runner::run_stage(&mut results, "pressure", heap, heap_w, || {
+            stage_result(cmd::pressure::run(backend, heap, 4096, None, heap_w))
         });
     }
 

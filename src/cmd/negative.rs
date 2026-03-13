@@ -22,6 +22,7 @@ const NEG_ALLOC_SIZE: u64 = 4096;
 pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, "negative sequence");
 
@@ -85,7 +86,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    runner::collect_test_results("negative", heap_name, &tests)
+    runner::collect_test_results("negative", heap_name, heap_w, &tests)
 }
 
 // ── Layer 1: Heap device access ──
@@ -518,7 +519,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system");
+        let (results, err) = run(&b, "system", 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 14);

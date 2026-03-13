@@ -34,6 +34,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     sizes: &[u64],
     repeat: u32,
     threads: u32,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, ?sizes, repeat, threads, "basic sequence");
 
@@ -63,7 +64,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ("dup_fd", test_dup_fd(backend, heap_name)),
     ];
 
-    runner::collect_test_results("basic", heap_name, &tests)
+    runner::collect_test_results("basic", heap_name, heap_w, &tests)
 }
 
 /// Alloc → mmap → pattern write → read verify for each size.
@@ -518,7 +519,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let backend = MockBackend::new();
-        let (results, err) = run(&backend, "system", &[4096, 65536], 10, 10);
+        let (results, err) = run(&backend, "system", &[4096, 65536], 10, 10, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 8);
@@ -527,7 +528,7 @@ mod tests {
     #[test]
     fn run_bad_heap() {
         let backend = MockBackend::new();
-        let (results, err) = run(&backend, "", &[4096], 10, 10);
+        let (results, err) = run(&backend, "", &[4096], 10, 10, 6);
         assert!(err.is_some());
         assert!(results.iter().any(|t| !t.passed));
     }

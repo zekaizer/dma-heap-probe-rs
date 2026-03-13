@@ -97,7 +97,7 @@ impl RunResult {
 }
 
 /// Run a stage and record the result with unified output.
-pub fn run_stage<F>(results: &mut RunResult, name: &str, heap: &str, f: F)
+pub fn run_stage<F>(results: &mut RunResult, name: &str, heap: &str, heap_w: usize, f: F)
 where
     F: FnOnce() -> anyhow::Result<Option<serde_json::Value>>,
 {
@@ -109,11 +109,16 @@ where
 
     let (mapped, details) = match result {
         Ok(details) => {
-            println!("[{heap}] [PASS] {name} ({duration_ms}ms)");
+            crate::fmt::print_pass(heap, heap_w, &format!("{name}  duration: {duration_ms}ms"));
             (Ok(()), details)
         }
         Err(e) => {
-            println!("[{heap}] [FAIL] {name} ({duration_ms}ms) — {e}");
+            crate::fmt::print_fail(
+                heap,
+                heap_w,
+                &format!("{name}  duration: {duration_ms}ms"),
+                &e.to_string(),
+            );
             (Err(e), None)
         }
     };
@@ -127,11 +132,12 @@ pub fn sub_tests_to_details(tests: &[SubTestResult]) -> serde_json::Value {
 }
 
 /// Collect nix test results into `SubTestResult` entries with unified output.
-/// Prints `[heap] [PASS/FAIL] stage::test_name` for each result.
+/// Prints `[heap]  PASS/FAIL  stage::test_name` for each result.
 /// Returns the collected results and the first error (if any).
 pub fn collect_test_results(
     stage: &str,
     heap: &str,
+    heap_w: usize,
     tests: &[(&str, nix::Result<()>)],
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let mut results = Vec::with_capacity(tests.len());
@@ -140,7 +146,7 @@ pub fn collect_test_results(
     for (name, result) in tests {
         match result {
             Ok(()) => {
-                println!("[{heap}] [PASS] {stage}::{name}");
+                crate::fmt::print_pass(heap, heap_w, &format!("{stage}::{name}"));
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: true,
@@ -148,7 +154,7 @@ pub fn collect_test_results(
                 });
             }
             Err(e) => {
-                println!("[{heap}] [FAIL] {stage}::{name} — {e}");
+                crate::fmt::print_fail(heap, heap_w, &format!("{stage}::{name}"), &format!("{e}"));
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: false,
@@ -239,8 +245,8 @@ mod tests {
     #[test]
     fn run_stage_records() {
         let mut r = RunResult::new(&["system".into()]);
-        run_stage(&mut r, "ok_stage", "system", || Ok(None));
-        run_stage(&mut r, "err_stage", "system", || {
+        run_stage(&mut r, "ok_stage", "system", 6, || Ok(None));
+        run_stage(&mut r, "err_stage", "system", 6, || {
             Err(anyhow::anyhow!("boom"))
         });
         assert_eq!(r.stages.len(), 2);
@@ -251,7 +257,7 @@ mod tests {
     #[test]
     fn run_stage_with_details() {
         let mut r = RunResult::new(&["system".into()]);
-        run_stage(&mut r, "detailed", "system", || {
+        run_stage(&mut r, "detailed", "system", 6, || {
             let details = serde_json::json!({"tests": []});
             Ok(Some(details))
         });

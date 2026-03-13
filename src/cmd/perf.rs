@@ -86,6 +86,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     sizes: Option<&[u64]>,
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
@@ -122,7 +123,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ("bench_size_switch", bench_size_switch(backend, heap_name)),
     ];
 
-    runner::collect_test_results("perf", heap_name, &tests)
+    runner::collect_test_results("perf", heap_name, heap_w, &tests)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
@@ -556,7 +557,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1);
+        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 7);

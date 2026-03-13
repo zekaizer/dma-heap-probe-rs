@@ -640,6 +640,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     max_hold: usize,
     seed: Option<u64>,
     thresholds: &AgingThresholds,
+    heap_w: usize,
 ) -> (
     Vec<SubTestResult>,
     Option<anyhow::Error>,
@@ -691,9 +692,9 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let heap_label = heaps.join(",");
     let (sub_results, err) = if passed {
-        runner::collect_test_results("aging", &heap_label, &[("aging", Ok(()))])
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))])
     } else {
-        runner::collect_test_results("aging", &heap_label, &[("aging", Err(Errno::EIO))])
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Err(Errno::EIO))])
     };
 
     (sub_results, err, Some(aging_result))
@@ -735,6 +736,7 @@ mod tests {
             32,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -761,6 +763,7 @@ mod tests {
             8,
             Some(42),
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1014,6 +1017,7 @@ mod tests {
             8,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1043,6 +1047,7 @@ mod tests {
             8,
             None,
             &AgingThresholds::default(),
+            6,
         );
         let ar = aging_result.unwrap();
         assert!(ar.total_errors > 0, "should have injected errors");
@@ -1070,6 +1075,7 @@ mod tests {
             8,
             Some(42),
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1129,6 +1135,7 @@ mod tests {
             16,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));

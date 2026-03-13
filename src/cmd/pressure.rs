@@ -30,6 +30,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     alloc_size: u64,
     max_allocs_override: Option<usize>,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let max_allocs = match max_allocs_override {
         Some(n) => n,
@@ -58,7 +59,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
     ];
 
-    runner::collect_test_results("pressure", heap_name, &tests)
+    runner::collect_test_results("pressure", heap_name, heap_w, &tests)
 }
 
 /// Run pressure tests as a subprocess with adaptive OOM retry.
@@ -431,7 +432,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system", 4096, None);
+        let (results, err) = run(&b, "system", 4096, None, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 3);
