@@ -64,13 +64,6 @@ pub trait DmaBufBackend {
     /// - `EBADF` if fd is invalid
     fn llseek(&self, fd: RawFd, offset: i64, whence: i32) -> nix::Result<i64>;
 
-    /// Set a debug name on the dma-buf via `DMA_BUF_SET_NAME_B`.
-    ///
-    /// # Errors
-    /// - `ENAMETOOLONG` if name exceeds `DMA_BUF_NAME_LEN`
-    /// - `EBADF` if fd is invalid
-    fn set_name(&self, fd: RawFd, name: &str) -> nix::Result<()>;
-
     /// Export fences as a `sync_file` via `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`.
     /// Populates `data.fd` with the `sync_file` descriptor on success.
     ///

@@ -43,7 +43,7 @@ pub struct Cli {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated,
-    /// `sync_file`, concurrent, dup, `set_name`).
+    /// `sync_file`, concurrent, dup).
     Basic {
         /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]

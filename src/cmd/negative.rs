@@ -10,7 +10,7 @@ use nix::errno::Errno;
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_buf::{DMA_BUF_NAME_LEN, DMA_BUF_SYNC_READ};
+use crate::ioctl::dma_buf::DMA_BUF_SYNC_READ;
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
@@ -59,10 +59,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             neg_sync_on_closed_fd(backend, heap_name),
         ),
         ("neg_llseek_invalid", neg_llseek_invalid(backend, heap_name)),
-        (
-            "neg_set_name_too_long",
-            neg_set_name_too_long(backend, heap_name),
-        ),
         // Layer 4: mmap
         (
             "neg_mmap_beyond_size",
@@ -241,25 +237,6 @@ fn neg_llseek_invalid<B: HeapBackend + DmaBufBackend>(
     expect_errno(result, Errno::EINVAL, "llseek nonzero SEEK_END")?;
 
     Ok(())
-}
-
-/// `set_name` with string exceeding `DMA_BUF_NAME_LEN` → expect `ENAMETOOLONG`.
-#[allow(clippy::cast_possible_truncation)]
-fn neg_set_name_too_long<B: HeapBackend + DmaBufBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(
-        NEG_ALLOC_SIZE,
-        DMA_HEAP_ALLOC_FD_FLAGS,
-        DMA_HEAP_VALID_HEAP_FLAGS,
-    )?;
-    let buf = DmaBuf::new(backend, fd, NEG_ALLOC_SIZE as usize);
-
-    let long_name = "x".repeat(DMA_BUF_NAME_LEN + 1);
-    let result = buf.set_name(&long_name);
-    expect_errno(result, Errno::ENAMETOOLONG, "set_name too long")
 }
 
 // ── Layer 4: mmap ──
@@ -498,12 +475,6 @@ mod tests {
         neg_llseek_invalid(&b, "system").unwrap();
     }
 
-    #[test]
-    fn set_name_too_long() {
-        let b = MockBackend::new();
-        neg_set_name_too_long(&b, "system").unwrap();
-    }
-
     // ── Layer 4 ──
 
     #[test]
@@ -550,6 +521,6 @@ mod tests {
         let (results, err) = run(&b, "system");
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
-        assert_eq!(results.len(), 15);
+        assert_eq!(results.len(), 14);
     }
 }

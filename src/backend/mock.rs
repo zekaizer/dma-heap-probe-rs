@@ -10,8 +10,8 @@ use std::sync::{Arc, Mutex};
 use nix::errno::Errno;
 
 use crate::ioctl::dma_buf::{
-    DMA_BUF_NAME_LEN, DMA_BUF_SYNC_END, DMA_BUF_SYNC_READ, DMA_BUF_SYNC_VALID_FLAGS_MASK,
-    DMA_BUF_SYNC_WRITE, DmaBufExportSyncFile, DmaBufImportSyncFile,
+    DMA_BUF_SYNC_END, DMA_BUF_SYNC_READ, DMA_BUF_SYNC_VALID_FLAGS_MASK, DMA_BUF_SYNC_WRITE,
+    DmaBufExportSyncFile, DmaBufImportSyncFile,
 };
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DmaHeapAllocationData};
 
@@ -36,8 +36,6 @@ enum SyncState {
 struct BufferState {
     /// Shared buffer data (allows zero-copy dup).
     data: Arc<[u8]>,
-    /// Debug name set via `SET_NAME`.
-    name: Option<String>,
     /// Current sync state.
     sync_state: SyncState,
 }
@@ -211,7 +209,6 @@ impl HeapBackend for MockBackend {
             fd,
             BufferState {
                 data: buf,
-                name: None,
                 sync_state: SyncState::None,
             },
         );
@@ -317,18 +314,6 @@ impl DmaBufBackend for MockBackend {
         }
     }
 
-    fn set_name(&self, fd: RawFd, name: &str) -> nix::Result<()> {
-        let mut state = self.state.lock().unwrap();
-        let buf = state.buffers.get_mut(&fd).ok_or(Errno::EBADF)?;
-
-        if name.len() > DMA_BUF_NAME_LEN {
-            return Err(Errno::ENAMETOOLONG);
-        }
-
-        buf.name = Some(name.to_owned());
-        Ok(())
-    }
-
     fn export_sync_file(&self, fd: RawFd, data: &mut DmaBufExportSyncFile) -> nix::Result<()> {
         let mut state = self.state.lock().unwrap();
 
@@ -370,7 +355,6 @@ impl DmaBufBackend for MockBackend {
         let original = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
         let new_buf = BufferState {
             data: Arc::clone(&original.data),
-            name: original.name.clone(),
             sync_state: SyncState::None,
         };
 
@@ -615,31 +599,6 @@ mod tests {
         let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
         assert_eq!(b.llseek(buf_fd, 1, libc::SEEK_SET), Err(Errno::EINVAL));
         assert_eq!(b.llseek(buf_fd, 1, libc::SEEK_END), Err(Errno::EINVAL));
-    }
-
-    // ── set_name tests ──
-
-    #[test]
-    fn set_name_valid() {
-        let b = setup();
-        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
-        b.set_name(buf_fd, "test_buffer").unwrap();
-    }
-
-    #[test]
-    fn set_name_max_length() {
-        let b = setup();
-        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
-        let name = "a".repeat(DMA_BUF_NAME_LEN);
-        b.set_name(buf_fd, &name).unwrap();
-    }
-
-    #[test]
-    fn set_name_too_long() {
-        let b = setup();
-        let (_heap_fd, buf_fd) = open_and_alloc(&b, 4096);
-        let name = "a".repeat(DMA_BUF_NAME_LEN + 1);
-        assert_eq!(b.set_name(buf_fd, &name), Err(Errno::ENAMETOOLONG));
     }
 
     // ── close / lifecycle tests ──

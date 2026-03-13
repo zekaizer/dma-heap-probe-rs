@@ -1,5 +1,5 @@
 // Basic deterministic tests: alloc, mmap, sync, llseek, zeroed, repeated,
-// sync_file export/import, concurrent alloc, dup, set_name.
+// sync_file export/import, concurrent alloc, dup.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -15,7 +15,7 @@ use crate::runner::{self, SubTestResult};
 /// Number of buffers used in the zeroed-page test.
 const ZEROED_TEST_COUNT: usize = 16;
 
-/// Default allocation size for edge tests (concurrent, dup, `set_name`).
+/// Default allocation size for edge tests (concurrent, dup).
 const EDGE_ALLOC_SIZE: u64 = 4096;
 
 /// Page size for alignment calculations.
@@ -37,7 +37,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, ?sizes, repeat, threads, "basic sequence");
 
-    let tests: [(&str, nix::Result<()>); 9] = [
+    let tests: [(&str, nix::Result<()>); 8] = [
         (
             "alloc_and_map",
             test_alloc_and_map(backend, heap_name, sizes),
@@ -61,7 +61,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             test_concurrent_alloc(backend, heap_name, threads),
         ),
         ("dup_fd", test_dup_fd(backend, heap_name)),
-        ("set_name", test_set_name(backend, heap_name)),
     ];
 
     runner::collect_test_results("basic", heap_name, &tests)
@@ -376,29 +375,6 @@ fn test_dup_fd<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> 
     Ok(())
 }
 
-/// Set a debug name on a dma-buf and verify it succeeds.
-fn test_set_name<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> nix::Result<()> {
-    let heap = DmaHeap::open(backend, heap_name)?;
-    let fd = heap.alloc(
-        EDGE_ALLOC_SIZE,
-        DMA_HEAP_ALLOC_FD_FLAGS,
-        DMA_HEAP_VALID_HEAP_FLAGS,
-    )?;
-    #[allow(clippy::cast_possible_truncation)]
-    let buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
-
-    // Short name
-    buf.set_name("test_buffer")?;
-    tracing::debug!("set short name ok");
-
-    // Max length name (DMA_BUF_NAME_LEN = 32)
-    let max_name = "a".repeat(32);
-    buf.set_name(&max_name)?;
-    tracing::debug!("set max length name ok");
-
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -537,14 +513,6 @@ mod tests {
         test_dup_fd(&backend, "system").unwrap();
     }
 
-    // ── test_set_name ──
-
-    #[test]
-    fn set_name_valid() {
-        let backend = MockBackend::new();
-        test_set_name(&backend, "system").unwrap();
-    }
-
     // ── run() integration ──
 
     #[test]
@@ -553,7 +521,7 @@ mod tests {
         let (results, err) = run(&backend, "system", &[4096, 65536], 10, 10);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
-        assert_eq!(results.len(), 9);
+        assert_eq!(results.len(), 8);
     }
 
     #[test]

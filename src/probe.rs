@@ -42,7 +42,6 @@ pub(crate) struct HeapCaps {
     pub can_sync: bool,
     pub can_write: bool,
     pub can_llseek: bool,
-    pub can_set_name: bool,
     pub can_sync_file: bool,
     pub can_dup: bool,
 }
@@ -56,7 +55,6 @@ impl HeapCaps {
             can_sync: false,
             can_write: false,
             can_llseek: false,
-            can_set_name: false,
             can_sync_file: false,
             can_dup: false,
         }
@@ -106,8 +104,6 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
 
     caps.can_llseek = buf.llseek_size().is_ok();
     tracing::trace!(heap = heap_name, ok = caps.can_llseek, "probe: llseek");
-    caps.can_set_name = buf.set_name("probe").is_ok();
-    tracing::trace!(heap = heap_name, ok = caps.can_set_name, "probe: set_name");
 
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -134,7 +130,6 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
         sync = caps.can_sync,
         write = caps.can_write,
         llseek = caps.can_llseek,
-        set_name = caps.can_set_name,
         sync_file = caps.can_sync_file,
         dup = caps.can_dup,
         "heap capabilities probed"
@@ -196,7 +191,6 @@ mod tests {
         assert!(caps.can_sync);
         assert!(caps.can_write);
         assert!(caps.can_llseek);
-        assert!(caps.can_set_name);
         assert!(caps.can_sync_file);
         assert!(caps.can_dup);
     }

@@ -39,7 +39,6 @@ enum Pipeline {
     WriteNoSync,
     DoubleMmap,
     DupAndOperate,
-    SetNameThenWrite,
     LlseekAfterWrite,
     SyncFileRoundtrip,
     AllocHold,
@@ -74,9 +73,6 @@ fn build_weighted_table(caps: &HeapCaps) -> Vec<(Pipeline, u32)> {
     }
     if caps.can_dup {
         table.push((Pipeline::DupAndOperate, 5));
-    }
-    if caps.can_set_name && caps.can_mmap && caps.can_write {
-        table.push((Pipeline::SetNameThenWrite, 5));
     }
     if caps.can_llseek && caps.can_mmap && caps.can_write {
         table.push((Pipeline::LlseekAfterWrite, 5));
@@ -387,7 +383,6 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             pipeline,
             &ctx.caps,
             &mut hold_pool,
-            state,
         );
 
         if error_occurred {
@@ -429,7 +424,6 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
     pipeline: Pipeline,
     caps: &HeapCaps,
     hold_pool: &mut HoldPool<'a, B>,
-    state: &AgingState,
 ) -> bool {
     let size_usize = size as usize;
 
@@ -568,26 +562,6 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
             } else {
                 drop(buf);
             }
-            false
-        }
-
-        Pipeline::SetNameThenWrite => {
-            let mut buf = DmaBuf::new(backend, fd, size_usize);
-            let iter_count = state.total_iters.load(Relaxed);
-            let name = format!("fuzz_{iter_count}");
-            // Truncate to 32 chars (DMA_BUF_NAME_LEN).
-            let name = &name[..name.len().min(32)];
-            let _ = buf.set_name(name);
-            if let Ok(ptr) = buf.mmap() {
-                let pat = random_write_pattern(rng);
-                let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
-                // SAFETY: ptr valid for size_usize bytes.
-                unsafe {
-                    super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
-                }
-                let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
-            }
-            drop(buf);
             false
         }
 

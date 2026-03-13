@@ -79,17 +79,6 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
         Ok(size)
     }
 
-    /// Set a debug name on this `dma-buf`.
-    ///
-    /// # Errors
-    /// - `ENAMETOOLONG` if name exceeds `DMA_BUF_NAME_LEN`
-    /// - `EBADF` if fd is invalid
-    pub fn set_name(&self, name: &str) -> nix::Result<()> {
-        self.backend.set_name(self.fd, name)?;
-        tracing::debug!(fd = self.fd, name, "name set");
-        Ok(())
-    }
-
     /// Export fences as a `sync_file`. Returns the `sync_file` fd.
     ///
     /// # Errors
@@ -236,14 +225,6 @@ mod tests {
         let buf = DmaBuf::new(&backend, fd, 4096);
         let size = buf.llseek_size().unwrap();
         assert_eq!(size, 4096);
-    }
-
-    #[test]
-    fn set_name_ok() {
-        let backend = MockBackend::new();
-        let fd = alloc_buf(&backend, 4096);
-        let buf = DmaBuf::new(&backend, fd, 4096);
-        buf.set_name("test_buffer").unwrap();
     }
 
     #[test]

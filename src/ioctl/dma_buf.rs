@@ -47,9 +47,6 @@ pub const DMA_BUF_SYNC_END: u64 = 1 << 2;
 /// Bitmask of all valid sync flags.
 pub const DMA_BUF_SYNC_VALID_FLAGS_MASK: u64 = DMA_BUF_SYNC_RW | DMA_BUF_SYNC_END;
 
-/// Maximum length of a dma-buf name (excluding null terminator).
-pub const DMA_BUF_NAME_LEN: usize = 32;
-
 const DMA_BUF_BASE: u8 = b'b';
 
 nix::ioctl_write_ptr!(
@@ -58,16 +55,6 @@ nix::ioctl_write_ptr!(
     DMA_BUF_BASE,
     0,
     DmaBufSync
-);
-
-// DMA_BUF_SET_NAME_B: _IOW('b', 1, __u64)
-// The kernel defines this with sizeof(__u64)=8, but the actual data is a char*.
-// We must use ioctl_write_ptr_bad! with a manually computed request code.
-nix::ioctl_write_ptr_bad!(
-    /// `DMA_BUF_SET_NAME_B` — set a name on a dma-buf for debugging.
-    dma_buf_set_name,
-    nix::request_code_write!(DMA_BUF_BASE, 1, std::mem::size_of::<u64>()),
-    libc::c_char
 );
 
 nix::ioctl_readwrite!(
@@ -122,18 +109,6 @@ mod tests {
         assert_eq!(DMA_BUF_SYNC_START, 0x0);
         assert_eq!(DMA_BUF_SYNC_END, 0x4);
         assert_eq!(DMA_BUF_SYNC_VALID_FLAGS_MASK, 0x7);
-    }
-
-    #[test]
-    fn name_len_constant() {
-        assert_eq!(DMA_BUF_NAME_LEN, 32);
-    }
-
-    #[test]
-    fn set_name_request_code() {
-        // DMA_BUF_SET_NAME_B = _IOW('b', 1, __u64) => size field = 8
-        let code = nix::request_code_write!(b'b', 1, mem::size_of::<u64>());
-        assert_eq!(code, nix::request_code_write!(DMA_BUF_BASE, 1, 8));
     }
 
     #[test]

@@ -30,9 +30,9 @@ dma-heap-probe-rs/
 │   ├── ioctl/
 │   │   ├── mod.rs
 │   │   ├── dma_heap.rs          # DMA_HEAP_IOCTL_ALLOC
-│   │   └── dma_buf.rs           # SYNC, EXPORT/IMPORT_SYNC_FILE, SET_NAME
+│   │   └── dma_buf.rs           # SYNC, EXPORT/IMPORT_SYNC_FILE
 │   ├── heap.rs                  # /dev/dma_heap/<name> open + alloc
-│   ├── dmabuf.rs                # mmap, sync, llseek, sync_file, set_name
+│   ├── dmabuf.rs                # mmap, sync, llseek, sync_file
 │   ├── trace.rs                 # Perfetto atrace marker (trace_marker 직접 write)
 │   ├── sysfs.rs                 # /sys/kernel/dmabuf/buffers/ 파싱
 │   ├── procfs.rs                # buddyinfo, pagetypeinfo, meminfo, vmstat 파싱
@@ -45,7 +45,7 @@ dma-heap-probe-rs/
 │       ├── mod.rs
 │       ├── basic.rs             # 1단계: alloc, mmap, sync, llseek, zeroed, repeated
 │       ├── sync_file.rs         # 2단계: export/import sync_file
-│       ├── edge.rs              # 2단계: 에러 경로, dup, set_name, concurrent
+│       ├── edge.rs              # 2단계: 에러 경로, dup, concurrent
 │       ├── perf.rs              # 3단계: latency, order 경계, 내부 단편화
 │       ├── negative.rs          # 네거티브: 에러 경로, 잘못된 입력, 경합 조건
 │       ├── pressure.rs          # 메모리 압박 하 동작
@@ -192,7 +192,6 @@ COMMANDS:
 |---|---|---|---|---|
 | `DMA_HEAP_IOCTL_ALLOC` | `'H'` | 0x00 | WR | `dma_heap_allocation_data` |
 | `DMA_BUF_IOCTL_SYNC` | `'b'` | 0x00 | WR | `dma_buf_sync` |
-| `DMA_BUF_SET_NAME_B` | `'b'` | 0x01 | W | `const char *` |
 | `DMA_BUF_IOCTL_EXPORT_SYNC_FILE` | `'b'` | 0x02 | WR | `dma_buf_export_sync_file` |
 | `DMA_BUF_IOCTL_IMPORT_SYNC_FILE` | `'b'` | 0x03 | WR | `dma_buf_import_sync_file` |
 
@@ -314,9 +313,6 @@ COMMANDS:
 ##### `test_dup_fd()`
 - alloc → dup(fd) → 원본 close → dup fd로 mmap+read 정상 확인
 - dup fd close → sysfs에서 해당 버퍼 소멸 확인
-
-##### `test_set_name()`
-- `DMA_BUF_SET_NAME_B` → `/proc/<pid>/fdinfo/<fd>` 에서 이름 확인
 
 ---
 
@@ -688,12 +684,6 @@ dhp scenario pipeline heavy \
 - `lseek(fd, 1, SEEK_SET)` → `EINVAL` (offset != 0)
 - `lseek(fd, 1, SEEK_END)` → `EINVAL` (offset != 0)
 
-##### `neg_set_name_too_long()`
-- `DMA_BUF_NAME_LEN` (32바이트) 초과 → `ENAMETOOLONG`
-
-##### `neg_set_name_null()`
-- NULL 포인터 → `EFAULT`
-
 ##### `neg_read_write_on_dmabuf()`
 - dma-buf fd에 `read()` / `write()` 시스콜 → 예상: `EINVAL` 또는 `-1`
 
@@ -867,7 +857,7 @@ src/
 **`backend/mod.rs`** — 핵심 trait:
 
 - `trait HeapBackend`: heap open, alloc (fd 반환)
-- `trait DmaBufBackend`: mmap, munmap, sync, llseek, export/import sync_file, set_name, close
+- `trait DmaBufBackend`: mmap, munmap, sync, llseek, export/import sync_file, close
 
 `heap.rs`와 `dmabuf.rs`는 이 trait에 의존하고, 구체 구현은 컴파일 타겟에 따라 선택한다.
 
@@ -887,7 +877,6 @@ src/
 - `DMA_BUF_IOCTL_SYNC`: START/END 상태 추적, flags 유효성 검증 (실제 캐시 관리 없음)
 - `mmap`: 내부 `Vec<u8>`의 슬라이스 포인터 반환
 - `llseek`: 할당된 크기 반환
-- `DMA_BUF_SET_NAME_B`: 이름 저장, 길이 검증
 - `export/import sync_file`: mock sync_file fd 반환, flags 검증
 - `close`: 내부 버퍼 해제, refcount 관리
 
@@ -909,7 +898,7 @@ src/
 tests/                          # integration tests (호스트)
 ├── test_basic.rs               # basic 로직 검증 (mock backend)
 ├── test_negative.rs            # 네거티브 케이스 errno 검증
-├── test_edge.rs                # dup, set_name, concurrent 로직
+├── test_edge.rs                # dup, concurrent 로직
 └── test_scenario_logic.rs      # 시나리오 버퍼 크기 계산, 풀 순환 로직
 
 src/cmd/basic.rs 등 내부:

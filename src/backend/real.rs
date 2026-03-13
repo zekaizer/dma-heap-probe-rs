@@ -14,9 +14,7 @@ use nix::sys::mman::{self, MapFlags, ProtFlags};
 use nix::sys::stat::Mode;
 use nix::unistd;
 
-use crate::ioctl::dma_buf::{
-    self, DMA_BUF_NAME_LEN, DmaBufExportSyncFile, DmaBufImportSyncFile, DmaBufSync,
-};
+use crate::ioctl::dma_buf::{self, DmaBufExportSyncFile, DmaBufImportSyncFile, DmaBufSync};
 use crate::ioctl::dma_heap::{self, DmaHeapAllocationData};
 
 use super::{DmaBufBackend, HeapBackend};
@@ -95,16 +93,6 @@ impl DmaBufBackend for RealBackend {
         // SAFETY: fd is a valid dma-buf fd.
         let borrowed = unsafe { BorrowedFd::borrow_raw(fd) };
         unistd::lseek(borrowed, offset, w)
-    }
-
-    fn set_name(&self, fd: RawFd, name: &str) -> nix::Result<()> {
-        if name.len() > DMA_BUF_NAME_LEN {
-            return Err(Errno::ENAMETOOLONG);
-        }
-        let cname = CString::new(name).map_err(|_| Errno::EINVAL)?;
-        // SAFETY: fd is a valid dma-buf fd, cname is a valid C string.
-        unsafe { dma_buf::dma_buf_set_name(fd, cname.as_ptr()) }?;
-        Ok(())
     }
 
     fn export_sync_file(&self, fd: RawFd, data: &mut DmaBufExportSyncFile) -> nix::Result<()> {
