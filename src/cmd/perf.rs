@@ -86,6 +86,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     sizes: Option<&[u64]>,
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
@@ -100,29 +101,35 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "bench_alloc_only",
-            bench_alloc_only(backend, heap_name, sizes, iterations, warmup),
+            bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w),
         ),
         (
             "bench_full_pipeline",
-            bench_full_pipeline(backend, heap_name, sizes, iterations, warmup),
+            bench_full_pipeline(backend, heap_name, sizes, iterations, warmup, heap_w),
         ),
         (
             "bench_close",
-            bench_close(backend, heap_name, sizes, iterations, warmup),
+            bench_close(backend, heap_name, sizes, iterations, warmup, heap_w),
         ),
         (
             "bench_order_boundary",
-            bench_order_boundary(backend, heap_name, iterations, warmup),
+            bench_order_boundary(backend, heap_name, iterations, warmup, heap_w),
         ),
         (
             "bench_internal_frag",
-            bench_internal_frag(backend, heap_name),
+            bench_internal_frag(backend, heap_name, heap_w),
         ),
-        ("bench_pool_warmup", bench_pool_warmup(backend, heap_name)),
-        ("bench_size_switch", bench_size_switch(backend, heap_name)),
+        (
+            "bench_pool_warmup",
+            bench_pool_warmup(backend, heap_name, heap_w),
+        ),
+        (
+            "bench_size_switch",
+            bench_size_switch(backend, heap_name, heap_w),
+        ),
     ];
 
-    runner::collect_test_results("perf", heap_name, &tests)
+    runner::collect_test_results("perf", heap_name, heap_w, &tests)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
@@ -133,8 +140,10 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     sizes: &[u64],
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -156,13 +165,26 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            println!(
-                "[{heap_name}] perf::alloc_only size={size} min_us={} avg_us={} p50_us={} p95_us={} p99_us={} max_us={}",
-                stats.min_us, stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us, stats.max_us
-            );
+            rows.push(vec![
+                size.to_string(),
+                stats.min_us.to_string(),
+                stats.avg_us.to_string(),
+                stats.p50_us.to_string(),
+                stats.p95_us.to_string(),
+                stats.p99_us.to_string(),
+                stats.max_us.to_string(),
+            ]);
         }
     }
 
+    crate::fmt::print_table(
+        heap_name,
+        heap_w,
+        "perf::alloc_only",
+        Some("(us)"),
+        &["size", "min", "avg", "p50", "p95", "p99", "max"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -174,8 +196,10 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     sizes: &[u64],
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -207,13 +231,24 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            println!(
-                "[{heap_name}] perf::full_pipeline size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
-                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
-            );
+            rows.push(vec![
+                size.to_string(),
+                stats.avg_us.to_string(),
+                stats.p50_us.to_string(),
+                stats.p95_us.to_string(),
+                stats.p99_us.to_string(),
+            ]);
         }
     }
 
+    crate::fmt::print_table(
+        heap_name,
+        heap_w,
+        "perf::full_pipeline",
+        Some("(us)"),
+        &["size", "avg", "p50", "p95", "p99"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -225,8 +260,10 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
     sizes: &[u64],
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -248,13 +285,24 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            println!(
-                "[{heap_name}] perf::close size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
-                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
-            );
+            rows.push(vec![
+                size.to_string(),
+                stats.avg_us.to_string(),
+                stats.p50_us.to_string(),
+                stats.p95_us.to_string(),
+                stats.p99_us.to_string(),
+            ]);
         }
     }
 
+    crate::fmt::print_table(
+        heap_name,
+        heap_w,
+        "perf::close",
+        Some("(us)"),
+        &["size", "avg", "p50", "p95", "p99"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -265,8 +313,10 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     iterations: u32,
     warmup: u32,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     for &size in ORDER_BOUNDARY_SIZES {
         // Warmup
@@ -288,13 +338,24 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
-            println!(
-                "[{heap_name}] perf::order_boundary size={size} avg_us={} p50_us={} p95_us={} p99_us={}",
-                stats.avg_us, stats.p50_us, stats.p95_us, stats.p99_us
-            );
+            rows.push(vec![
+                size.to_string(),
+                stats.avg_us.to_string(),
+                stats.p50_us.to_string(),
+                stats.p95_us.to_string(),
+                stats.p99_us.to_string(),
+            ]);
         }
     }
 
+    crate::fmt::print_table(
+        heap_name,
+        heap_w,
+        "perf::order_boundary",
+        Some("(us)"),
+        &["size", "avg", "p50", "p95", "p99"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -332,6 +393,7 @@ fn measure_alloc_latency<B: HeapBackend + DmaBufBackend>(
 fn bench_pool_warmup<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
 
@@ -351,9 +413,16 @@ fn bench_pool_warmup<B: HeapBackend + DmaBufBackend>(
     let warm_samples = measure_alloc_latency(backend, &heap, POOL_WARMUP_SIZE, POOL_MEASURE_ITERS)?;
 
     if let (Some(cold), Some(warm)) = (compute_stats(&cold_samples), compute_stats(&warm_samples)) {
-        println!(
-            "[{heap_name}] perf::pool_warmup cold_p50_us={} cold_p95_us={} warm_p50_us={} warm_p95_us={}",
-            cold.p50_us, cold.p95_us, warm.p50_us, warm.p95_us
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::pool_warmup",
+            &[
+                ("cold_p50", &cold.p50_us),
+                ("cold_p95", &cold.p95_us),
+                ("warm_p50", &warm.p50_us),
+                ("warm_p95", &warm.p95_us),
+            ],
         );
     }
 
@@ -365,6 +434,7 @@ fn bench_pool_warmup<B: HeapBackend + DmaBufBackend>(
 fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let size_a: u64 = 65536; // 64 KB
@@ -387,23 +457,25 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
         compute_stats(&samples[start..])
     };
 
-    if let (Some(p1_first), Some(p1_last)) = (first_10(&phase1), last_10(&phase1)) {
-        println!(
-            "[{heap_name}] perf::size_switch phase=1 size={size_a} first10_p50={} last10_p50={}",
-            p1_first.p50_us, p1_last.p50_us
-        );
-    }
-    if let (Some(p2_first), Some(p2_last)) = (first_10(&phase2), last_10(&phase2)) {
-        println!(
-            "[{heap_name}] perf::size_switch phase=2 size={size_b} first10_p50={} last10_p50={}",
-            p2_first.p50_us, p2_last.p50_us
-        );
-    }
-    if let (Some(p3_first), Some(p3_last)) = (first_10(&phase3), last_10(&phase3)) {
-        println!(
-            "[{heap_name}] perf::size_switch phase=3 size={size_a} first10_p50={} last10_p50={}",
-            p3_first.p50_us, p3_last.p50_us
-        );
+    let switch_data: [(u32, u64, &[u64]); 3] = [
+        (1, size_a, &phase1),
+        (2, size_b, &phase2),
+        (3, size_a, &phase3),
+    ];
+    for (ph, size, samples) in &switch_data {
+        if let (Some(first), Some(last)) = (first_10(samples), last_10(samples)) {
+            crate::fmt::print_metric(
+                heap_name,
+                heap_w,
+                "perf::size_switch",
+                &[
+                    ("ph", ph),
+                    ("size", size),
+                    ("first10_p50", &first.p50_us),
+                    ("last10_p50", &last.p50_us),
+                ],
+            );
+        }
     }
 
     Ok(())
@@ -414,8 +486,10 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
 fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
+    let mut rows: Vec<Vec<String>> = Vec::new();
 
     for &size in FRAG_SIZES {
         let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
@@ -425,17 +499,30 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
         #[allow(clippy::cast_possible_wrap)]
         let expected_aligned = page_align(size) as i64;
         #[allow(clippy::cast_precision_loss)]
-        let frag_ratio = if size > 0 {
-            (actual as f64 - size as f64) / size as f64 * 100.0
+        let frag_pct = if size >= PAGE_SIZE {
+            let ratio = (actual as f64 - size as f64) / size as f64 * 100.0;
+            format!("{ratio:.1}")
         } else {
-            0.0
+            // Sub-page requests: fragmentation is expected, mark as not meaningful.
+            "*".to_string()
         };
 
-        println!(
-            "[{heap_name}] perf::internal_frag requested={size} actual={actual} expected={expected_aligned} frag_pct={frag_ratio:.1}",
-        );
+        rows.push(vec![
+            size.to_string(),
+            actual.to_string(),
+            expected_aligned.to_string(),
+            frag_pct,
+        ]);
     }
 
+    crate::fmt::print_table(
+        heap_name,
+        heap_w,
+        "perf::internal_frag",
+        None,
+        &["req", "actual", "expected", "frag%"],
+        &rows,
+    );
     Ok(())
 }
 
@@ -507,56 +594,56 @@ mod tests {
     #[test]
     fn alloc_only_runs() {
         let b = MockBackend::new();
-        bench_alloc_only(&b, "system", &[4096], 10, 2).unwrap();
+        bench_alloc_only(&b, "system", &[4096], 10, 2, 6).unwrap();
     }
 
     #[test]
     fn full_pipeline_runs() {
         let b = MockBackend::new();
-        bench_full_pipeline(&b, "system", &[4096], 10, 2).unwrap();
+        bench_full_pipeline(&b, "system", &[4096], 10, 2, 6).unwrap();
     }
 
     #[test]
     fn close_runs() {
         let b = MockBackend::new();
-        bench_close(&b, "system", &[4096], 10, 2).unwrap();
+        bench_close(&b, "system", &[4096], 10, 2, 6).unwrap();
     }
 
     #[test]
     fn order_boundary_runs() {
         let b = MockBackend::new();
-        bench_order_boundary(&b, "system", 5, 1).unwrap();
+        bench_order_boundary(&b, "system", 5, 1, 6).unwrap();
     }
 
     #[test]
     fn internal_frag_runs() {
         let b = MockBackend::new();
-        bench_internal_frag(&b, "system").unwrap();
+        bench_internal_frag(&b, "system", 6).unwrap();
     }
 
     #[test]
     fn pool_warmup_runs() {
         let b = MockBackend::new();
-        bench_pool_warmup(&b, "system").unwrap();
+        bench_pool_warmup(&b, "system", 6).unwrap();
     }
 
     #[test]
     fn size_switch_runs() {
         let b = MockBackend::new();
-        bench_size_switch(&b, "system").unwrap();
+        bench_size_switch(&b, "system", 6).unwrap();
     }
 
     #[test]
     fn pool_warmup_no_leak() {
         let b = MockBackend::new();
-        bench_pool_warmup(&b, "system").unwrap();
+        bench_pool_warmup(&b, "system", 6).unwrap();
         assert_eq!(b.buffer_count(), 0);
     }
 
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1);
+        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 7);

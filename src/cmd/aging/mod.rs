@@ -449,19 +449,21 @@ pub(crate) fn reporter_loop(
     state: &AgingState,
     report_interval: Duration,
     start_time: Instant,
-    initial_mem_available_kb: Option<u64>,
+    _initial_mem_available_kb: Option<u64>,
+    heap_label: &str,
+    heap_w: usize,
 ) {
     let mut prev_allocs: u64 = 0;
     let mut prev_frees: u64 = 0;
 
     loop {
-        // Sleep in 1-second chunks for responsive shutdown.
+        // Sleep in 10 ms chunks for responsive shutdown.
         let mut waited = Duration::ZERO;
         while waited < report_interval {
             if !state.running.load(Relaxed) {
                 return;
             }
-            let chunk = Duration::from_secs(1).min(report_interval.saturating_sub(waited));
+            let chunk = Duration::from_millis(10).min(report_interval.saturating_sub(waited));
             std::thread::sleep(chunk);
             waited += chunk;
         }
@@ -478,8 +480,6 @@ pub(crate) fn reporter_loop(
             state.update_cumulative(stats);
         }
 
-        let mem_available = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
-        let mem_delta_mb = compute_delta_mb(initial_mem_available_kb, mem_available);
         let buf_count = sysfs::snapshot()
             .ok()
             .map_or(0, |snap| sysfs::buffer_count(&snap));
@@ -493,20 +493,27 @@ pub(crate) fn reporter_loop(
         prev_allocs = cur_allocs;
         prev_frees = cur_frees;
 
-        println!(
-            "aging: elapsed={} iters={} samples={} allocs={} frees={} avg_us={} p99_us={} errs={} enomem={} mem_mb={} bufs={} trend={:.1}x",
-            start_time.elapsed().as_secs(),
-            state.total_iters.load(Relaxed),
-            latencies.len(),
-            interval_allocs,
-            interval_frees,
-            lat_stats.as_ref().map_or(0, |ls| ls.avg_us),
-            lat_stats.as_ref().map_or(0, |ls| ls.p99_us),
-            state.total_errors.load(Relaxed),
-            state.total_enomem.load(Relaxed),
-            mem_delta_mb.unwrap_or(0),
-            buf_count,
-            trend,
+        let elapsed_s = start_time.elapsed().as_secs();
+        let iters = state.total_iters.load(Relaxed);
+        let avg_us = lat_stats.as_ref().map_or(0, |ls| ls.avg_us);
+        let p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us);
+        let errs = state.total_errors.load(Relaxed);
+        let trend_str = format!("{trend:.1}x");
+        crate::fmt::print_metric(
+            heap_label,
+            heap_w,
+            "aging::progress",
+            &[
+                ("elapsed", &format_args!("{elapsed_s}s")),
+                ("iters", &iters),
+                ("alloc", &interval_allocs),
+                ("free", &interval_frees),
+                ("avg", &format_args!("{avg_us}us")),
+                ("p99", &format_args!("{p99_us}us")),
+                ("err", &errs),
+                ("bufs", &buf_count),
+                ("trend", &trend_str as &dyn std::fmt::Display),
+            ],
         );
     }
 }
@@ -518,6 +525,8 @@ pub(crate) fn reporter_loop(
 pub(crate) fn run_with_reporter<F>(
     state: &AgingState,
     report_interval: Duration,
+    heap_label: &str,
+    heap_w: usize,
     worker_fn: F,
 ) -> (SystemSnapshot, SystemSnapshot, Duration)
 where
@@ -530,7 +539,16 @@ where
     let initial_mem = initial_snap.mem_available_kb;
 
     std::thread::scope(|s| {
-        s.spawn(|| reporter_loop(state, report_interval, start_time, initial_mem));
+        s.spawn(|| {
+            reporter_loop(
+                state,
+                report_interval,
+                start_time,
+                initial_mem,
+                heap_label,
+                heap_w,
+            );
+        });
         worker_fn();
         state.running.store(false, Relaxed);
     });
@@ -544,15 +562,19 @@ where
     let elapsed = start_time.elapsed();
     let final_snap = take_snapshot();
 
-    println!(
-        "aging complete: elapsed={} iters={} allocs={} frees={} errs={} enomem={} trend={:.1}x",
-        elapsed.as_secs(),
-        state.total_iters.load(Relaxed),
-        state.total_allocs.load(Relaxed),
-        state.total_frees.load(Relaxed),
-        state.total_errors.load(Relaxed),
-        state.total_enomem.load(Relaxed),
-        state.trend(),
+    let trend_str = format!("{:.1}x", state.trend());
+    crate::fmt::print_metric(
+        heap_label,
+        heap_w,
+        "aging::complete",
+        &[
+            ("elapsed", &format_args!("{}s", elapsed.as_secs())),
+            ("iters", &state.total_iters.load(Relaxed)),
+            ("alloc", &state.total_allocs.load(Relaxed)),
+            ("free", &state.total_frees.load(Relaxed)),
+            ("err", &state.total_errors.load(Relaxed)),
+            ("trend", &trend_str as &dyn std::fmt::Display),
+        ],
     );
 
     (initial_snap, final_snap, elapsed)
@@ -640,6 +662,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     max_hold: usize,
     seed: Option<u64>,
     thresholds: &AgingThresholds,
+    heap_w: usize,
 ) -> (
     Vec<SubTestResult>,
     Option<anyhow::Error>,
@@ -673,27 +696,27 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     );
 
     let state = AgingState::new();
+    let heap_label = heaps.join(",");
 
-    let (initial_snap, final_snap, elapsed) = run_with_reporter(&state, report_interval, || {
-        if fuzz_mode {
-            fuzz::run_workers(
-                backend, heaps, threads, &state, duration, iterations, max_hold, seed,
-            );
-        } else {
-            worker::run_workers(
-                backend, heaps, size, threads, &state, duration, iterations, max_hold,
-            );
-        }
-    });
+    let (initial_snap, final_snap, elapsed) =
+        run_with_reporter(&state, report_interval, &heap_label, heap_w, || {
+            if fuzz_mode {
+                fuzz::run_workers(
+                    backend, heaps, threads, &state, duration, iterations, max_hold, seed,
+                );
+            } else {
+                worker::run_workers(
+                    backend, heaps, size, threads, &state, duration, iterations, max_hold,
+                );
+            }
+        });
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     let passed = evaluate_thresholds(&aging_result, thresholds);
-
-    let heap_label = heaps.join(",");
     let (sub_results, err) = if passed {
-        runner::collect_test_results("aging", &heap_label, &[("aging", Ok(()))])
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))])
     } else {
-        runner::collect_test_results("aging", &heap_label, &[("aging", Err(Errno::EIO))])
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Err(Errno::EIO))])
     };
 
     (sub_results, err, Some(aging_result))
@@ -735,6 +758,7 @@ mod tests {
             32,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -761,6 +785,7 @@ mod tests {
             8,
             Some(42),
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1014,6 +1039,7 @@ mod tests {
             8,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1043,6 +1069,7 @@ mod tests {
             8,
             None,
             &AgingThresholds::default(),
+            6,
         );
         let ar = aging_result.unwrap();
         assert!(ar.total_errors > 0, "should have injected errors");
@@ -1070,6 +1097,7 @@ mod tests {
             8,
             Some(42),
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));
@@ -1129,6 +1157,7 @@ mod tests {
             16,
             None,
             &AgingThresholds::default(),
+            6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(results.iter().all(|t| t.passed));

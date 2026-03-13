@@ -4,6 +4,7 @@ mod cli;
 mod cmd;
 #[allow(dead_code)]
 mod dmabuf;
+mod fmt;
 #[allow(dead_code)]
 mod heap;
 #[allow(dead_code)]
@@ -18,7 +19,6 @@ mod sysfs;
 #[allow(dead_code)]
 mod trace;
 
-use std::path::PathBuf;
 use std::time::Instant;
 
 use clap::Parser;
@@ -26,7 +26,6 @@ use tracing_subscriber::filter::LevelFilter;
 
 use cli::{Cli, Command};
 
-#[allow(clippy::too_many_lines)]
 fn main() {
     let cli = Cli::parse();
 
@@ -44,40 +43,65 @@ fn main() {
     let backend = backend::mock::MockBackend::new();
 
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
+    let heap_w = fmt::heap_width(&heaps);
 
-    // Pressure worker subprocess: run tests inline and exit immediately.
-    let is_pressure_worker = std::env::var(cmd::pressure::PRESSURE_WORKER_ENV).is_ok();
+    match dispatch_command(&cli, &backend, &heaps, heap_w) {
+        Ok(Some(result)) => {
+            if let Some(ref path) = cli.output
+                && let Err(e) = result.write_json(path)
+            {
+                tracing::error!(error = %e, "failed to write JSON output");
+            }
+            if !result.all_passed() {
+                std::process::exit(1);
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::error!(error = %e, "command failed");
+            std::process::exit(1);
+        }
+    }
+}
 
-    match cli.command {
+/// Dispatch a parsed command to the appropriate handler.
+/// Returns `Ok(Some(RunResult))` for test commands, `Ok(None)` for info/side-effect
+/// commands, or `Err` on info failure.
+#[allow(clippy::too_many_lines)]
+fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+    cli: &Cli,
+    backend: &B,
+    heaps: &[String],
+    heap_w: usize,
+) -> anyhow::Result<Option<runner::RunResult>> {
+    match &cli.command {
         Command::Basic {
             sizes,
             repeat,
             threads,
         } => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| {
-                cmd::basic::run(&backend, h, &sizes, repeat, threads)
+            let (sub, err) = run_per_heap(heaps, |h| {
+                cmd::basic::run(backend, h, sizes, *repeat, *threads, heap_w)
             });
-            handle_cmd_output(
+            Ok(Some(build_single_stage_result(
                 "basic",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
         Command::Negative => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| cmd::negative::run(&backend, h));
-            handle_cmd_output(
+            let (sub, err) = run_per_heap(heaps, |h| cmd::negative::run(backend, h, heap_w));
+            Ok(Some(build_single_stage_result(
                 "negative",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
         Command::Perf {
             sizes,
@@ -85,44 +109,43 @@ fn main() {
             warmup,
         } => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(&heaps, |h| {
-                cmd::perf::run(&backend, h, sizes.as_deref(), iterations, warmup)
+            let (sub, err) = run_per_heap(heaps, |h| {
+                cmd::perf::run(backend, h, sizes.as_deref(), *iterations, *warmup, heap_w)
             });
-            handle_cmd_output(
+            Ok(Some(build_single_stage_result(
                 "perf",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
         Command::Pressure {
             alloc_size,
             max_allocs,
         } => {
             let start = Instant::now();
+            let is_pressure_worker = std::env::var(cmd::pressure::PRESSURE_WORKER_ENV).is_ok();
             let (sub, err) = if cfg!(target_os = "android") && !is_pressure_worker {
                 // On Android, use subprocess to survive OOM kills.
                 let limit =
-                    max_allocs.unwrap_or_else(|| cmd::pressure::safe_exhaust_limit(alloc_size));
-                run_per_heap(&heaps, |h| {
-                    cmd::pressure::run_subprocess(h, alloc_size, limit)
+                    max_allocs.unwrap_or_else(|| cmd::pressure::safe_exhaust_limit(*alloc_size));
+                run_per_heap(heaps, |h| {
+                    cmd::pressure::run_subprocess(h, *alloc_size, limit)
                 })
             } else {
                 // On host or as worker subprocess, run inline.
-                run_per_heap(&heaps, |h| {
-                    cmd::pressure::run(&backend, h, alloc_size, max_allocs)
+                run_per_heap(heaps, |h| {
+                    cmd::pressure::run(backend, h, *alloc_size, *max_allocs, heap_w)
                 })
             };
-            handle_cmd_output(
+            Ok(Some(build_single_stage_result(
                 "pressure",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
         Command::Info {
             detail,
@@ -130,27 +153,25 @@ fn main() {
             follow,
             interval,
         } => {
-            if dump {
+            if *dump {
                 run_sysfs_dump();
-            } else if follow {
-                let dur = std::time::Duration::from_secs(interval);
-                cmd::info::run_follow(dur, detail, &heaps);
+            } else if *follow {
+                let dur = std::time::Duration::from_secs(*interval);
+                cmd::info::run_follow(dur, *detail, heaps);
             } else {
-                let heap_filter: Option<Vec<&str>> = if detail {
+                let heap_filter: Option<Vec<&str>> = if *detail {
                     Some(heaps.iter().map(String::as_str).collect())
                 } else {
                     None
                 };
-                if let Err(e) = cmd::info::run(
-                    detail,
+                cmd::info::run(
+                    *detail,
                     heap_filter.as_deref(),
                     cli.procfs,
                     cli.output.as_ref(),
-                ) {
-                    tracing::error!(error = %e, "info command failed");
-                    std::process::exit(1);
-                }
+                )?;
             }
+            Ok(None)
         }
         Command::Aging {
             size,
@@ -166,34 +187,34 @@ fn main() {
             max_error_rate,
         } => {
             let dur = duration.map(std::time::Duration::from_secs);
-            let interval = std::time::Duration::from_secs(report_interval);
+            let interval = std::time::Duration::from_secs(*report_interval);
             let thresholds = cmd::aging::AgingThresholds {
-                trend_fail,
-                leak_threshold_mb,
-                max_error_rate,
+                trend_fail: *trend_fail,
+                leak_threshold_mb: *leak_threshold_mb,
+                max_error_rate: *max_error_rate,
             };
             let start = Instant::now();
             let (sub, err, _aging_result) = cmd::aging::run(
-                &backend,
-                &heaps,
-                size,
-                threads,
+                backend,
+                heaps,
+                *size,
+                *threads,
                 dur,
-                iterations,
+                *iterations,
                 interval,
-                fuzz,
-                max_hold,
-                seed,
+                *fuzz,
+                *max_hold,
+                *seed,
                 &thresholds,
+                heap_w,
             );
-            handle_cmd_output(
+            Ok(Some(build_single_stage_result(
                 "aging",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
         Command::Histogram {
             sizes,
@@ -204,20 +225,37 @@ fn main() {
         } => {
             let start = Instant::now();
             let (sub, err) =
-                cmd::histogram::run(&backend, &heaps, &sizes, samples, warmup, mode, buckets);
-            handle_cmd_output(
+                cmd::histogram::run(backend, heaps, sizes, *samples, *warmup, *mode, *buckets);
+            Ok(Some(build_single_stage_result(
                 "histogram",
-                &heaps,
-                cli.output.as_ref(),
+                heaps,
                 &sub,
                 err,
                 start.elapsed(),
-            );
+            )))
         }
-        Command::All => {
-            run_all(&backend, &cli, &heaps);
-        }
+        Command::All => Ok(Some(run_all(backend, heaps))),
     }
+}
+
+/// Build a `RunResult` from a single stage's sub-test results.
+#[allow(clippy::cast_possible_truncation)]
+fn build_single_stage_result(
+    stage_name: &str,
+    heaps: &[String],
+    sub_tests: &[runner::SubTestResult],
+    err: Option<anyhow::Error>,
+    duration: std::time::Duration,
+) -> runner::RunResult {
+    let details = Some(runner::sub_tests_to_details(sub_tests));
+    let mut results = runner::RunResult::new(heaps);
+    let duration_ms = duration.as_millis() as u64;
+    let mapped = match err {
+        Some(e) => Err(e),
+        None => Ok(()),
+    };
+    results.record(stage_name, mapped, duration_ms, details);
+    results
 }
 
 /// Run a command across multiple heaps, aggregating sub-test results.
@@ -240,9 +278,8 @@ where
 /// Run all test stages sequentially with result tracking.
 fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     backend: &B,
-    cli: &Cli,
     heaps: &[String],
-) {
+) -> runner::RunResult {
     /// Helper to adapt `(Vec<SubTestResult>, Option<Error>)` to `run_stage` closure.
     fn stage_result(
         r: (Vec<runner::SubTestResult>, Option<anyhow::Error>),
@@ -256,25 +293,27 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
     }
 
     let mut results = runner::RunResult::new(heaps);
+    let heap_w = fmt::heap_width(heaps);
 
     for heap in heaps {
-        runner::run_stage(&mut results, "basic", heap, || {
+        runner::run_stage(&mut results, "basic", heap, heap_w, || {
             stage_result(cmd::basic::run(
                 backend,
                 heap,
                 &[4096, 65536, 1_048_576],
                 8,
                 4,
+                heap_w,
             ))
         });
-        runner::run_stage(&mut results, "negative", heap, || {
-            stage_result(cmd::negative::run(backend, heap))
+        runner::run_stage(&mut results, "negative", heap, heap_w, || {
+            stage_result(cmd::negative::run(backend, heap, heap_w))
         });
-        runner::run_stage(&mut results, "perf", heap, || {
-            stage_result(cmd::perf::run(backend, heap, None, 10, 2))
+        runner::run_stage(&mut results, "perf", heap, heap_w, || {
+            stage_result(cmd::perf::run(backend, heap, None, 10, 2, heap_w))
         });
-        runner::run_stage(&mut results, "pressure", heap, || {
-            stage_result(cmd::pressure::run(backend, heap, 4096, None))
+        runner::run_stage(&mut results, "pressure", heap, heap_w, || {
+            stage_result(cmd::pressure::run(backend, heap, 4096, None, heap_w))
         });
     }
 
@@ -285,48 +324,7 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
         "all stages complete"
     );
 
-    if let Some(ref output_path) = cli.output
-        && let Err(e) = results.write_json(output_path)
-    {
-        tracing::error!(error = %e, "failed to write JSON output");
-    }
-
-    if !results.all_passed() {
-        std::process::exit(1);
-    }
-}
-
-/// Handle a single subcommand's output: write JSON if --output, exit(1) on failure.
-fn handle_cmd_output(
-    stage_name: &str,
-    heaps: &[String],
-    output: Option<&PathBuf>,
-    sub_tests: &[runner::SubTestResult],
-    err: Option<anyhow::Error>,
-    duration: std::time::Duration,
-) {
-    let has_failure = err.is_some();
-
-    if let Some(output_path) = output {
-        let details = Some(runner::sub_tests_to_details(sub_tests));
-        let mut results = runner::RunResult::new(heaps);
-        #[allow(clippy::cast_possible_truncation)]
-        let duration_ms = duration.as_millis() as u64;
-        let mapped = match err {
-            Some(e) => Err(e),
-            None => Ok(()),
-        };
-        results.record(stage_name, mapped, duration_ms, details);
-        if let Err(e) = results.write_json(output_path) {
-            tracing::error!(error = %e, "failed to write JSON output");
-        }
-    } else if let Some(e) = err {
-        tracing::error!(error = %e, "{stage_name} tests failed");
-    }
-
-    if has_failure {
-        std::process::exit(1);
-    }
+    results
 }
 
 /// Standalone sysfs/procfs snapshot dump.
@@ -356,5 +354,188 @@ fn run_sysfs_dump() {
             }
         }
         Err(e) => tracing::warn!(error = %e, "vmstat unavailable"),
+    }
+}
+
+#[cfg(test)]
+mod fuzz_tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    // -----------------------------------------------------------------------
+    // Strategy: global options
+    // -----------------------------------------------------------------------
+
+    fn arb_global_opts() -> impl Strategy<Value = Vec<String>> {
+        (
+            proptest::option::of("[a-z_]{1,12}"),
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+            proptest::bool::ANY,
+            0..4u8,
+        )
+            .prop_map(|(heap, trace, sysfs, procfs, verbose)| {
+                let mut args: Vec<String> = Vec::new();
+                if let Some(h) = heap {
+                    args.push("--heaps".into());
+                    args.push(h);
+                }
+                if trace {
+                    args.push("--trace".into());
+                }
+                if sysfs {
+                    args.push("--sysfs".into());
+                }
+                if procfs {
+                    args.push("--procfs".into());
+                }
+                match verbose {
+                    1 => args.push("-v".into()),
+                    2 => args.push("-vv".into()),
+                    3 => args.push("-vvv".into()),
+                    _ => {}
+                }
+                args
+            })
+    }
+
+    // -----------------------------------------------------------------------
+    // Strategy: valid subcommands with small parameters
+    // -----------------------------------------------------------------------
+
+    fn arb_subcommand() -> impl Strategy<Value = Vec<String>> {
+        // Parameters kept minimal — proptest verifies crash-freedom, not functionality.
+        // Dedicated unit tests in each cmd module cover the actual logic.
+        // perf uses --iterations 1 --warmup 0 because bench_order_boundary allocates up to 8 MB.
+        prop_oneof![
+            (1..4u32).prop_map(|r| vec![
+                "basic".into(),
+                "--sizes".into(),
+                "4096".into(),
+                "--repeat".into(),
+                r.to_string(),
+            ]),
+            (1..4u32).prop_map(|t| vec![
+                "basic".into(),
+                "--sizes".into(),
+                "4096".into(),
+                "--threads".into(),
+                t.to_string(),
+            ]),
+            Just(vec!["negative".into()]),
+            Just(vec![
+                "perf".into(),
+                "--sizes".into(),
+                "4096".into(),
+                "--iterations".into(),
+                "1".into(),
+                "--warmup".into(),
+                "0".into(),
+            ]),
+            Just(vec![
+                "pressure".into(),
+                "--alloc-size".into(),
+                "4096".into(),
+                "--max-allocs".into(),
+                "10".into(),
+            ]),
+            Just(vec!["info".into()]),
+            (1..3u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string()]),
+            (1..3u64).prop_map(|i| vec![
+                "aging".into(),
+                "--fuzz".into(),
+                "--iterations".into(),
+                i.to_string(),
+                "--seed".into(),
+                "42".into(),
+            ]),
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Strategy: invalid arguments
+    // -----------------------------------------------------------------------
+
+    fn arb_invalid_args() -> impl Strategy<Value = Vec<String>> {
+        prop_oneof![
+            "[a-z]{1,8}".prop_map(|s| vec![s]),
+            Just(vec![
+                "basic".into(),
+                "--sizes".into(),
+                "not_a_number".into()
+            ]),
+            Just(vec!["basic".into(), "--threads".into(), "abc".into()]),
+            "[a-z]{1,8}".prop_map(|s| vec![format!("--{s}"), "basic".into()]),
+        ]
+    }
+
+    // -----------------------------------------------------------------------
+    // Proptest: valid combinations must not crash
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+        #[test]
+        fn valid_combinations_do_not_crash(
+            global in arb_global_opts(),
+            subcmd in arb_subcommand(),
+        ) {
+            let mut args = vec!["dhp".to_string()];
+            args.extend(global);
+            args.extend(subcmd);
+            if let Ok(cli) = Cli::try_parse_from(&args) {
+                let backend = backend::mock::MockBackend::new();
+                let heaps = probe::discover_heaps(cli.heaps.as_deref());
+                let heap_w = fmt::heap_width(&heaps);
+                // Must not panic — dispatch returns normally.
+                let _ = dispatch_command(&cli, &backend, &heaps, heap_w);
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proptest: dispatch with valid combinations produces valid JSON
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn output_produces_valid_json(
+            global in arb_global_opts(),
+            subcmd in arb_subcommand(),
+        ) {
+            let mut args = vec!["dhp".to_string()];
+            args.extend(global);
+            args.extend(subcmd);
+            if let Ok(cli) = Cli::try_parse_from(&args) {
+                let backend = backend::mock::MockBackend::new();
+                let heaps = probe::discover_heaps(cli.heaps.as_deref());
+                let heap_w = fmt::heap_width(&heaps);
+                if let Ok(Some(result)) = dispatch_command(&cli, &backend, &heaps, heap_w) {
+                    let json = serde_json::to_value(&result).expect("serialize RunResult");
+                    prop_assert!(json["heaps"].is_array());
+                    prop_assert!(json["stages"].is_array());
+                    prop_assert!(json["total_passed"].is_u64());
+                    prop_assert!(json["total_failed"].is_u64());
+                    prop_assert!(json["total_duration_ms"].is_u64());
+                }
+                // Info → Ok(None) → skip JSON validation (tested in cli_smoke.rs)
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // Proptest: invalid arguments are rejected by clap
+    // -----------------------------------------------------------------------
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(128))]
+        #[test]
+        fn invalid_args_exit_gracefully(args in arb_invalid_args()) {
+            let mut full_args = vec!["dhp".to_string()];
+            full_args.extend(args);
+            // Must be rejected by clap — try_parse_from returns Err.
+            prop_assert!(Cli::try_parse_from(&full_args).is_err());
+        }
     }
 }
