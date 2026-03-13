@@ -630,7 +630,6 @@ dhp scenario pipeline heavy \
 - 일반 파일 fd에 heap ioctl → `ENOTTY`
 
 ##### `neg_open_permission_denied()`
-- SELinux enforcing + 비특권 shell에서 open → `EACCES`
 - root 실행 시 skip
 
 #### 레이어 2: 할당 ioctl
@@ -989,8 +988,6 @@ adb push target/aarch64-linux-android/release/dhp /data/local/tmp/
 adb shell chmod +x /data/local/tmp/dhp
 adb shell su -c /data/local/tmp/dhp all --heap system --trace --sysfs --procfs --output /data/local/tmp/results.json
 ```
-
-SELinux permissive 또는 userdebug 빌드 필요.
 
 ### CI 환경
 
