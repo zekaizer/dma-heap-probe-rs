@@ -4,4 +4,4 @@
 #
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
-cc d414d4555dfc62a33fd9d9c8d0ad8e7348740ade4699e01878e70c04eba73974 # shrinks to global = [], subcmd = ["sysfs-dump"]
+cc bd27258c917f08f6b8a7ee7f31a9c40c4227d72ebf9a513a851aad51b47072f8 # shrinks to global = [], subcmd = ["basic", "--sizes", "4096", "--repeat", "1"]
