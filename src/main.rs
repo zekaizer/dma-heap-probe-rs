@@ -4,6 +4,7 @@ mod cli;
 mod cmd;
 #[allow(dead_code)]
 mod dmabuf;
+mod fmt;
 #[allow(dead_code)]
 mod heap;
 #[allow(dead_code)]
