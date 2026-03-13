@@ -457,13 +457,13 @@ pub(crate) fn reporter_loop(
     let mut prev_frees: u64 = 0;
 
     loop {
-        // Sleep in 1-second chunks for responsive shutdown.
+        // Sleep in 10 ms chunks for responsive shutdown.
         let mut waited = Duration::ZERO;
         while waited < report_interval {
             if !state.running.load(Relaxed) {
                 return;
             }
-            let chunk = Duration::from_secs(1).min(report_interval.saturating_sub(waited));
+            let chunk = Duration::from_millis(10).min(report_interval.saturating_sub(waited));
             std::thread::sleep(chunk);
             waited += chunk;
         }
