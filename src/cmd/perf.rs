@@ -499,14 +499,11 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
         #[allow(clippy::cast_possible_wrap)]
         let expected_aligned = page_align(size) as i64;
         #[allow(clippy::cast_precision_loss)]
-        let frag_pct = if size > 0 {
+        let frag_pct = if size >= PAGE_SIZE {
             let ratio = (actual as f64 - size as f64) / size as f64 * 100.0;
-            if ratio == 0.0 {
-                "*".to_string()
-            } else {
-                format!("{ratio:.1}")
-            }
+            format!("{ratio:.1}")
         } else {
+            // Sub-page requests: fragmentation is expected, mark as not meaningful.
             "*".to_string()
         };
 
