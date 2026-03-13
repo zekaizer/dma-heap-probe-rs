@@ -47,15 +47,15 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         (
             "gradual_exhaust",
-            test_gradual_exhaust(backend, heap_name, alloc_size, max_allocs),
+            test_gradual_exhaust(backend, heap_name, alloc_size, max_allocs, heap_w),
         ),
         (
             "recovery",
-            test_recovery(backend, heap_name, alloc_size, max_allocs),
+            test_recovery(backend, heap_name, alloc_size, max_allocs, heap_w),
         ),
         (
             "pressure_concurrent",
-            test_pressure_concurrent(backend, heap_name, alloc_size),
+            test_pressure_concurrent(backend, heap_name, alloc_size, heap_w),
         ),
     ];
 
@@ -157,7 +157,7 @@ fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<
     let mut results = Vec::new();
     for line in stdout.lines() {
         let trimmed = line.trim();
-        if trimmed.contains("[PASS]") {
+        if trimmed.contains("  PASS  ") {
             let name = extract_test_name(trimmed);
             results.push(SubTestResult {
                 name,
@@ -168,7 +168,7 @@ fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<
                     None
                 },
             });
-        } else if trimmed.contains("[FAIL]") {
+        } else if trimmed.contains("  FAIL  ") {
             let name = extract_test_name(trimmed);
             results.push(SubTestResult {
                 name,
@@ -180,9 +180,9 @@ fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<
     (results, None)
 }
 
-/// Extract test name from a `[heap] [PASS/FAIL] stage::test_name ...` line.
+/// Extract test name from a `[heap]  PASS/FAIL  stage::test_name ...` line.
 fn extract_test_name(line: &str) -> String {
-    // Format: "[heap] [PASS] pressure::test_name ..."
+    // Format: "[heap]  PASS  pressure::test_name ..."
     if let Some(pos) = line.find("::") {
         let after = &line[pos + 2..];
         after
@@ -231,6 +231,7 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     alloc_size: u64,
     max_allocs: usize,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut buffers: Vec<DmaBuf<'_, B>> = Vec::new();
@@ -267,10 +268,15 @@ fn test_gradual_exhaust<B: HeapBackend + DmaBufBackend>(
         latencies_us.iter().sum::<u64>() / latencies_us.len() as u64
     };
 
-    println!(
-        "[{heap_name}] pressure::gradual_exhaust count={} total_mb={} avg_latency_us={avg_latency}",
-        buffers.len(),
-        total_bytes / (1024 * 1024),
+    crate::fmt::print_metric(
+        heap_name,
+        heap_w,
+        "pressure::exhaust",
+        &[
+            ("count", &buffers.len()),
+            ("total", &format_args!("{}MB", total_bytes / (1024 * 1024))),
+            ("avg", &format_args!("{avg_latency}us")),
+        ],
     );
 
     // Clean up all buffers (Drop handles close).
@@ -285,6 +291,7 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     alloc_size: u64,
     max_allocs: usize,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut buffers: Vec<DmaBuf<'_, B>> = Vec::new();
@@ -345,8 +352,16 @@ fn test_recovery<B: HeapBackend + DmaBufBackend>(
         recovery_latencies.iter().sum::<u64>() / recovery_latencies.len() as u64
     };
 
-    println!(
-        "[{heap_name}] pressure::recovery total_before={total_before} released={release_count} recovered={recovered} avg_recovery_us={avg_recovery}",
+    crate::fmt::print_metric(
+        heap_name,
+        heap_w,
+        "pressure::recovery",
+        &[
+            ("before", &total_before),
+            ("freed", &release_count),
+            ("recovered", &recovered),
+            ("avg", &format_args!("{avg_recovery}us")),
+        ],
     );
 
     drop(buffers);
@@ -359,6 +374,7 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     alloc_size: u64,
+    heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let worker_count = 4u32;
@@ -394,8 +410,15 @@ fn test_pressure_concurrent<B: HeapBackend + DmaBufBackend + Send + Sync>(
     });
 
     let failures = fail_count.load(std::sync::atomic::Ordering::Relaxed);
-    println!(
-        "[{heap_name}] pressure::pressure_concurrent workers={worker_count} allocs_per_worker={allocs_per_worker} unexpected_failures={failures}",
+    crate::fmt::print_metric(
+        heap_name,
+        heap_w,
+        "pressure::concurrent",
+        &[
+            ("workers", &worker_count),
+            ("per_worker", &allocs_per_worker),
+            ("failures", &failures),
+        ],
     );
 
     if failures > 0 {
@@ -414,19 +437,19 @@ mod tests {
     fn gradual_exhaust_hits_limit() {
         // Use small alloc size + conservative limit to avoid host OOM.
         let b = MockBackend::new();
-        test_gradual_exhaust(&b, "system", 4096, 500).unwrap();
+        test_gradual_exhaust(&b, "system", 4096, 500, 6).unwrap();
     }
 
     #[test]
     fn recovery_after_exhaust() {
         let b = MockBackend::new();
-        test_recovery(&b, "system", 4096, 500).unwrap();
+        test_recovery(&b, "system", 4096, 500, 6).unwrap();
     }
 
     #[test]
     fn pressure_concurrent_runs() {
         let b = MockBackend::new();
-        test_pressure_concurrent(&b, "system", 4096).unwrap();
+        test_pressure_concurrent(&b, "system", 4096, 6).unwrap();
     }
 
     #[test]
@@ -467,7 +490,7 @@ mod tests {
     #[test]
     fn recovery_no_leak() {
         let b = MockBackend::new();
-        test_recovery(&b, "system", 4096, 500).unwrap();
+        test_recovery(&b, "system", 4096, 500, 6).unwrap();
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
 }
