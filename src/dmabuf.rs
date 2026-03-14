@@ -6,6 +6,7 @@ use crate::backend::DmaBufBackend;
 use crate::ioctl::dma_buf::{
     DMA_BUF_SYNC_END, DMA_BUF_SYNC_START, DmaBufExportSyncFile, DmaBufImportSyncFile,
 };
+use crate::trace;
 
 /// High-level wrapper for a `dma-buf` file descriptor.
 #[derive(Debug)]
@@ -39,7 +40,13 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
         if let Some(ptr) = self.mapped {
             return Ok(ptr);
         }
+        if trace::enabled() {
+            trace::begin(&format!("mmap_{}", self.fd));
+        }
         let ptr = self.backend.mmap(self.fd, self.len)?;
+        if trace::enabled() {
+            trace::end();
+        }
         tracing::debug!(fd = self.fd, len = self.len, "buffer mapped");
         self.mapped = Some(ptr);
         Ok(ptr)
@@ -52,8 +59,15 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// - `EBADF` if fd is invalid
     pub fn sync_start(&self, flags: u64) -> nix::Result<()> {
         let combined = DMA_BUF_SYNC_START | flags;
+        if trace::enabled() {
+            trace::begin(&format!("sync_start_{}", self.fd));
+        }
         tracing::trace!(fd = self.fd, flags = combined, "sync start");
-        self.backend.sync(self.fd, combined)
+        let result = self.backend.sync(self.fd, combined);
+        if trace::enabled() {
+            trace::end();
+        }
+        result
     }
 
     /// End CPU access with the given direction flags.
@@ -63,8 +77,15 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// - `EBADF` if fd is invalid
     pub fn sync_end(&self, flags: u64) -> nix::Result<()> {
         let combined = DMA_BUF_SYNC_END | flags;
+        if trace::enabled() {
+            trace::begin(&format!("sync_end_{}", self.fd));
+        }
         tracing::trace!(fd = self.fd, flags = combined, "sync end");
-        self.backend.sync(self.fd, combined)
+        let result = self.backend.sync(self.fd, combined);
+        if trace::enabled() {
+            trace::end();
+        }
+        result
     }
 
     /// Query the actual buffer size via `llseek(SEEK_END)`.
@@ -108,6 +129,9 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// - `EBADF` if fd is invalid
     pub fn dup(&self) -> nix::Result<DmaBuf<'a, D>> {
         let new_fd = self.backend.dup(self.fd)?;
+        if trace::enabled() {
+            trace::instant(&format!("dup_{}_{}", self.fd, new_fd));
+        }
         tracing::debug!(old_fd = self.fd, new_fd, "buffer duped");
         Ok(DmaBuf {
             backend: self.backend,
@@ -138,6 +162,9 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     /// Explicitly unmap the buffer while keeping the fd open.
     pub fn unmap(&mut self) {
         if let Some(addr) = self.mapped.take() {
+            if trace::enabled() {
+                trace::instant(&format!("unmap_{}", self.fd));
+            }
             let _ = self.backend.munmap(addr, self.len);
         }
     }
@@ -145,12 +172,18 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
 
 impl<D: DmaBufBackend> Drop for DmaBuf<'_, D> {
     fn drop(&mut self) {
+        if trace::enabled() {
+            trace::begin(&format!("close_{}", self.fd));
+        }
         if let Some(addr) = self.mapped.take() {
             tracing::trace!(fd = self.fd, "unmapping buffer");
             let _ = self.backend.munmap(addr, self.len);
         }
         tracing::trace!(fd = self.fd, "buffer closing");
         let _ = self.backend.close(self.fd);
+        if trace::enabled() {
+            trace::end();
+        }
     }
 }
 

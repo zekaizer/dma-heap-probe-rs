@@ -18,7 +18,6 @@ mod procfs;
 mod runner;
 #[allow(dead_code)]
 mod sysfs;
-#[allow(dead_code)]
 mod trace;
 
 use std::time::Instant;

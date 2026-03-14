@@ -110,6 +110,7 @@ pub fn end() {
 }
 
 /// Write a counter value.
+#[allow(dead_code)]
 pub fn counter(name: &str, value: i64) {
     let msg = format_counter(current_tid(), name, value);
     write_marker(&msg);
@@ -122,12 +123,14 @@ pub fn instant(name: &str) {
 }
 
 /// RAII guard for trace sections. Writes begin on creation, end on drop.
+#[allow(dead_code)]
 pub struct TraceSection {
     _private: (), // prevent construction outside this module
 }
 
 impl TraceSection {
     /// Create a new trace section guard. Writes `B|<tid>|<section>` immediately.
+    #[allow(dead_code)]
     pub fn new(section: &str) -> Self {
         begin(section);
         Self { _private: () }
