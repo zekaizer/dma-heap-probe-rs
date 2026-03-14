@@ -24,6 +24,8 @@ const HOLD_EVERY_NTH: usize = 3;
 struct HeapContext<'a, B: HeapBackend> {
     heap: DmaHeap<'a, B>,
     caps: HeapCaps,
+    /// Index into `AgingState.heap_counters`.
+    counter_idx: usize,
 }
 
 /// Spawn `threads` workers, each round-robin allocating across `heaps`.
@@ -50,7 +52,16 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         .into_iter()
         .filter_map(|caps| {
             let heap = DmaHeap::open(backend, &caps.name).ok()?;
-            Some(HeapContext { heap, caps })
+            let counter_idx = state
+                .heap_counters
+                .iter()
+                .position(|hc| hc.name == caps.name)
+                .unwrap_or(0);
+            Some(HeapContext {
+                heap,
+                caps,
+                counter_idx,
+            })
         })
         .collect();
 
@@ -117,9 +128,13 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         }
 
         let ctx = &contexts[local_index % contexts.len()];
+        let hc = &state.heap_counters[ctx.counter_idx];
         local_index = local_index.wrapping_add(1);
 
         let start = Instant::now();
+
+        // Alloc timing.
+        let t_alloc = Instant::now();
         let fd = match ctx
             .heap
             .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
@@ -127,6 +142,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
                 state.total_enomem.fetch_add(1, Relaxed);
+                hc.enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
                 tracing::debug!(
                     worker_id,
@@ -145,17 +161,26 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                     "alloc error"
                 );
                 state.total_errors.fetch_add(1, Relaxed);
+                hc.errors.fetch_add(1, Relaxed);
                 continue;
             }
         };
+        hc.alloc_lat
+            .record(t_alloc.elapsed().as_micros() as u64, size);
 
         state.total_allocs.fetch_add(1, Relaxed);
+        hc.allocs.fetch_add(1, Relaxed);
         hold_pool.notify_success(worker_id);
         let mut buf = DmaBuf::new(backend, fd, size as usize);
 
         // Full pipeline if heap supports it, otherwise alloc-close only.
         if ctx.caps.can_mmap && ctx.caps.can_sync && ctx.caps.can_write {
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
+
+                let t_sync = Instant::now();
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr is valid and mapped to `size` bytes.
                 unsafe {
@@ -164,16 +189,25 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
                 let _ = buf.sync_start(DMA_BUF_SYNC_READ);
                 let _ = buf.sync_end(DMA_BUF_SYNC_READ);
+                hc.sync_lat
+                    .record(t_sync.elapsed().as_micros() as u64, size);
             }
         } else if ctx.caps.can_mmap {
+            let t_mmap = Instant::now();
             let _ = buf.mmap();
+            hc.mmap_lat
+                .record(t_mmap.elapsed().as_micros() as u64, size);
         }
 
         // Hold every Nth buffer, free the rest immediately.
         if per_thread_max > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
             hold_pool.push(buf);
         } else {
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
+            hc.frees.fetch_add(1, Relaxed);
             state.total_frees.fetch_add(1, Relaxed);
         }
 
@@ -203,8 +237,8 @@ mod tests {
     #[test]
     fn worker_single_heap() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 8, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
@@ -215,8 +249,8 @@ mod tests {
     #[test]
     fn worker_multi_thread() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), 8, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
@@ -224,8 +258,8 @@ mod tests {
     #[test]
     fn worker_with_duration() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(
             &b,
             &heaps,
@@ -244,8 +278,8 @@ mod tests {
     fn worker_no_hold() {
         // max_hold=0: all buffers freed immediately, no hold pool behavior.
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 0, 0);
         assert_eq!(b.buffer_count(), 0);
         let allocs = state.total_allocs.load(Relaxed);

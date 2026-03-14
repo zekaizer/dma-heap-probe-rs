@@ -7,11 +7,11 @@
 pub(crate) mod fuzz;
 pub(crate) mod worker;
 
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
-use nix::errno::Errno;
 use rand::Rng;
 use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
@@ -20,6 +20,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::{self, LatencyStats};
 use crate::procfs;
 use crate::runner::{self, SubTestResult};
+use crate::tee_println;
 
 // ── Hold limit ─────────────────────────────────────────────────────────────
 
@@ -115,81 +116,192 @@ pub struct AgingResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub high_order_free_delta: Option<i64>,
 
+    // Per-heap breakdown
+    pub heap_results: Vec<HeapResult>,
+    pub drain_bufs: u64,
+    pub drain_bytes: u64,
+
     // Verdict
     pub warnings: Vec<String>,
 }
 
-// ── Thresholds ──────────────────────────────────────────────────────────────
+/// Per-operation latency result (serialized from `OpLatency` atomics).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpResult {
+    pub count: u64,
+    pub avg_us: u64,
+    pub per_4k_us: f64,
+    pub min_us: u64,
+    pub max_us: u64,
+    pub p50_us: u64,
+    pub p99_us: u64,
+}
 
-/// Pass/fail judgment thresholds for aging metrics.
-#[derive(Debug, Clone)]
-pub struct AgingThresholds {
-    /// Latency trend ratio above which the test fails.
-    pub trend_fail: f64,
-    /// Memory leak threshold in MB (0 = disabled).
-    pub leak_threshold_mb: i64,
-    /// Maximum non-ENOMEM error rate (fraction, e.g. 0.01 = 1%).
-    pub max_error_rate: f64,
+impl OpResult {
+    fn from_op_latency(op: &OpLatency) -> Self {
+        let min_raw = op.min_us.load(Relaxed);
+        Self {
+            count: op.count.load(Relaxed),
+            avg_us: op.avg_us(),
+            per_4k_us: op.per_4k_us(),
+            min_us: if min_raw == u64::MAX { 0 } else { min_raw },
+            max_us: op.max_us.load(Relaxed),
+            p50_us: op.percentile(50.0),
+            p99_us: op.percentile(99.0),
+        }
+    }
+}
+
+/// Per-heap allocation and latency result (serialized from `HeapCounters`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeapResult {
+    pub name: String,
+    pub allocs: u64,
+    pub frees: u64,
+    pub errors: u64,
+    pub enomem: u64,
+    pub alloc_lat: OpResult,
+    pub mmap_lat: OpResult,
+    pub sync_lat: OpResult,
+    pub free_lat: OpResult,
 }
 
 /// Number of initial report intervals averaged for the trend baseline.
 const BASELINE_INTERVALS: u64 = 5;
 
-impl Default for AgingThresholds {
-    fn default() -> Self {
+// ── Per-heap operation latency ──────────────────────────────────────────────
+
+/// Log-scale bucket upper bounds (microseconds).
+const BUCKET_BOUNDS: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
+
+/// Streaming latency statistics with log-scale histogram for approximate percentiles.
+pub(crate) struct OpLatency {
+    pub count: AtomicU64,
+    pub sum_us: AtomicU64,
+    pub min_us: AtomicU64,
+    pub max_us: AtomicU64,
+    /// Total bytes processed (for per-4K normalization).
+    pub size_sum: AtomicU64,
+    /// Log-scale histogram: `[<1us, 1-10, 10-100, 100-1K, 1K-10K, 10K-100K, 100K-1M, >1M]`.
+    pub buckets: [AtomicU64; 8],
+}
+
+impl OpLatency {
+    fn new() -> Self {
         Self {
-            trend_fail: 10.0,
-            leak_threshold_mb: 0,
-            max_error_rate: 0.01,
+            count: AtomicU64::new(0),
+            sum_us: AtomicU64::new(0),
+            min_us: AtomicU64::new(u64::MAX),
+            max_us: AtomicU64::new(0),
+            size_sum: AtomicU64::new(0),
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// Record a latency sample with associated buffer size.
+    pub fn record(&self, lat_us: u64, size: u64) {
+        self.count.fetch_add(1, Relaxed);
+        self.sum_us.fetch_add(lat_us, Relaxed);
+        self.size_sum.fetch_add(size, Relaxed);
+        // Update min.
+        let mut cur = self.min_us.load(Relaxed);
+        while lat_us < cur {
+            match self
+                .min_us
+                .compare_exchange_weak(cur, lat_us, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+        // Update max.
+        let mut cur = self.max_us.load(Relaxed);
+        while lat_us > cur {
+            match self
+                .max_us
+                .compare_exchange_weak(cur, lat_us, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+        // Histogram bucket.
+        let idx = BUCKET_BOUNDS.partition_point(|&b| b <= lat_us).min(7);
+        self.buckets[idx].fetch_add(1, Relaxed);
+    }
+
+    /// Approximate percentile from histogram (returns bucket upper bound).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn percentile(&self, pct: f64) -> u64 {
+        let total = self.count.load(Relaxed);
+        if total == 0 {
+            return 0;
+        }
+        let target = (total as f64 * pct / 100.0).ceil() as u64;
+        let mut cum = 0u64;
+        let bounds = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, u64::MAX];
+        for (i, &bound) in bounds.iter().enumerate() {
+            cum += self.buckets[i].load(Relaxed);
+            if cum >= target {
+                return bound;
+            }
+        }
+        u64::MAX
+    }
+
+    /// Average latency in microseconds.
+    pub fn avg_us(&self) -> u64 {
+        let c = self.count.load(Relaxed);
+        if c == 0 {
+            0
+        } else {
+            self.sum_us.load(Relaxed) / c
+        }
+    }
+
+    /// Normalized latency per 4K bytes.
+    #[allow(clippy::cast_precision_loss)]
+    pub fn per_4k_us(&self) -> f64 {
+        let s = self.size_sum.load(Relaxed);
+        if s == 0 {
+            0.0
+        } else {
+            self.sum_us.load(Relaxed) as f64 * 4096.0 / s as f64
         }
     }
 }
 
-/// Evaluate aging result against thresholds. Returns (passed, warnings).
-#[allow(clippy::cast_precision_loss)]
-pub(crate) fn evaluate_thresholds(result: &AgingResult, thresholds: &AgingThresholds) -> bool {
-    let mut passed = true;
+/// Per-heap allocation and latency counters.
+pub(crate) struct HeapCounters {
+    pub name: String,
+    pub allocs: AtomicU64,
+    pub frees: AtomicU64,
+    pub errors: AtomicU64,
+    pub enomem: AtomicU64,
+    pub alloc_lat: OpLatency,
+    pub mmap_lat: OpLatency,
+    pub sync_lat: OpLatency,
+    pub free_lat: OpLatency,
+}
 
-    // Data corruption is always a failure (tracked via total_errors already).
-
-    // Error rate check
-    if result.total_iters > 0 {
-        let error_rate = result.total_errors as f64 / result.total_iters as f64;
-        if error_rate > thresholds.max_error_rate {
-            tracing::error!(
-                error_rate,
-                max = thresholds.max_error_rate,
-                "error rate exceeded threshold"
-            );
-            passed = false;
+impl HeapCounters {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            allocs: AtomicU64::new(0),
+            frees: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            enomem: AtomicU64::new(0),
+            alloc_lat: OpLatency::new(),
+            mmap_lat: OpLatency::new(),
+            sync_lat: OpLatency::new(),
+            free_lat: OpLatency::new(),
         }
     }
-
-    // Latency trend check
-    if result.trend > thresholds.trend_fail {
-        tracing::error!(
-            trend = result.trend,
-            max = thresholds.trend_fail,
-            "latency trend exceeded threshold"
-        );
-        passed = false;
-    }
-
-    // Memory leak check (only when enabled and allocs == frees)
-    if thresholds.leak_threshold_mb > 0
-        && result.total_allocs == result.total_frees
-        && let Some(delta) = result.mem_available_delta_mb
-        && delta < -thresholds.leak_threshold_mb
-    {
-        tracing::error!(
-            delta_mb = delta,
-            threshold = thresholds.leak_threshold_mb,
-            "memory leak detected"
-        );
-        passed = false;
-    }
-
-    passed
 }
 
 // ── Shared state ────────────────────────────────────────────────────────────
@@ -206,6 +318,7 @@ pub(crate) struct AgingState {
     pub held_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
     pub interval_latencies: Mutex<Vec<u64>>,
+    pub heap_counters: Vec<HeapCounters>,
 
     // Cumulative latency running stats (updated by reporter)
     pub cum_count: AtomicU64,
@@ -219,7 +332,7 @@ pub(crate) struct AgingState {
 }
 
 impl AgingState {
-    pub fn new(hold_limit: HoldLimit) -> Self {
+    pub fn new(hold_limit: HoldLimit, heap_names: &[String]) -> Self {
         Self {
             running: AtomicBool::new(true),
             total_iters: AtomicU64::new(0),
@@ -231,6 +344,10 @@ impl AgingState {
             held_bytes: AtomicU64::new(0),
             hold_limit,
             interval_latencies: Mutex::new(Vec::new()),
+            heap_counters: heap_names
+                .iter()
+                .map(|n| HeapCounters::new(n.clone()))
+                .collect(),
             cum_count: AtomicU64::new(0),
             cum_sum: AtomicU64::new(0),
             cum_max: AtomicU64::new(0),
@@ -718,6 +835,22 @@ fn build_result(
         None
     };
 
+    let heap_results: Vec<HeapResult> = state
+        .heap_counters
+        .iter()
+        .map(|hc| HeapResult {
+            name: hc.name.clone(),
+            allocs: hc.allocs.load(Relaxed),
+            frees: hc.frees.load(Relaxed),
+            errors: hc.errors.load(Relaxed),
+            enomem: hc.enomem.load(Relaxed),
+            alloc_lat: OpResult::from_op_latency(&hc.alloc_lat),
+            mmap_lat: OpResult::from_op_latency(&hc.mmap_lat),
+            sync_lat: OpResult::from_op_latency(&hc.sync_lat),
+            free_lat: OpResult::from_op_latency(&hc.free_lat),
+        })
+        .collect();
+
     AgingResult {
         mode: mode.to_string(),
         elapsed_secs,
@@ -749,8 +882,229 @@ fn build_result(
             initial.high_order_free,
             final_snap.high_order_free,
         ),
+        heap_results,
+        drain_bufs: 0,
+        drain_bytes: 0,
         warnings: Vec::new(),
     }
+}
+
+// ── Summary printer ──────────────────────────────────────────────────────────
+
+/// Format a number with thousands separators (e.g. `1,234,567`).
+fn fmt_num(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
+/// Format elapsed seconds as human-readable duration.
+fn fmt_elapsed(secs: u64) -> String {
+    if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Format an optional signed delta value with a sign prefix.
+fn fmt_delta(val: Option<i64>, unit: &str) -> String {
+    match val {
+        Some(v) => {
+            let sign = if v >= 0 { "+" } else { "" };
+            format!("{sign}{v} {unit}")
+        }
+        None => "-".to_string(),
+    }
+}
+
+/// Print a right-aligned table with 4-space indent. `headers` and each row
+/// must have the same number of columns.
+fn print_aligned_table(headers: &[&str], rows: &[Vec<String>]) {
+    let ncols = headers.len();
+    let mut col_w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < ncols {
+                col_w[i] = col_w[i].max(cell.len());
+            }
+        }
+    }
+    let mut hdr = String::from("    ");
+    for (i, h) in headers.iter().enumerate() {
+        if i > 0 {
+            hdr.push_str("  ");
+        }
+        let _ = write!(hdr, "{h:>w$}", w = col_w[i]);
+    }
+    tee_println!("{hdr}");
+    for row in rows {
+        let mut line = String::from("    ");
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                line.push_str("  ");
+            }
+            let w = if i < ncols { col_w[i] } else { cell.len() };
+            let _ = write!(line, "{cell:>w$}");
+        }
+        tee_println!("{line}");
+    }
+}
+
+/// Print per-heap normalized latency table.
+fn print_per_heap_table(result: &AgingResult) {
+    if result.heap_results.is_empty() {
+        return;
+    }
+    tee_println!("  Per-heap (lat normalized per 4K)");
+    let headers = [
+        "heap", "alloc", "free", "ENOMEM", "alloc/4K", "mmap/4K", "sync/4K", "free/4K",
+    ];
+    let rows: Vec<Vec<String>> = result
+        .heap_results
+        .iter()
+        .map(|h| {
+            vec![
+                h.name.clone(),
+                fmt_num(h.allocs),
+                fmt_num(h.frees),
+                fmt_num(h.enomem),
+                format!("{:.3} us", h.alloc_lat.per_4k_us),
+                format!("{:.3} us", h.mmap_lat.per_4k_us),
+                format!("{:.3} us", h.sync_lat.per_4k_us),
+                format!("{:.3} us", h.free_lat.per_4k_us),
+            ]
+        })
+        .collect();
+    print_aligned_table(&headers, &rows);
+    tee_println!();
+}
+
+/// Print per-op latency detail for each heap (normal mode only).
+fn print_per_op_latency(result: &AgingResult) {
+    for hr in &result.heap_results {
+        tee_println!("  Latency per-op: {}", hr.name);
+        let headers = ["", "avg", "p50", "p99", "max"];
+        let rows: Vec<Vec<String>> = [
+            ("alloc", &hr.alloc_lat),
+            ("mmap", &hr.mmap_lat),
+            ("sync", &hr.sync_lat),
+            ("free", &hr.free_lat),
+        ]
+        .iter()
+        .map(|(name, op)| {
+            vec![
+                (*name).into(),
+                format!("{} us", op.avg_us),
+                format!("{} us", op.p50_us),
+                format!("{} us", op.p99_us),
+                format!("{} us", op.max_us),
+            ]
+        })
+        .collect();
+        print_aligned_table(&headers, &rows);
+        tee_println!();
+    }
+}
+
+/// Print memory delta section (skipped on host where procfs is unavailable).
+fn print_memory_section(result: &AgingResult) {
+    let has_mem = result.mem_available_delta_mb.is_some()
+        || result.cma_free_delta_kb.is_some()
+        || result.slab_delta_kb.is_some()
+        || result.compaction_stall_delta.is_some();
+    if !has_mem {
+        return;
+    }
+    tee_println!("  Memory (start -> end delta)");
+    tee_println!(
+        "    available : {}",
+        fmt_delta(result.mem_available_delta_mb, "MB")
+    );
+    tee_println!(
+        "    CMA free  : {}",
+        fmt_delta(result.cma_free_delta_kb, "KB")
+    );
+    tee_println!("    slab      : {}", fmt_delta(result.slab_delta_kb, "KB"));
+    #[allow(clippy::cast_possible_wrap)]
+    let compact_delta = result.compaction_stall_delta.map(|v| v as i64);
+    tee_println!("    compact   : {}", fmt_delta(compact_delta, "stalls"));
+    tee_println!();
+}
+
+/// Print aging test summary to stdout (and tee to log file if enabled).
+#[allow(clippy::cast_precision_loss)]
+fn print_summary(result: &AgingResult, fuzz_mode: bool) {
+    let sep = "\u{2500}".repeat(61);
+    tee_println!();
+    tee_println!("\u{2500}\u{2500} aging summary {sep}");
+
+    // Run info
+    let heap_names: Vec<&str> = result
+        .heap_results
+        .iter()
+        .map(|h| h.name.as_str())
+        .collect();
+    let heap_list = if heap_names.is_empty() {
+        result.mode.clone()
+    } else {
+        heap_names.join(", ")
+    };
+    let throughput_str = result
+        .throughput_iters_per_sec
+        .map_or_else(|| "-".to_string(), |t| format!("{t:.0}"));
+
+    tee_println!(
+        "  mode        : {} x {} threads",
+        result.mode,
+        result.threads
+    );
+    tee_println!("  heaps       : {heap_list}");
+    tee_println!("  elapsed     : {}", fmt_elapsed(result.elapsed_secs));
+    tee_println!(
+        "  iters       : {} ({}/s)",
+        fmt_num(result.total_iters),
+        throughput_str
+    );
+    tee_println!(
+        "  alloc/free  : {} / {}",
+        fmt_num(result.total_allocs),
+        fmt_num(result.total_frees)
+    );
+    tee_println!();
+
+    // Trend
+    tee_println!("  Trend");
+    let baseline_str = result
+        .baseline_avg_us
+        .map_or_else(|| "-".to_string(), |v| format!("{v} us"));
+    let baseline_detail = if result.baseline_avg_us.is_some() {
+        format!(" ({BASELINE_INTERVALS}-interval avg)")
+    } else {
+        String::new()
+    };
+    tee_println!("    baseline  : {baseline_str}{baseline_detail}");
+    let final_str = result
+        .final_interval_avg_us
+        .map_or_else(|| "-".to_string(), |v| format!("{v} us"));
+    tee_println!("    final     : {final_str}");
+    tee_println!("    trend     : {:.1}x", result.trend);
+    tee_println!("    peak p99  : {} us", fmt_num(result.peak_p99_us));
+    tee_println!();
+
+    print_per_heap_table(result);
+    if !fuzz_mode {
+        print_per_op_latency(result);
+    }
+    print_memory_section(result);
+
+    tee_println!("{}", "\u{2500}".repeat(76));
 }
 
 // ── Public entry point ──────────────────────────────────────────────────────
@@ -768,7 +1122,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     fuzz_mode: bool,
     hold_limit: HoldLimit,
     seed: Option<u64>,
-    thresholds: &AgingThresholds,
     heap_w: usize,
 ) -> (
     Vec<SubTestResult>,
@@ -803,7 +1156,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     );
 
     let (pt_max_count, pt_max_bytes) = per_thread_pool_limits(hold_limit, threads);
-    let state = AgingState::new(hold_limit);
+    let state = AgingState::new(hold_limit, heaps);
     let heap_label = heaps.join(",");
 
     let (initial_snap, final_snap, elapsed) = run_with_reporter(
@@ -842,12 +1195,9 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     );
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
-    let passed = evaluate_thresholds(&aging_result, thresholds);
-    let (sub_results, err) = if passed {
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))])
-    } else {
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Err(Errno::EIO))])
-    };
+    print_summary(&aging_result, fuzz_mode);
+    let (sub_results, err) =
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))]);
 
     (sub_results, err, Some(aging_result))
 }
@@ -860,14 +1210,14 @@ mod tests {
 
     #[test]
     fn should_stop_iteration_limit() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         state.total_iters.store(10, Relaxed);
         assert!(should_stop(&state, None, Some(10)));
     }
 
     #[test]
     fn should_stop_running_false() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         state.running.store(false, Relaxed);
         assert!(should_stop(&state, None, None));
     }
@@ -887,7 +1237,6 @@ mod tests {
             false,
             HoldLimit::Count(32),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -914,7 +1263,6 @@ mod tests {
             true,
             HoldLimit::Count(8),
             Some(42),
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -956,6 +1304,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -963,189 +1314,6 @@ mod tests {
         assert_eq!(deserialized.mode, "normal");
         assert_eq!(deserialized.total_iters, 1000);
         assert!((deserialized.trend - 1.375).abs() < f64::EPSILON);
-    }
-
-    #[test]
-    fn threshold_trend_fail() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: Some(10),
-            final_interval_avg_us: Some(150),
-            peak_p99_us: 200,
-            trend: 15.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        let thresholds = AgingThresholds {
-            trend_fail: 10.0,
-            ..Default::default()
-        };
-        assert!(!evaluate_thresholds(&result, &thresholds));
-    }
-
-    #[test]
-    fn threshold_trend_pass() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: Some(10),
-            final_interval_avg_us: Some(20),
-            peak_p99_us: 30,
-            trend: 2.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_error_rate_fail() {
-        let result = AgingResult {
-            mode: "fuzz".to_string(),
-            elapsed_secs: 10,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 50,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        assert!(!evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_leak_fail() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: Some(-100),
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        let thresholds = AgingThresholds {
-            leak_threshold_mb: 50,
-            ..Default::default()
-        };
-        assert!(!evaluate_thresholds(&result, &thresholds));
-    }
-
-    #[test]
-    fn threshold_leak_disabled() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: Some(-100),
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        // leak_threshold_mb = 0 means disabled
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_error_rate_pass() {
-        let result = AgingResult {
-            mode: "fuzz".to_string(),
-            elapsed_secs: 10,
-            total_iters: 1000,
-            threads: 1,
-            total_allocs: 1000,
-            total_frees: 1000,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            warnings: vec![],
-        };
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
     }
 
     #[test]
@@ -1168,7 +1336,6 @@ mod tests {
             false,
             HoldLimit::Count(8),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1198,7 +1365,6 @@ mod tests {
             false,
             HoldLimit::Count(8),
             None,
-            &AgingThresholds::default(),
             6,
         );
         let ar = aging_result.unwrap();
@@ -1226,7 +1392,6 @@ mod tests {
             true,
             HoldLimit::Count(8),
             Some(42),
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1239,7 +1404,7 @@ mod tests {
     #[test]
     #[allow(clippy::similar_names)]
     fn reporter_updates_cumulative_stats() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         // Push latencies and simulate what reporter does
         {
             let mut lat = state.interval_latencies.lock().unwrap();
@@ -1290,7 +1455,6 @@ mod tests {
             false,
             HoldLimit::Count(16),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1305,7 +1469,7 @@ mod tests {
 
     #[test]
     fn cumulative_stats_accuracy() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         // Simulate two intervals
         let stats1 = LatencyStats {
             count: 10,

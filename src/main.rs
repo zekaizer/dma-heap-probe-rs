@@ -217,17 +217,9 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
             fuzz,
             max_hold,
             seed,
-            trend_fail,
-            leak_threshold_mb,
-            max_error_rate,
         } => {
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(*report_interval);
-            let thresholds = cmd::aging::AgingThresholds {
-                trend_fail: *trend_fail,
-                leak_threshold_mb: *leak_threshold_mb,
-                max_error_rate: *max_error_rate,
-            };
             let alloc_size = cmd::aging::parse_size(size).map_err(|e| anyhow::anyhow!(e))?;
             let hold_limit =
                 cmd::aging::parse_hold_limit(max_hold).map_err(|e| anyhow::anyhow!(e))?;
@@ -243,7 +235,6 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
                 *fuzz,
                 hold_limit,
                 *seed,
-                &thresholds,
                 heap_w,
             );
             Ok(Some(build_single_stage_result(
