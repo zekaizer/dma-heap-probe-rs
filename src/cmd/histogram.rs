@@ -1,6 +1,7 @@
 // Latency histogram analysis: per-heap, per-size distribution with ASCII
 // visualization and extended percentiles.
 
+use std::io::Write;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
@@ -11,6 +12,7 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::SubTestResult;
+use crate::tee_println;
 
 /// Run histogram analysis across all (heap, size) combinations.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
@@ -69,7 +71,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 bucket_count,
             ) {
                 Ok(()) => {
-                    println!("[{heap_name}] [PASS] histogram::{test_name}");
+                    tee_println!("[{heap_name}] [PASS] histogram::{test_name}");
                     results.push(SubTestResult {
                         name: test_name,
                         passed: true,
@@ -78,7 +80,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    println!("[{heap_name}] [FAIL] histogram::{test_name} — {err_str}");
+                    tee_println!("[{heap_name}] [FAIL] histogram::{test_name} — {err_str}");
                     results.push(SubTestResult {
                         name: test_name,
                         passed: false,
@@ -204,11 +206,11 @@ fn print_histogram(
     bucket_count: usize,
 ) {
     if samples.is_empty() {
-        println!(
+        tee_println!(
             "--- {heap_name} @ {size} bytes ({}) --- (no samples)",
             mode.as_str()
         );
-        println!();
+        tee_println!();
         return;
     }
 
@@ -219,8 +221,8 @@ fn print_histogram(
     let max = sorted[sorted.len() - 1];
     let count = sorted.len();
 
-    println!("--- {heap_name} @ {size} bytes ({}) ---", mode.as_str());
-    println!();
+    tee_println!("--- {heap_name} @ {size} bytes ({}) ---", mode.as_str());
+    tee_println!();
 
     // Build buckets
     let buckets = build_buckets(&sorted, min, max, bucket_count);
@@ -242,7 +244,7 @@ fn print_histogram(
         let bar: String = "#".repeat(bar_len);
 
         if b.is_last {
-            println!(
+            tee_println!(
                 "  [{:>w$}, {:>w2$}] | {:>cw$} {:>5.1}% {:>5.1}% {bar}",
                 b.low,
                 max,
@@ -254,7 +256,7 @@ fn print_histogram(
                 cw = count_width,
             );
         } else {
-            println!(
+            tee_println!(
                 "  [{:>w$}, {:>w2$}) | {:>cw$} {:>5.1}% {:>5.1}% {bar}",
                 b.low,
                 b.high,
@@ -269,9 +271,9 @@ fn print_histogram(
     }
 
     // Extended percentiles
-    println!();
-    println!("  percentiles (us):");
-    println!(
+    tee_println!();
+    tee_println!("  percentiles (us):");
+    tee_println!(
         "    p1={} p5={} p10={} p25={} p50={} p75={} p90={} p95={} p99={} p99.9={}",
         percentile(&sorted, 1),
         percentile(&sorted, 5),
@@ -287,12 +289,15 @@ fn print_histogram(
 
     // Summary
     if let Some(stats) = perf::compute_stats(samples) {
-        println!(
+        tee_println!(
             "  summary: count={} min={} avg={} max={}",
-            stats.count, stats.min_us, stats.avg_us, stats.max_us,
+            stats.count,
+            stats.min_us,
+            stats.avg_us,
+            stats.max_us,
         );
     }
-    println!();
+    tee_println!();
 }
 
 /// Bucket descriptor for histogram rendering.

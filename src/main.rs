@@ -21,6 +21,7 @@ mod sysfs;
 #[allow(dead_code)]
 mod trace;
 
+use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
@@ -373,7 +374,7 @@ fn run_sysfs_dump() {
     match sysfs::snapshot() {
         Ok(snap) => {
             if let Ok(json) = serde_json::to_string_pretty(&snap) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "sysfs snapshot unavailable"),
@@ -382,7 +383,7 @@ fn run_sysfs_dump() {
     match procfs::read_meminfo() {
         Ok(info) => {
             if let Ok(json) = serde_json::to_string_pretty(&info) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "meminfo unavailable"),
@@ -391,7 +392,7 @@ fn run_sysfs_dump() {
     match procfs::read_vmstat() {
         Ok(stat) => {
             if let Ok(json) = serde_json::to_string_pretty(&stat) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "vmstat unavailable"),

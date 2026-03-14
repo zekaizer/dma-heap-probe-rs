@@ -76,6 +76,15 @@ pub fn walltime_prefix() -> String {
 /// Print to stdout and optionally tee to the global log file with a walltime prefix.
 #[macro_export]
 macro_rules! tee_println {
+    () => {{
+        println!();
+        if let Some(lock) = $crate::log::writer() {
+            if let Ok(mut f) = lock.lock() {
+                let ts = $crate::log::walltime_prefix();
+                let _ = writeln!(f, "{ts}");
+            }
+        }
+    }};
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
         println!("{msg}");

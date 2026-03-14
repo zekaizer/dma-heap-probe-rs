@@ -1,6 +1,7 @@
 // System DMA heap information and buffer status display.
 
 use std::fmt::Write as FmtWrite;
+use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
 use anyhow::Context;
@@ -9,6 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, VmStat};
 use crate::sysfs;
+use crate::{tee_print, tee_println};
 
 // ---------------------------------------------------------------------------
 // Data structures
@@ -1184,7 +1186,7 @@ pub fn run(
         let json = serde_json::to_string_pretty(&report)?;
         std::fs::write(output_path, &json)
             .with_context(|| format!("failed to write info report to {}", output_path.display()))?;
-        println!(
+        tee_println!(
             "Info report written to {} ({} heaps, {} buffers, {})",
             output_path.display(),
             report.heaps.len(),
@@ -1192,7 +1194,7 @@ pub fn run(
             format_size(report.total_buffer_size_bytes),
         );
     } else {
-        print!("{}", format_human(&report));
+        tee_print!("{}", format_human(&report));
     }
 
     Ok(())
@@ -1257,7 +1259,7 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
             String::new()
         };
 
-        println!(
+        tee_println!(
             "[{}] heaps={} bufs={} size={} mem_avail={}{}",
             ts,
             snap.heap_count,
@@ -1279,10 +1281,10 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
                     } else {
                         String::new()
                     };
-                    print!("  {heap}: {count} bufs {}{buf_diff}", format_size(size));
+                    tee_print!("  {heap}: {count} bufs {}{buf_diff}", format_size(size));
                 }
                 if !heaps.is_empty() {
-                    println!();
+                    tee_println!();
                 }
             }
         }

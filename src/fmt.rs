@@ -1,6 +1,9 @@
 // Unified output formatting for metric tables, single-line metrics, and PASS/FAIL results.
 
 use std::fmt::{Display, Write};
+use std::io::Write as IoWrite;
+
+use crate::tee_println;
 
 /// Compute heap display width from a list of heap names.
 ///
@@ -38,8 +41,8 @@ pub fn print_table(
 
     // Header line
     match unit_hint {
-        Some(u) => println!("{prefix}  {label} {u}"),
-        None => println!("{prefix}  {label}"),
+        Some(u) => tee_println!("{prefix}  {label} {u}"),
+        None => tee_println!("{prefix}  {label}"),
     }
 
     if rows.is_empty() {
@@ -65,7 +68,7 @@ pub fn print_table(
         }
         hdr.push_str(&ri_str(h, col_w[i]));
     }
-    println!("{indent}{hdr}");
+    tee_println!("{indent}{hdr}");
 
     // Print data rows
     for row in rows {
@@ -77,7 +80,7 @@ pub fn print_table(
             let w = if i < ncols { col_w[i] } else { cell.len() };
             line.push_str(&ri_str(cell, w));
         }
-        println!("{indent}{line}");
+        tee_println!("{indent}{line}");
     }
 }
 
@@ -88,19 +91,19 @@ pub fn print_metric(heap: &str, heap_w: usize, label: &str, kvs: &[(&str, &dyn D
     for (k, v) in kvs {
         let _ = write!(line, "  {k}: {v}");
     }
-    println!("{line}");
+    tee_println!("{line}");
 }
 
 /// Print a PASS result: `[heap]  PASS  label`
 pub fn print_pass(heap: &str, heap_w: usize, label: &str) {
     let prefix = heap_prefix(heap, heap_w);
-    println!("{prefix}  PASS  {label}");
+    tee_println!("{prefix}  PASS  {label}");
 }
 
 /// Print a FAIL result: `[heap]  FAIL  label — error`
 pub fn print_fail(heap: &str, heap_w: usize, label: &str, error: &str) {
     let prefix = heap_prefix(heap, heap_w);
-    println!("{prefix}  FAIL  {label} \u{2014} {error}");
+    tee_println!("{prefix}  FAIL  {label} \u{2014} {error}");
 }
 
 /// Right-align an integer value into a string of given minimum width.
