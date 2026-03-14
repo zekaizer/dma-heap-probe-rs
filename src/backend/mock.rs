@@ -36,8 +36,8 @@ enum SyncState {
 struct BufferState {
     /// Shared buffer data (allows zero-copy dup).
     data: Arc<[u8]>,
-    /// Current sync state.
-    sync_state: SyncState,
+    /// Current sync state (shared across dup'd fds).
+    sync_state: Arc<Mutex<SyncState>>,
 }
 
 /// Simulation configuration for injecting faults into mock operations.
@@ -209,7 +209,7 @@ impl HeapBackend for MockBackend {
             fd,
             BufferState {
                 data: buf,
-                sync_state: SyncState::None,
+                sync_state: Arc::new(Mutex::new(SyncState::None)),
             },
         );
 
@@ -268,8 +268,8 @@ impl DmaBufBackend for MockBackend {
     }
 
     fn sync(&self, fd: RawFd, flags: u64) -> nix::Result<()> {
-        let mut state = self.state.lock().unwrap();
-        let buf = state.buffers.get_mut(&fd).ok_or(Errno::EBADF)?;
+        let state = self.state.lock().unwrap();
+        let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
         // Validate flags: only valid bits allowed
         if flags & !DMA_BUF_SYNC_VALID_FLAGS_MASK != 0 {
@@ -279,12 +279,13 @@ impl DmaBufBackend for MockBackend {
         // Must specify at least READ or WRITE
         validate_sync_direction(flags)?;
 
+        let mut sync = buf.sync_state.lock().unwrap();
         if flags & DMA_BUF_SYNC_END != 0 {
             // END
-            buf.sync_state = SyncState::None;
+            *sync = SyncState::None;
         } else {
             // START
-            buf.sync_state = SyncState::Started {
+            *sync = SyncState::Started {
                 flags: flags & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE),
             };
         }
@@ -355,7 +356,7 @@ impl DmaBufBackend for MockBackend {
         let original = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
         let new_buf = BufferState {
             data: Arc::clone(&original.data),
-            sync_state: SyncState::None,
+            sync_state: Arc::clone(&original.sync_state),
         };
 
         let new_fd = state.alloc_fd();
