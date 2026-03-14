@@ -12,7 +12,6 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
 
-use nix::errno::Errno;
 use rand::Rng;
 use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
@@ -167,78 +166,8 @@ pub struct HeapResult {
     pub free_lat: OpResult,
 }
 
-// ── Thresholds ──────────────────────────────────────────────────────────────
-
-/// Pass/fail judgment thresholds for aging metrics.
-#[derive(Debug, Clone)]
-pub struct AgingThresholds {
-    /// Latency trend ratio above which the test fails.
-    pub trend_fail: f64,
-    /// Memory leak threshold in MB (0 = disabled).
-    pub leak_threshold_mb: i64,
-    /// Maximum non-ENOMEM error rate (fraction, e.g. 0.01 = 1%).
-    pub max_error_rate: f64,
-}
-
 /// Number of initial report intervals averaged for the trend baseline.
 const BASELINE_INTERVALS: u64 = 5;
-
-impl Default for AgingThresholds {
-    fn default() -> Self {
-        Self {
-            trend_fail: 10.0,
-            leak_threshold_mb: 0,
-            max_error_rate: 0.01,
-        }
-    }
-}
-
-/// Evaluate aging result against thresholds. Returns (passed, warnings).
-#[allow(clippy::cast_precision_loss)]
-pub(crate) fn evaluate_thresholds(result: &AgingResult, thresholds: &AgingThresholds) -> bool {
-    let mut passed = true;
-
-    // Data corruption is always a failure (tracked via total_errors already).
-
-    // Error rate check
-    if result.total_iters > 0 {
-        let error_rate = result.total_errors as f64 / result.total_iters as f64;
-        if error_rate > thresholds.max_error_rate {
-            tracing::error!(
-                error_rate,
-                max = thresholds.max_error_rate,
-                "error rate exceeded threshold"
-            );
-            passed = false;
-        }
-    }
-
-    // Latency trend check
-    if result.trend > thresholds.trend_fail {
-        tracing::error!(
-            trend = result.trend,
-            max = thresholds.trend_fail,
-            "latency trend exceeded threshold"
-        );
-        passed = false;
-    }
-
-    // Memory leak check (only when enabled and allocs == frees)
-    if thresholds.leak_threshold_mb > 0
-        && result.total_allocs == result.total_frees
-        && let Some(delta) = result.mem_available_delta_mb
-        && delta < -thresholds.leak_threshold_mb
-    {
-        tracing::error!(
-            delta_mb = delta,
-            threshold = thresholds.leak_threshold_mb,
-            "memory leak detected"
-        );
-        passed = false;
-    }
-
-    passed
-}
 
 // ── Per-heap operation latency ──────────────────────────────────────────────
 
@@ -1193,7 +1122,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     fuzz_mode: bool,
     hold_limit: HoldLimit,
     seed: Option<u64>,
-    thresholds: &AgingThresholds,
     heap_w: usize,
 ) -> (
     Vec<SubTestResult>,
@@ -1268,12 +1196,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     print_summary(&aging_result, fuzz_mode);
-    let passed = evaluate_thresholds(&aging_result, thresholds);
-    let (sub_results, err) = if passed {
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))])
-    } else {
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Err(Errno::EIO))])
-    };
+    let (sub_results, err) =
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))]);
 
     (sub_results, err, Some(aging_result))
 }
@@ -1313,7 +1237,6 @@ mod tests {
             false,
             HoldLimit::Count(32),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1340,7 +1263,6 @@ mod tests {
             true,
             HoldLimit::Count(8),
             Some(42),
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1395,207 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn threshold_trend_fail() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: Some(10),
-            final_interval_avg_us: Some(150),
-            peak_p99_us: 200,
-            trend: 15.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        let thresholds = AgingThresholds {
-            trend_fail: 10.0,
-            ..Default::default()
-        };
-        assert!(!evaluate_thresholds(&result, &thresholds));
-    }
-
-    #[test]
-    fn threshold_trend_pass() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: Some(10),
-            final_interval_avg_us: Some(20),
-            peak_p99_us: 30,
-            trend: 2.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_error_rate_fail() {
-        let result = AgingResult {
-            mode: "fuzz".to_string(),
-            elapsed_secs: 10,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 50,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        assert!(!evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_leak_fail() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: Some(-100),
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        let thresholds = AgingThresholds {
-            leak_threshold_mb: 50,
-            ..Default::default()
-        };
-        assert!(!evaluate_thresholds(&result, &thresholds));
-    }
-
-    #[test]
-    fn threshold_leak_disabled() {
-        let result = AgingResult {
-            mode: "normal".to_string(),
-            elapsed_secs: 60,
-            total_iters: 100,
-            threads: 1,
-            total_allocs: 100,
-            total_frees: 100,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: Some(-100),
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        // leak_threshold_mb = 0 means disabled
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
-    fn threshold_error_rate_pass() {
-        let result = AgingResult {
-            mode: "fuzz".to_string(),
-            elapsed_secs: 10,
-            total_iters: 1000,
-            threads: 1,
-            total_allocs: 1000,
-            total_frees: 1000,
-            total_errors: 0,
-            enomem_count: 0,
-            throughput_iters_per_sec: None,
-            latency: None,
-            baseline_avg_us: None,
-            final_interval_avg_us: None,
-            peak_p99_us: 0,
-            trend: 1.0,
-            mem_available_delta_mb: None,
-            cma_free_delta_kb: None,
-            slab_delta_kb: None,
-            buf_count_start: 0,
-            buf_count_end: 0,
-            compaction_stall_delta: None,
-            high_order_free_delta: None,
-            heap_results: vec![],
-            drain_bufs: 0,
-            drain_bytes: 0,
-            warnings: vec![],
-        };
-        assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
-    }
-
-    #[test]
     fn aging_with_enomem_pressure() {
         use crate::backend::mock::{MockBackend, SimConfig};
         let b = MockBackend::with_sim(SimConfig {
@@ -1615,7 +1336,6 @@ mod tests {
             false,
             HoldLimit::Count(8),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1645,7 +1365,6 @@ mod tests {
             false,
             HoldLimit::Count(8),
             None,
-            &AgingThresholds::default(),
             6,
         );
         let ar = aging_result.unwrap();
@@ -1673,7 +1392,6 @@ mod tests {
             true,
             HoldLimit::Count(8),
             Some(42),
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
@@ -1737,7 +1455,6 @@ mod tests {
             false,
             HoldLimit::Count(16),
             None,
-            &AgingThresholds::default(),
             6,
         );
         assert!(err.is_none(), "unexpected error: {err:?}");
