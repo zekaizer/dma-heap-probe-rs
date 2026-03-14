@@ -47,6 +47,11 @@ fn main() {
     };
     init_tracing(level, cli.log_level);
 
+    if cli.trace {
+        crate::trace::init();
+        tracing::info!("Perfetto atrace tracing enabled");
+    }
+
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
     #[cfg(not(target_os = "android"))]
