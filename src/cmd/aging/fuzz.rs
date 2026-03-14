@@ -18,12 +18,28 @@ use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS}
 use super::{AgingState, HoldLimit, mark_init_error, should_stop};
 use crate::probe::HeapCaps;
 
-/// Allocation sizes covering page and order boundary values.
+/// Fuzz allocation sizes: 4K-aligned are common, others are rare edge cases.
 pub(crate) const FUZZ_SIZES: &[u64] = &[
-    1, 4095, 4096, 4097, // page boundary
-    65535, 65536, 65537,     // order boundary
-    1_048_576, // 1MB
-    8_388_608, // 8MB
+    // Common: 4K multiples (high weight)
+    4096,        // 4K (1 page)
+    8192,        // 8K
+    16384,       // 16K
+    65536,       // 64K (order boundary)
+    262_144,     // 256K
+    1_048_576,   // 1MB
+    4_194_304,   // 4MB
+    8_388_608,   // 8MB
+    16_777_216,  // 16MB
+    33_554_432,  // 32MB
+    67_108_864,  // 64MB
+    134_217_728, // 128MB
+    268_435_456, // 256MB
+    // Rare edge cases (low weight)
+    1,     // minimum
+    4095,  // page - 1
+    4097,  // page + 1
+    65535, // order - 1
+    65537, // order + 1
 ];
 
 // ── Pipeline variants ───────────────────────────────────────────────────────
@@ -392,6 +408,23 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         HoldPool::new(per_thread_max, per_thread_max_bytes, state, seed);
     tracing::debug!(worker_id, seed, "fuzz worker started");
 
+    // Weighted size selection: 4K-aligned common + inverse-size bias, edge cases rare.
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    let cum_weights: Vec<u64> = FUZZ_SIZES
+        .iter()
+        .scan(0u64, |acc, &s| {
+            let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
+            let log2 = (s.max(2) as f64).log2() as u64;
+            *acc += base / (log2 * log2).max(1);
+            Some(*acc)
+        })
+        .collect();
+    let total_weight = *cum_weights.last().unwrap();
+
     loop {
         if should_stop(state, deadline, max_iters) {
             break;
@@ -401,8 +434,9 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         let ctx_idx = rng.random_range(0..contexts.len());
         let ctx = &contexts[ctx_idx];
 
-        // Random size
-        let size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())];
+        // Byte-fair random size (inverse-weighted).
+        let r = rng.random_range(0..total_weight);
+        let size = FUZZ_SIZES[cum_weights.partition_point(|&c| c <= r)];
 
         // Random pipeline
         let pipeline = select_pipeline(&ctx.weighted_table, &mut rng);
