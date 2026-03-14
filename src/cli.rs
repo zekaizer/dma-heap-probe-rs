@@ -38,6 +38,14 @@ pub struct Cli {
     /// Increase verbosity (-v=info, -vv=debug, -vvv=trace).
     #[arg(short = 'v', long, action = ArgAction::Count, global = true)]
     pub verbose: u8,
+
+    /// Log file path (tee all output to file).
+    #[arg(long, global = true)]
+    pub log: Option<PathBuf>,
+
+    /// Log file tracing verbosity (default: trace). Only effective with `--log`.
+    #[arg(long, global = true, default_value_t = LogLevel::Trace)]
+    pub log_level: LogLevel,
 }
 
 #[derive(Subcommand, Debug)]
@@ -203,6 +211,34 @@ impl HistMode {
     }
 }
 
+/// Log file tracing verbosity level.
+#[derive(ValueEnum, Debug, Clone, Copy, Default)]
+pub enum LogLevel {
+    /// Only errors.
+    Error,
+    /// Warnings and errors.
+    Warn,
+    /// Informational messages.
+    Info,
+    /// Debug-level messages.
+    Debug,
+    /// All trace-level messages.
+    #[default]
+    Trace,
+}
+
+impl std::fmt::Display for LogLevel {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Error => write!(f, "error"),
+            Self::Warn => write!(f, "warn"),
+            Self::Info => write!(f, "info"),
+            Self::Debug => write!(f, "debug"),
+            Self::Trace => write!(f, "trace"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -283,6 +319,10 @@ mod tests {
             "--procfs",
             "--output",
             "/tmp/out.json",
+            "--log",
+            "/tmp/dhp.log",
+            "--log-level",
+            "debug",
             "-vv",
         ]);
         assert_eq!(cli.heaps, Some(vec!["system".to_string()]));
@@ -290,6 +330,8 @@ mod tests {
         assert!(cli.sysfs);
         assert!(cli.procfs);
         assert_eq!(cli.output, Some(PathBuf::from("/tmp/out.json")));
+        assert_eq!(cli.log, Some(PathBuf::from("/tmp/dhp.log")));
+        assert!(matches!(cli.log_level, LogLevel::Debug));
         assert_eq!(cli.verbose, 2);
     }
 
@@ -373,5 +415,23 @@ mod tests {
     fn verbose_count() {
         let cli = parse(&["dhp", "basic", "-vvv"]);
         assert_eq!(cli.verbose, 3);
+    }
+
+    #[test]
+    fn log_option() {
+        let cli = parse(&["dhp", "basic", "--log", "/tmp/dhp.log"]);
+        assert_eq!(cli.log, Some(PathBuf::from("/tmp/dhp.log")));
+    }
+
+    #[test]
+    fn log_level_default() {
+        let cli = parse(&["dhp", "basic"]);
+        assert!(matches!(cli.log_level, LogLevel::Trace));
+    }
+
+    #[test]
+    fn log_level_custom() {
+        let cli = parse(&["dhp", "basic", "--log-level", "debug"]);
+        assert!(matches!(cli.log_level, LogLevel::Debug));
     }
 }

@@ -25,11 +25,19 @@ use std::time::Instant;
 
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
 
 use cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
+
+    // Initialize log file (tee output) if --log is specified.
+    if let Some(ref path) = cli.log {
+        if let Err(e) = log::init(path) {
+            eprintln!("warning: failed to open log file: {e}");
+        }
+    }
 
     let level = match cli.verbose {
         0 => LevelFilter::WARN,
@@ -37,7 +45,7 @@ fn main() {
         2 => LevelFilter::DEBUG,
         _ => LevelFilter::TRACE,
     };
-    tracing_subscriber::fmt().with_max_level(level).init();
+    init_tracing(level, &cli.log_level);
 
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
@@ -54,15 +62,46 @@ fn main() {
             {
                 tracing::error!(error = %e, "failed to write JSON output");
             }
+            log::flush();
             if !result.all_passed() {
                 std::process::exit(1);
             }
         }
-        Ok(None) => {}
+        Ok(None) => {
+            log::flush();
+        }
         Err(e) => {
             tracing::error!(error = %e, "command failed");
+            log::flush();
             std::process::exit(1);
         }
+    }
+}
+
+/// Initialize tracing subscriber with stderr layer and optional log file layer.
+fn init_tracing(stderr_level: LevelFilter, log_level: &cli::LogLevel) {
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_level);
+
+    if let Some(file) = log::try_clone_file() {
+        let file_level = match log_level {
+            cli::LogLevel::Error => LevelFilter::ERROR,
+            cli::LogLevel::Warn => LevelFilter::WARN,
+            cli::LogLevel::Info => LevelFilter::INFO,
+            cli::LogLevel::Debug => LevelFilter::DEBUG,
+            cli::LogLevel::Trace => LevelFilter::TRACE,
+        };
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .with_filter(file_level);
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry().with(stderr_layer).init();
     }
 }
 
