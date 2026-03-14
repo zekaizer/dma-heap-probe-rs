@@ -1,9 +1,7 @@
 // Unified output formatting for metric tables, single-line metrics, and PASS/FAIL results.
 
-use std::fmt::{Display, Write};
-use std::io::Write as IoWrite;
-
 use crate::tee_println;
+use std::fmt::{Display, Write};
 
 /// Compute heap display width from a list of heap names.
 ///

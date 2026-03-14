@@ -21,7 +21,6 @@ mod sysfs;
 #[allow(dead_code)]
 mod trace;
 
-use std::io::Write;
 use std::time::Instant;
 
 use clap::Parser;
@@ -35,7 +34,8 @@ fn main() {
 
     // Initialize log file (tee output) if --log is specified.
     if let Some(ref path) = cli.log {
-        if let Err(e) = log::init(path) {
+        let max_bytes = cli.log_max_size * 1024 * 1024;
+        if let Err(e) = log::init(path, max_bytes) {
             eprintln!("warning: failed to open log file: {e}");
         }
     }

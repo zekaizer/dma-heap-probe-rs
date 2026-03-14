@@ -1,7 +1,6 @@
 // System DMA heap information and buffer status display.
 
 use std::fmt::Write as FmtWrite;
-use std::io::Write as IoWrite;
 use std::path::PathBuf;
 
 use anyhow::Context;

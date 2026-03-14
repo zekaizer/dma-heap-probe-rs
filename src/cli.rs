@@ -46,6 +46,10 @@ pub struct Cli {
     /// Log file tracing verbosity (default: trace). Only effective with `--log`.
     #[arg(long, global = true, default_value_t = LogLevel::Trace)]
     pub log_level: LogLevel,
+
+    /// Maximum log file size in MB (0 = unlimited). Oldest entries are evicted first.
+    #[arg(long, global = true, default_value_t = 0)]
+    pub log_max_size: u64,
 }
 
 #[derive(Subcommand, Debug)]

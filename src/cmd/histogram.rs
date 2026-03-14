@@ -1,7 +1,6 @@
 // Latency histogram analysis: per-heap, per-size distribution with ASCII
 // visualization and extended percentiles.
 
-use std::io::Write;
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};

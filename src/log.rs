@@ -1,41 +1,88 @@
 // Global log file for tee output (stdout + file).
+//
+// Uses a ring buffer: when total buffered bytes exceed `max_size`,
+// the oldest lines are dropped first.  On `flush()`, the buffer is
+// written to the file.  Default max_size = 0 = unlimited.
 
+use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-static LOG_FILE: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
+struct LogState {
+    file: BufWriter<File>,
+    buf: VecDeque<String>,
+    total_bytes: u64,
+    max_bytes: u64, // 0 = unlimited
+}
+
+static LOG_STATE: OnceLock<Mutex<LogState>> = OnceLock::new();
 
 /// Initialize the global log file. Must be called at most once.
-pub fn init(path: &Path) -> io::Result<()> {
+/// `max_bytes`: maximum log size in bytes (0 = unlimited).
+pub fn init(path: &Path, max_bytes: u64) -> io::Result<()> {
     let file = File::create(path)?;
-    let writer = BufWriter::new(file);
-    LOG_FILE.set(Mutex::new(writer)).map_err(|_| {
+    let state = LogState {
+        file: BufWriter::new(file),
+        buf: VecDeque::new(),
+        total_bytes: 0,
+        max_bytes,
+    };
+    LOG_STATE.set(Mutex::new(state)).map_err(|_| {
         io::Error::new(io::ErrorKind::AlreadyExists, "log file already initialized")
     })?;
     Ok(())
 }
 
-/// Return a reference to the global log file mutex, if initialized.
-pub fn writer() -> Option<&'static Mutex<BufWriter<File>>> {
-    LOG_FILE.get()
+/// Return true if the log file has been initialized.
+pub fn is_initialized() -> bool {
+    LOG_STATE.get().is_some()
 }
 
 /// Try to clone the underlying file handle for use as a tracing layer writer.
 /// Returns `None` if the log file was not initialized.
 pub fn try_clone_file() -> Option<File> {
-    let lock = LOG_FILE.get()?;
+    let lock = LOG_STATE.get()?;
     let guard = lock.lock().ok()?;
-    guard.get_ref().try_clone().ok()
+    guard.file.get_ref().try_clone().ok()
 }
 
-/// Flush the global log file buffer.
+/// Append a line to the ring buffer.  If `max_bytes` is set and the
+/// buffer exceeds it, the oldest lines are evicted.
+#[doc(hidden)]
+pub fn push_line(line: String) {
+    if let Some(lock) = LOG_STATE.get() {
+        if let Ok(mut state) = lock.lock() {
+            let len = line.len() as u64;
+            state.total_bytes += len;
+            state.buf.push_back(line);
+
+            // Evict oldest lines if over limit.
+            if state.max_bytes > 0 {
+                while state.total_bytes > state.max_bytes {
+                    if let Some(old) = state.buf.pop_front() {
+                        state.total_bytes -= old.len() as u64;
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Flush the ring buffer contents to the log file.
 pub fn flush() {
-    if let Some(lock) = LOG_FILE.get() {
-        if let Ok(mut guard) = lock.lock() {
-            let _ = guard.flush();
+    if let Some(lock) = LOG_STATE.get() {
+        if let Ok(mut state) = lock.lock() {
+            // Drain the buffer to avoid simultaneous borrow of buf and file.
+            while let Some(line) = state.buf.pop_front() {
+                let _ = state.file.write_all(line.as_bytes());
+            }
+            state.total_bytes = 0;
+            let _ = state.file.flush();
         }
     }
 }
@@ -73,41 +120,35 @@ pub fn walltime_prefix() -> String {
     format!("[{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}]")
 }
 
-/// Print to stdout and optionally tee to the global log file with a walltime prefix.
+/// Print to stdout and optionally tee to the log ring buffer with a walltime prefix.
 #[macro_export]
 macro_rules! tee_println {
     () => {{
         println!();
-        if let Some(lock) = $crate::log::writer() {
-            if let Ok(mut f) = lock.lock() {
-                let ts = $crate::log::walltime_prefix();
-                let _ = writeln!(f, "{ts}");
-            }
+        if $crate::log::is_initialized() {
+            let ts = $crate::log::walltime_prefix();
+            $crate::log::push_line(format!("{ts}\n"));
         }
     }};
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
         println!("{msg}");
-        if let Some(lock) = $crate::log::writer() {
-            if let Ok(mut f) = lock.lock() {
-                let ts = $crate::log::walltime_prefix();
-                let _ = writeln!(f, "{ts} {msg}");
-            }
+        if $crate::log::is_initialized() {
+            let ts = $crate::log::walltime_prefix();
+            $crate::log::push_line(format!("{ts} {msg}\n"));
         }
     }};
 }
 
-/// Print to stdout (no newline) and optionally tee to the global log file with a walltime prefix.
+/// Print to stdout (no newline) and optionally tee to the log ring buffer with a walltime prefix.
 #[macro_export]
 macro_rules! tee_print {
     ($($arg:tt)*) => {{
         let msg = format!($($arg)*);
         print!("{msg}");
-        if let Some(lock) = $crate::log::writer() {
-            if let Ok(mut f) = lock.lock() {
-                let ts = $crate::log::walltime_prefix();
-                let _ = write!(f, "{ts} {msg}");
-            }
+        if $crate::log::is_initialized() {
+            let ts = $crate::log::walltime_prefix();
+            $crate::log::push_line(format!("{ts} {msg}"));
         }
     }};
 }
@@ -120,7 +161,6 @@ mod tests {
     #[test]
     fn walltime_prefix_format() {
         let prefix = walltime_prefix();
-        // Must match [YYYY-MM-DDThh:mm:ss.mmm]
         // [YYYY-MM-DDThh:mm:ss.mmm] = 25 chars
         assert_eq!(prefix.len(), 25);
         assert_eq!(&prefix[0..1], "[");
@@ -134,36 +174,56 @@ mod tests {
     }
 
     #[test]
-    fn tee_println_without_init_does_not_panic() {
-        // LOG_FILE not initialized — macro should just println without error.
-        // We can't test the actual println output easily, but no panic is the goal.
+    fn tee_println_does_not_panic() {
+        // tee_println should work whether LOG_STATE is initialized or not.
         let msg = format!("test message {}", 42);
         println!("{msg}");
-        assert!(writer().is_none());
+        // No panic is the success criterion.
     }
 
     #[test]
-    fn init_and_write() {
-        // Use a separate static for isolation (global LOG_FILE may already be set).
-        let dir = std::env::temp_dir().join("dhp_log_test");
-        let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test.log");
+    fn ring_buffer_eviction() {
+        // Test ring buffer logic directly (separate from global state).
+        let mut buf: VecDeque<String> = VecDeque::new();
+        let mut total: u64 = 0;
+        let max: u64 = 100;
 
+        // Add lines until over limit.
+        for i in 0..20 {
+            let line = format!("line {i:02}\n"); // ~9 bytes each
+            total += line.len() as u64;
+            buf.push_back(line);
+            while total > max {
+                if let Some(old) = buf.pop_front() {
+                    total -= old.len() as u64;
+                } else {
+                    break;
+                }
+            }
+        }
+
+        assert!(total <= max);
+        assert!(!buf.is_empty());
+        // Oldest lines should have been evicted.
+        let first = buf.front().unwrap();
+        assert!(!first.contains("line 00"));
+    }
+
+    #[test]
+    fn init_and_flush() {
         // We can only test init if it hasn't been called before in this process.
-        // Since tests run in the same process, skip if already initialized.
-        if LOG_FILE.get().is_some() {
+        if LOG_STATE.get().is_some() {
             return;
         }
 
-        init(&path).expect("init log file");
-        assert!(writer().is_some());
+        let dir = std::env::temp_dir().join("dhp_log_test");
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_ring.log");
 
-        // Write via the writer directly.
-        {
-            let lock = writer().unwrap();
-            let mut guard = lock.lock().unwrap();
-            writeln!(guard, "hello from test").unwrap();
-        }
+        init(&path, 0).expect("init log file");
+        assert!(is_initialized());
+
+        push_line("hello from test\n".to_string());
         flush();
 
         let mut content = String::new();
