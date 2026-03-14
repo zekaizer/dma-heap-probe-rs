@@ -51,6 +51,8 @@ fn main() {
     let backend = backend::real::RealBackend::new();
     #[cfg(not(target_os = "android"))]
     let backend = backend::mock::MockBackend::new();
+    #[cfg(not(target_os = "android"))]
+    tracing::warn!("running with mock backend (not Android) — DMA-BUF operations are simulated");
 
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
     let heap_w = fmt::heap_width(&heaps);
