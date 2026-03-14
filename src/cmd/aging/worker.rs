@@ -203,8 +203,8 @@ mod tests {
     #[test]
     fn worker_single_heap() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 8, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
@@ -215,8 +215,8 @@ mod tests {
     #[test]
     fn worker_multi_thread() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), 8, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
@@ -224,8 +224,8 @@ mod tests {
     #[test]
     fn worker_with_duration() {
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(
             &b,
             &heaps,
@@ -244,8 +244,8 @@ mod tests {
     fn worker_no_hold() {
         // max_hold=0: all buffers freed immediately, no hold pool behavior.
         let b = MockBackend::new();
-        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 0, 0);
         assert_eq!(b.buffer_count(), 0);
         let allocs = state.total_allocs.load(Relaxed);

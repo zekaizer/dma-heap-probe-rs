@@ -192,6 +192,144 @@ pub(crate) fn evaluate_thresholds(result: &AgingResult, thresholds: &AgingThresh
     passed
 }
 
+// ── Per-heap operation latency ──────────────────────────────────────────────
+
+/// Log-scale bucket upper bounds (microseconds).
+#[allow(dead_code)]
+const BUCKET_BOUNDS: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
+
+/// Streaming latency statistics with log-scale histogram for approximate percentiles.
+#[allow(dead_code)]
+pub(crate) struct OpLatency {
+    pub count: AtomicU64,
+    pub sum_us: AtomicU64,
+    pub min_us: AtomicU64,
+    pub max_us: AtomicU64,
+    /// Total bytes processed (for per-4K normalization).
+    pub size_sum: AtomicU64,
+    /// Log-scale histogram: `[<1us, 1-10, 10-100, 100-1K, 1K-10K, 10K-100K, 100K-1M, >1M]`.
+    pub buckets: [AtomicU64; 8],
+}
+
+#[allow(dead_code)]
+impl OpLatency {
+    fn new() -> Self {
+        Self {
+            count: AtomicU64::new(0),
+            sum_us: AtomicU64::new(0),
+            min_us: AtomicU64::new(u64::MAX),
+            max_us: AtomicU64::new(0),
+            size_sum: AtomicU64::new(0),
+            buckets: std::array::from_fn(|_| AtomicU64::new(0)),
+        }
+    }
+
+    /// Record a latency sample with associated buffer size.
+    pub fn record(&self, lat_us: u64, size: u64) {
+        self.count.fetch_add(1, Relaxed);
+        self.sum_us.fetch_add(lat_us, Relaxed);
+        self.size_sum.fetch_add(size, Relaxed);
+        // Update min.
+        let mut cur = self.min_us.load(Relaxed);
+        while lat_us < cur {
+            match self
+                .min_us
+                .compare_exchange_weak(cur, lat_us, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+        // Update max.
+        let mut cur = self.max_us.load(Relaxed);
+        while lat_us > cur {
+            match self
+                .max_us
+                .compare_exchange_weak(cur, lat_us, Relaxed, Relaxed)
+            {
+                Ok(_) => break,
+                Err(actual) => cur = actual,
+            }
+        }
+        // Histogram bucket.
+        let idx = BUCKET_BOUNDS.partition_point(|&b| b <= lat_us).min(7);
+        self.buckets[idx].fetch_add(1, Relaxed);
+    }
+
+    /// Approximate percentile from histogram (returns bucket upper bound).
+    #[allow(
+        clippy::cast_precision_loss,
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss
+    )]
+    pub fn percentile(&self, pct: f64) -> u64 {
+        let total = self.count.load(Relaxed);
+        if total == 0 {
+            return 0;
+        }
+        let target = (total as f64 * pct / 100.0).ceil() as u64;
+        let mut cum = 0u64;
+        let bounds = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000, u64::MAX];
+        for (i, &bound) in bounds.iter().enumerate() {
+            cum += self.buckets[i].load(Relaxed);
+            if cum >= target {
+                return bound;
+            }
+        }
+        u64::MAX
+    }
+
+    /// Average latency in microseconds.
+    pub fn avg_us(&self) -> u64 {
+        let c = self.count.load(Relaxed);
+        if c == 0 {
+            0
+        } else {
+            self.sum_us.load(Relaxed) / c
+        }
+    }
+
+    /// Normalized latency per 4K bytes.
+    pub fn per_4k_us(&self) -> u64 {
+        let s = self.size_sum.load(Relaxed);
+        if s == 0 {
+            0
+        } else {
+            self.sum_us.load(Relaxed) * 4096 / s
+        }
+    }
+}
+
+/// Per-heap allocation and latency counters.
+#[allow(dead_code)]
+pub(crate) struct HeapCounters {
+    pub name: String,
+    pub allocs: AtomicU64,
+    pub frees: AtomicU64,
+    pub errors: AtomicU64,
+    pub enomem: AtomicU64,
+    pub alloc_lat: OpLatency,
+    pub mmap_lat: OpLatency,
+    pub sync_lat: OpLatency,
+    pub free_lat: OpLatency,
+}
+
+impl HeapCounters {
+    fn new(name: String) -> Self {
+        Self {
+            name,
+            allocs: AtomicU64::new(0),
+            frees: AtomicU64::new(0),
+            errors: AtomicU64::new(0),
+            enomem: AtomicU64::new(0),
+            alloc_lat: OpLatency::new(),
+            mmap_lat: OpLatency::new(),
+            sync_lat: OpLatency::new(),
+            free_lat: OpLatency::new(),
+        }
+    }
+}
+
 // ── Shared state ────────────────────────────────────────────────────────────
 
 /// Shared state across aging workers and the reporter thread.
@@ -206,6 +344,8 @@ pub(crate) struct AgingState {
     pub held_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
     pub interval_latencies: Mutex<Vec<u64>>,
+    #[allow(dead_code)]
+    pub heap_counters: Vec<HeapCounters>,
 
     // Cumulative latency running stats (updated by reporter)
     pub cum_count: AtomicU64,
@@ -219,7 +359,7 @@ pub(crate) struct AgingState {
 }
 
 impl AgingState {
-    pub fn new(hold_limit: HoldLimit) -> Self {
+    pub fn new(hold_limit: HoldLimit, heap_names: &[String]) -> Self {
         Self {
             running: AtomicBool::new(true),
             total_iters: AtomicU64::new(0),
@@ -231,6 +371,10 @@ impl AgingState {
             held_bytes: AtomicU64::new(0),
             hold_limit,
             interval_latencies: Mutex::new(Vec::new()),
+            heap_counters: heap_names
+                .iter()
+                .map(|n| HeapCounters::new(n.clone()))
+                .collect(),
             cum_count: AtomicU64::new(0),
             cum_sum: AtomicU64::new(0),
             cum_max: AtomicU64::new(0),
@@ -803,7 +947,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     );
 
     let (pt_max_count, pt_max_bytes) = per_thread_pool_limits(hold_limit, threads);
-    let state = AgingState::new(hold_limit);
+    let state = AgingState::new(hold_limit, heaps);
     let heap_label = heaps.join(",");
 
     let (initial_snap, final_snap, elapsed) = run_with_reporter(
@@ -860,14 +1004,14 @@ mod tests {
 
     #[test]
     fn should_stop_iteration_limit() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         state.total_iters.store(10, Relaxed);
         assert!(should_stop(&state, None, Some(10)));
     }
 
     #[test]
     fn should_stop_running_false() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         state.running.store(false, Relaxed);
         assert!(should_stop(&state, None, None));
     }
@@ -1239,7 +1383,7 @@ mod tests {
     #[test]
     #[allow(clippy::similar_names)]
     fn reporter_updates_cumulative_stats() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         // Push latencies and simulate what reporter does
         {
             let mut lat = state.interval_latencies.lock().unwrap();
@@ -1305,7 +1449,7 @@ mod tests {
 
     #[test]
     fn cumulative_stats_accuracy() {
-        let state = AgingState::new(HoldLimit::Count(1000));
+        let state = AgingState::new(HoldLimit::Count(1000), &["system".into()]);
         // Simulate two intervals
         let stats1 = LatencyStats {
             count: 10,
