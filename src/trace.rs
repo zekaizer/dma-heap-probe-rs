@@ -110,7 +110,6 @@ pub fn end() {
 }
 
 /// Write a counter value.
-#[allow(dead_code)]
 pub fn counter(name: &str, value: i64) {
     let msg = format_counter(current_tid(), name, value);
     write_marker(&msg);

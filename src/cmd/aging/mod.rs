@@ -678,6 +678,18 @@ pub(crate) fn reporter_loop(
 
         let trend = state.trend();
 
+        // Emit Perfetto trace counters for timeline visualization.
+        #[allow(clippy::cast_possible_wrap)]
+        if crate::trace::enabled() {
+            crate::trace::counter("held_bufs", buf_count as i64);
+            crate::trace::counter(
+                "held_bytes_mb",
+                (state.held_bytes.load(Relaxed) / 1_048_576) as i64,
+            );
+            crate::trace::counter("trend_x100", (trend * 100.0) as i64);
+            crate::trace::counter("enomem_total", state.total_enomem.load(Relaxed) as i64);
+        }
+
         let cur_allocs = state.total_allocs.load(Relaxed);
         let cur_frees = state.total_frees.load(Relaxed);
         let interval_allocs = cur_allocs - prev_allocs;

@@ -204,6 +204,9 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.state.total_frees.fetch_add(actual as u64, Relaxed);
             self.state.held_bufs.fetch_sub(actual as u64, Relaxed);
             self.state.held_bytes.fetch_sub(freed_bytes, Relaxed);
+            if crate::trace::enabled() {
+                crate::trace::instant(&format!("drain_{actual}"));
+            }
         }
     }
 
@@ -464,6 +467,9 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
                 state.total_enomem.fetch_add(1, Relaxed);
                 hc.enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
+                if crate::trace::enabled() {
+                    crate::trace::instant("enomem");
+                }
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
