@@ -154,12 +154,12 @@ mod tests {
     #[test]
     fn ri_integer() {
         assert_eq!(ri(42, 6), "    42");
-        assert_eq!(ri(1048576, 6), "1048576"); // wider than min
+        assert_eq!(ri(1_048_576, 6), "1048576"); // wider than min
     }
 
     #[test]
     fn rf1_float() {
-        assert_eq!(rf1(3.14, 6), "   3.1");
+        assert_eq!(rf1(3.125, 6), "   3.1");
         assert_eq!(rf1(100.0, 6), " 100.0");
     }
 
@@ -190,7 +190,7 @@ mod tests {
     #[test]
     fn print_table_column_widths() {
         // Verify dynamic column width computation.
-        let headers = vec!["size", "avg", "p99"];
+        let headers = ["size", "avg", "p99"];
         let rows: Vec<Vec<String>> = vec![
             vec!["4096".into(), "1".into(), "2".into()],
             vec!["1048576".into(), "55".into(), "68".into()],
