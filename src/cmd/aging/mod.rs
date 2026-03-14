@@ -131,7 +131,7 @@ pub struct AgingResult {
 pub struct OpResult {
     pub count: u64,
     pub avg_us: u64,
-    pub per_4k_us: u64,
+    pub per_4k_us: f64,
     pub min_us: u64,
     pub max_us: u64,
     pub p50_us: u64,
@@ -335,12 +335,13 @@ impl OpLatency {
     }
 
     /// Normalized latency per 4K bytes.
-    pub fn per_4k_us(&self) -> u64 {
+    #[allow(clippy::cast_precision_loss)]
+    pub fn per_4k_us(&self) -> f64 {
         let s = self.size_sum.load(Relaxed);
         if s == 0 {
-            0
+            0.0
         } else {
-            self.sum_us.load(Relaxed) * 4096 / s
+            self.sum_us.load(Relaxed) as f64 * 4096.0 / s as f64
         }
     }
 }
@@ -1045,10 +1046,10 @@ fn print_per_heap_table(result: &AgingResult) {
                 fmt_num(h.allocs),
                 fmt_num(h.frees),
                 fmt_num(h.enomem),
-                format!("{} us", h.alloc_lat.per_4k_us),
-                format!("{} us", h.mmap_lat.per_4k_us),
-                format!("{} us", h.sync_lat.per_4k_us),
-                format!("{} us", h.free_lat.per_4k_us),
+                format!("{:.3} us", h.alloc_lat.per_4k_us),
+                format!("{:.3} us", h.mmap_lat.per_4k_us),
+                format!("{:.3} us", h.sync_lat.per_4k_us),
+                format!("{:.3} us", h.free_lat.per_4k_us),
             ]
         })
         .collect();
