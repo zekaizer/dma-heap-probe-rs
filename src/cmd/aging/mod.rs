@@ -31,37 +31,41 @@ pub(crate) enum HoldLimit {
     Bytes(u64),
 }
 
-/// Parse a hold limit string: pure number → count, suffix (K/M/G/KiB/MiB/GiB) → bytes, 0 → disabled.
-pub fn parse_hold_limit(s: &str) -> Result<HoldLimit, String> {
+/// Parse a size string with optional suffix (K/KiB, M/MiB, G/GiB). Pure number = bytes.
+pub fn parse_size(s: &str) -> Result<u64, String> {
     let s = s.trim();
-    if s == "0" {
-        return Ok(HoldLimit::Disabled);
-    }
-
-    // Try pure integer first.
     if let Ok(n) = s.parse::<u64>() {
-        return Ok(HoldLimit::Count(n));
+        return Ok(n);
     }
-
-    // Split into numeric prefix and suffix.
     let pos = s
         .find(|c: char| !c.is_ascii_digit())
-        .ok_or_else(|| format!("invalid hold limit: {s}"))?;
+        .ok_or_else(|| format!("invalid size: {s}"))?;
     let (num_str, suffix) = s.split_at(pos);
     let num: u64 = num_str
         .parse()
-        .map_err(|_| format!("invalid number in hold limit: {s}"))?;
-
+        .map_err(|_| format!("invalid number in size: {s}"))?;
     let multiplier = match suffix.to_ascii_lowercase().as_str() {
         "k" | "kib" => 1024,
         "m" | "mib" => 1024 * 1024,
         "g" | "gib" => 1024 * 1024 * 1024,
         _ => return Err(format!("unknown size suffix '{suffix}' in: {s}")),
     };
-
     num.checked_mul(multiplier)
-        .map(HoldLimit::Bytes)
-        .ok_or_else(|| format!("hold limit overflow: {s}"))
+        .ok_or_else(|| format!("size overflow: {s}"))
+}
+
+/// Parse a hold limit string: pure number → count, suffix → bytes, 0 → disabled.
+pub fn parse_hold_limit(s: &str) -> Result<HoldLimit, String> {
+    let s = s.trim();
+    if s == "0" {
+        return Ok(HoldLimit::Disabled);
+    }
+    // Pure integer → buffer count.
+    if s.parse::<u64>().is_ok() {
+        return Ok(HoldLimit::Count(s.parse().unwrap()));
+    }
+    // Has suffix → byte limit.
+    parse_size(s).map(HoldLimit::Bytes)
 }
 
 // ── Aging result ────────────────────────────────────────────────────────────

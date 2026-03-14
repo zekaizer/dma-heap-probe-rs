@@ -97,9 +97,9 @@ pub enum Command {
 
     /// Aging tests (sustained alloc/free with periodic reporting).
     Aging {
-        /// Allocation size in bytes (ignored in fuzz mode).
-        #[arg(long, default_value_t = 4096)]
-        size: u64,
+        /// Allocation size, e.g. 4096, 64K, 1M (ignored in fuzz mode).
+        #[arg(long, default_value = "4096")]
+        size: String,
 
         /// Worker thread count.
         #[arg(long, default_value_t = 1)]
