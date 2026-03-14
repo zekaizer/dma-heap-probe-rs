@@ -33,11 +33,10 @@ fn main() {
     let cli = Cli::parse();
 
     // Initialize log file (tee output) if --log is specified.
-    if let Some(ref path) = cli.log {
-        let max_bytes = cli.log_max_size * 1024 * 1024;
-        if let Err(e) = log::init(path, max_bytes) {
-            eprintln!("warning: failed to open log file: {e}");
-        }
+    if let Some(ref path) = cli.log
+        && let Err(e) = log::init(path)
+    {
+        eprintln!("warning: failed to open log file: {e}");
     }
 
     let level = match cli.verbose {

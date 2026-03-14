@@ -1289,6 +1289,7 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
         }
 
         prev = Some(snap);
+        crate::log::flush();
         std::thread::sleep(interval);
     }
 }

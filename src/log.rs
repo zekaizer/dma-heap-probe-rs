@@ -1,10 +1,9 @@
 // Global log file for tee output (stdout + file).
 //
-// Uses a ring buffer: when total buffered bytes exceed `max_size`,
-// the oldest lines are dropped first.  On `flush()`, the buffer is
-// written to the file.  Default max_size = 0 = unlimited.
+// Direct write: each `push_line()` call writes immediately to a
+// `BufWriter<File>`.  Call `flush()` to ensure all buffered data
+// reaches disk (e.g. before exit or in long-running loops).
 
-use std::collections::VecDeque;
 use std::fs::File;
 use std::io::{self, BufWriter, Write};
 use std::path::Path;
@@ -12,23 +11,16 @@ use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
 struct LogState {
-    file: BufWriter<File>,
-    buf: VecDeque<String>,
-    total_bytes: u64,
-    max_bytes: u64, // 0 = unlimited
+    writer: BufWriter<File>,
 }
 
 static LOG_STATE: OnceLock<Mutex<LogState>> = OnceLock::new();
 
 /// Initialize the global log file. Must be called at most once.
-/// `max_bytes`: maximum log size in bytes (0 = unlimited).
-pub fn init(path: &Path, max_bytes: u64) -> io::Result<()> {
+pub fn init(path: &Path) -> io::Result<()> {
     let file = File::create(path)?;
     let state = LogState {
-        file: BufWriter::new(file),
-        buf: VecDeque::new(),
-        total_bytes: 0,
-        max_bytes,
+        writer: BufWriter::new(file),
     };
     LOG_STATE.set(Mutex::new(state)).map_err(|_| {
         io::Error::new(io::ErrorKind::AlreadyExists, "log file already initialized")
@@ -46,44 +38,25 @@ pub fn is_initialized() -> bool {
 pub fn try_clone_file() -> Option<File> {
     let lock = LOG_STATE.get()?;
     let guard = lock.lock().ok()?;
-    guard.file.get_ref().try_clone().ok()
+    guard.writer.get_ref().try_clone().ok()
 }
 
-/// Append a line to the ring buffer.  If `max_bytes` is set and the
-/// buffer exceeds it, the oldest lines are evicted.
+/// Write a line directly to the log file.
 #[doc(hidden)]
-pub fn push_line(line: String) {
+pub fn push_line(line: &str) {
     if let Some(lock) = LOG_STATE.get()
         && let Ok(mut state) = lock.lock()
     {
-        let len = line.len() as u64;
-        state.total_bytes += len;
-        state.buf.push_back(line);
-
-        // Evict oldest lines if over limit.
-        if state.max_bytes > 0 {
-            while state.total_bytes > state.max_bytes {
-                if let Some(old) = state.buf.pop_front() {
-                    state.total_bytes -= old.len() as u64;
-                } else {
-                    break;
-                }
-            }
-        }
+        let _ = state.writer.write_all(line.as_bytes());
     }
 }
 
-/// Flush the ring buffer contents to the log file.
+/// Flush the `BufWriter` to ensure all data reaches the file.
 pub fn flush() {
     if let Some(lock) = LOG_STATE.get()
         && let Ok(mut state) = lock.lock()
     {
-        // Drain the buffer to avoid simultaneous borrow of buf and file.
-        while let Some(line) = state.buf.pop_front() {
-            let _ = state.file.write_all(line.as_bytes());
-        }
-        state.total_bytes = 0;
-        let _ = state.file.flush();
+        let _ = state.writer.flush();
     }
 }
 
@@ -127,7 +100,7 @@ macro_rules! tee_println {
         println!();
         if $crate::log::is_initialized() {
             let ts = $crate::log::walltime_prefix();
-            $crate::log::push_line(format!("{ts}\n"));
+            $crate::log::push_line(&format!("{ts}\n"));
         }
     }};
     ($($arg:tt)*) => {{
@@ -135,7 +108,7 @@ macro_rules! tee_println {
         println!("{msg}");
         if $crate::log::is_initialized() {
             let ts = $crate::log::walltime_prefix();
-            $crate::log::push_line(format!("{ts} {msg}\n"));
+            $crate::log::push_line(&format!("{ts} {msg}\n"));
         }
     }};
 }
@@ -148,7 +121,7 @@ macro_rules! tee_print {
         print!("{msg}");
         if $crate::log::is_initialized() {
             let ts = $crate::log::walltime_prefix();
-            $crate::log::push_line(format!("{ts} {msg}"));
+            $crate::log::push_line(&format!("{ts} {msg}"));
         }
     }};
 }
@@ -182,34 +155,6 @@ mod tests {
     }
 
     #[test]
-    fn ring_buffer_eviction() {
-        // Test ring buffer logic directly (separate from global state).
-        let mut buf: VecDeque<String> = VecDeque::new();
-        let mut total: u64 = 0;
-        let max: u64 = 100;
-
-        // Add lines until over limit.
-        for i in 0..20 {
-            let line = format!("line {i:02}\n"); // ~9 bytes each
-            total += line.len() as u64;
-            buf.push_back(line);
-            while total > max {
-                if let Some(old) = buf.pop_front() {
-                    total -= old.len() as u64;
-                } else {
-                    break;
-                }
-            }
-        }
-
-        assert!(total <= max);
-        assert!(!buf.is_empty());
-        // Oldest lines should have been evicted.
-        let first = buf.front().unwrap();
-        assert!(!first.contains("line 00"));
-    }
-
-    #[test]
     fn init_and_flush() {
         // We can only test init if it hasn't been called before in this process.
         if LOG_STATE.get().is_some() {
@@ -218,12 +163,12 @@ mod tests {
 
         let dir = std::env::temp_dir().join("dhp_log_test");
         let _ = std::fs::create_dir_all(&dir);
-        let path = dir.join("test_ring.log");
+        let path = dir.join("test_direct.log");
 
-        init(&path, 0).expect("init log file");
+        init(&path).expect("init log file");
         assert!(is_initialized());
 
-        push_line("hello from test\n".to_string());
+        push_line("hello from test\n");
         flush();
 
         let mut content = String::new();
