@@ -311,6 +311,8 @@ struct FuzzHeapContext<'a, B: HeapBackend> {
     heap: DmaHeap<'a, B>,
     caps: HeapCaps,
     weighted_table: Vec<(Pipeline, u32)>,
+    /// Index into `AgingState.heap_counters`.
+    counter_idx: usize,
 }
 
 // ── Worker entry point ──────────────────────────────────────────────────────
@@ -347,10 +349,16 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         .filter_map(|caps| {
             let heap = DmaHeap::open(backend, &caps.name).ok()?;
             let weighted_table = build_weighted_table(&caps);
+            let counter_idx = state
+                .heap_counters
+                .iter()
+                .position(|hc| hc.name == caps.name)
+                .unwrap_or(0);
             Some(FuzzHeapContext {
                 heap,
                 caps,
                 weighted_table,
+                counter_idx,
             })
         })
         .collect();
@@ -441,7 +449,12 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
         // Random pipeline
         let pipeline = select_pipeline(&ctx.weighted_table, &mut rng);
 
+        let hc = &state.heap_counters[ctx.counter_idx];
+
         let start = Instant::now();
+
+        // Alloc timing.
+        let t_alloc = Instant::now();
         let fd = match ctx
             .heap
             .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
@@ -449,6 +462,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             Ok(fd) => fd,
             Err(Errno::ENOMEM) => {
                 state.total_enomem.fetch_add(1, Relaxed);
+                hc.enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
@@ -456,11 +470,15 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             Err(_) => {
                 tracing::debug!(worker_id, "alloc error");
                 state.total_errors.fetch_add(1, Relaxed);
+                hc.errors.fetch_add(1, Relaxed);
                 continue;
             }
         };
+        hc.alloc_lat
+            .record(t_alloc.elapsed().as_micros() as u64, size);
 
         state.total_allocs.fetch_add(1, Relaxed);
+        hc.allocs.fetch_add(1, Relaxed);
         hold_pool.notify_success(worker_id);
 
         let error_occurred = execute_pipeline(
@@ -470,6 +488,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             size,
             pipeline,
             &ctx.caps,
+            hc,
             &mut hold_pool,
         );
 
@@ -477,6 +496,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             state.total_errors.fetch_add(1, Relaxed);
         }
         if !matches!(pipeline, Pipeline::AllocHold) {
+            hc.frees.fetch_add(1, Relaxed);
             state.total_frees.fetch_add(1, Relaxed);
         }
 
@@ -511,6 +531,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
     size: u64,
     pipeline: Pipeline,
     caps: &HeapCaps,
+    hc: &super::HeapCounters,
     hold_pool: &mut HoldPool<'a, B>,
 ) -> bool {
     let size_usize = size as usize;
@@ -518,14 +539,23 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
     match pipeline {
         Pipeline::AllocClose => {
             let buf = DmaBuf::new(backend, fd, size_usize);
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
         Pipeline::AllocMmapClose => {
             let mut buf = DmaBuf::new(backend, fd, size_usize);
+            let t_mmap = Instant::now();
             let _ = buf.mmap();
+            hc.mmap_lat
+                .record(t_mmap.elapsed().as_micros() as u64, size);
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
@@ -534,16 +564,25 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
             let pct = rng.random_range(25u64..75);
             let partial_len = (size * pct / 100).max(1) as usize;
             let mut buf = DmaBuf::new(backend, fd, partial_len);
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let pat = random_write_pattern(rng);
+                let t_sync = Instant::now();
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for partial_len bytes.
                 unsafe {
                     super::sparse_fill(ptr, partial_len, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+                hc.sync_lat
+                    .record(t_sync.elapsed().as_micros() as u64, size);
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
@@ -551,27 +590,40 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
             // Intentionally uses random sync flags (including READ for write ops)
             // to stress-test mismatched sync direction handling in drivers.
             let mut buf = DmaBuf::new(backend, fd, size_usize);
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let flags = random_sync_flags(rng);
                 let pat = random_write_pattern(rng);
+                let t_sync = Instant::now();
                 let _ = buf.sync_start(flags);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
                     super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(flags);
+                hc.sync_lat
+                    .record(t_sync.elapsed().as_micros() as u64, size);
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
         Pipeline::WriteReadVerify => {
             let mut buf = DmaBuf::new(backend, fd, size_usize);
             let mut error = false;
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let pat = random_write_pattern(rng);
                 let expected = pattern_byte(pat);
 
+                let t_sync = Instant::now();
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
@@ -592,21 +644,32 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                     error = true;
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_READ);
+                hc.sync_lat
+                    .record(t_sync.elapsed().as_micros() as u64, size);
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             error
         }
 
         Pipeline::WriteNoSync => {
             let mut buf = DmaBuf::new(backend, fd, size_usize);
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let pat = random_write_pattern(rng);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
                     super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
@@ -614,8 +677,12 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
             let mut buf = DmaBuf::new(backend, fd, size_usize);
             let _ = buf.mmap();
             // Second mmap should be idempotent.
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let pat = random_write_pattern(rng);
+                let t_sync = Instant::now();
                 if caps.can_sync {
                     let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 }
@@ -626,46 +693,73 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
                 if caps.can_sync {
                     let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
                 }
+                if caps.can_sync {
+                    hc.sync_lat
+                        .record(t_sync.elapsed().as_micros() as u64, size);
+                }
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
         Pipeline::DupAndOperate => {
             let buf = DmaBuf::new(backend, fd, size_usize);
             if let Ok(mut dup_buf) = buf.dup() {
-                if caps.can_mmap
-                    && caps.can_write
-                    && let Ok(ptr) = dup_buf.mmap()
-                {
-                    let _ = dup_buf.sync_start(DMA_BUF_SYNC_WRITE);
-                    // SAFETY: ptr valid for size_usize bytes.
-                    unsafe {
-                        super::sparse_fill(ptr, size_usize, 0xBB, Some(rng));
+                if caps.can_mmap && caps.can_write {
+                    let t_mmap = Instant::now();
+                    if let Ok(ptr) = dup_buf.mmap() {
+                        hc.mmap_lat
+                            .record(t_mmap.elapsed().as_micros() as u64, size);
+                        let t_sync = Instant::now();
+                        let _ = dup_buf.sync_start(DMA_BUF_SYNC_WRITE);
+                        // SAFETY: ptr valid for size_usize bytes.
+                        unsafe {
+                            super::sparse_fill(ptr, size_usize, 0xBB, Some(rng));
+                        }
+                        let _ = dup_buf.sync_end(DMA_BUF_SYNC_WRITE);
+                        hc.sync_lat
+                            .record(t_sync.elapsed().as_micros() as u64, size);
                     }
-                    let _ = dup_buf.sync_end(DMA_BUF_SYNC_WRITE);
                 }
                 drop(buf);
+                let t_free = Instant::now();
                 drop(dup_buf);
+                hc.free_lat
+                    .record(t_free.elapsed().as_micros() as u64, size);
             } else {
+                let t_free = Instant::now();
                 drop(buf);
+                hc.free_lat
+                    .record(t_free.elapsed().as_micros() as u64, size);
             }
             false
         }
 
         Pipeline::LlseekAfterWrite => {
             let mut buf = DmaBuf::new(backend, fd, size_usize);
+            let t_mmap = Instant::now();
             if let Ok(ptr) = buf.mmap() {
+                hc.mmap_lat
+                    .record(t_mmap.elapsed().as_micros() as u64, size);
                 let pat = random_write_pattern(rng);
+                let t_sync = Instant::now();
                 let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
                 // SAFETY: ptr valid for size_usize bytes.
                 unsafe {
                     super::sparse_fill(ptr, size_usize, pattern_byte(pat), Some(rng));
                 }
                 let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+                hc.sync_lat
+                    .record(t_sync.elapsed().as_micros() as u64, size);
             }
             let _ = buf.llseek_size();
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
@@ -675,7 +769,10 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
             if let Ok(sync_fd) = buf.export_sync_file(DMA_BUF_SYNC_READ as u32) {
                 let _ = buf.import_sync_file(DMA_BUF_SYNC_READ as u32, sync_fd);
             }
+            let t_free = Instant::now();
             drop(buf);
+            hc.free_lat
+                .record(t_free.elapsed().as_micros() as u64, size);
             false
         }
 
