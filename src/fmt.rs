@@ -38,9 +38,10 @@ pub fn print_table(
     let indent = " ".repeat(prefix.len() + 2);
 
     // Header line
-    match unit_hint {
-        Some(u) => tee_println!("{prefix}  {label} {u}"),
-        None => tee_println!("{prefix}  {label}"),
+    if let Some(u) = unit_hint {
+        tee_println!("{prefix}  {label} {u}");
+    } else {
+        tee_println!("{prefix}  {label}");
     }
 
     if rows.is_empty() {

@@ -46,7 +46,7 @@ fn main() {
         2 => LevelFilter::DEBUG,
         _ => LevelFilter::TRACE,
     };
-    init_tracing(level, &cli.log_level);
+    init_tracing(level, cli.log_level);
 
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
@@ -80,7 +80,7 @@ fn main() {
 }
 
 /// Initialize tracing subscriber with stderr layer and optional log file layer.
-fn init_tracing(stderr_level: LevelFilter, log_level: &cli::LogLevel) {
+fn init_tracing(stderr_level: LevelFilter, log_level: cli::LogLevel) {
     let stderr_layer = tracing_subscriber::fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(stderr_level);

@@ -53,20 +53,20 @@ pub fn try_clone_file() -> Option<File> {
 /// buffer exceeds it, the oldest lines are evicted.
 #[doc(hidden)]
 pub fn push_line(line: String) {
-    if let Some(lock) = LOG_STATE.get() {
-        if let Ok(mut state) = lock.lock() {
-            let len = line.len() as u64;
-            state.total_bytes += len;
-            state.buf.push_back(line);
+    if let Some(lock) = LOG_STATE.get()
+        && let Ok(mut state) = lock.lock()
+    {
+        let len = line.len() as u64;
+        state.total_bytes += len;
+        state.buf.push_back(line);
 
-            // Evict oldest lines if over limit.
-            if state.max_bytes > 0 {
-                while state.total_bytes > state.max_bytes {
-                    if let Some(old) = state.buf.pop_front() {
-                        state.total_bytes -= old.len() as u64;
-                    } else {
-                        break;
-                    }
+        // Evict oldest lines if over limit.
+        if state.max_bytes > 0 {
+            while state.total_bytes > state.max_bytes {
+                if let Some(old) = state.buf.pop_front() {
+                    state.total_bytes -= old.len() as u64;
+                } else {
+                    break;
                 }
             }
         }
@@ -75,15 +75,15 @@ pub fn push_line(line: String) {
 
 /// Flush the ring buffer contents to the log file.
 pub fn flush() {
-    if let Some(lock) = LOG_STATE.get() {
-        if let Ok(mut state) = lock.lock() {
-            // Drain the buffer to avoid simultaneous borrow of buf and file.
-            while let Some(line) = state.buf.pop_front() {
-                let _ = state.file.write_all(line.as_bytes());
-            }
-            state.total_bytes = 0;
-            let _ = state.file.flush();
+    if let Some(lock) = LOG_STATE.get()
+        && let Ok(mut state) = lock.lock()
+    {
+        // Drain the buffer to avoid simultaneous borrow of buf and file.
+        while let Some(line) = state.buf.pop_front() {
+            let _ = state.file.write_all(line.as_bytes());
         }
+        state.total_bytes = 0;
+        let _ = state.file.flush();
     }
 }
 
