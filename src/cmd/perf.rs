@@ -462,21 +462,19 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
         (2, size_b, &phase2),
         (3, size_a, &phase3),
     ];
+    let headers = &["ph", "size", "first10_p50", "last10_p50"];
+    let mut rows: Vec<Vec<String>> = Vec::new();
     for (ph, size, samples) in &switch_data {
         if let (Some(first), Some(last)) = (first_10(samples), last_10(samples)) {
-            crate::fmt::print_metric(
-                heap_name,
-                heap_w,
-                "perf::size_switch",
-                &[
-                    ("ph", ph),
-                    ("size", size),
-                    ("first10_p50", &first.p50_us),
-                    ("last10_p50", &last.p50_us),
-                ],
-            );
+            rows.push(vec![
+                ph.to_string(),
+                size.to_string(),
+                first.p50_us.to_string(),
+                last.p50_us.to_string(),
+            ]);
         }
     }
+    crate::fmt::print_table(heap_name, heap_w, "perf::size_switch", None, headers, &rows);
 
     Ok(())
 }
