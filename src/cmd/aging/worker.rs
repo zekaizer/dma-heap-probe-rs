@@ -36,7 +36,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     state: &AgingState,
     duration: Option<Duration>,
     iterations: Option<u64>,
-    max_hold: usize,
+    per_thread_max: usize,
 ) {
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -62,7 +62,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         threads,
         heaps = contexts.len(),
         size,
-        max_hold,
+        per_thread_max,
         "normal workers starting"
     );
 
@@ -79,7 +79,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     state,
                     deadline,
                     iterations,
-                    max_hold,
+                    per_thread_max,
                     worker_id,
                 );
             });
@@ -96,12 +96,12 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     state: &AgingState,
     deadline: Option<Instant>,
     max_iters: Option<u64>,
-    max_hold: usize,
+    per_thread_max: usize,
     worker_id: u32,
 ) {
     let mut local_index = worker_id as usize;
-    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(max_hold, state);
-    tracing::debug!(worker_id, max_hold, "worker started");
+    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(per_thread_max, state);
+    tracing::debug!(worker_id, per_thread_max, "worker started");
 
     loop {
         if should_stop(state, deadline, max_iters) {
@@ -162,7 +162,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         }
 
         // Hold every Nth buffer, free the rest immediately.
-        if max_hold > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
+        if per_thread_max > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
             hold_pool.push(buf);
         } else {
             drop(buf);
@@ -187,7 +187,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
 
 #[cfg(test)]
 mod tests {
-    use super::super::AgingState;
+    use super::super::{AgingState, HoldLimit};
     use crate::backend::mock::MockBackend;
     use std::sync::atomic::Ordering::Relaxed;
     use std::time::Duration;
@@ -195,7 +195,7 @@ mod tests {
     #[test]
     fn worker_single_heap() {
         let b = MockBackend::new();
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 8);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn worker_multi_thread() {
         let b = MockBackend::new();
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), 8);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn worker_with_duration() {
         let b = MockBackend::new();
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
         super::run_workers(
             &b,
@@ -235,7 +235,7 @@ mod tests {
     fn worker_no_hold() {
         // max_hold=0: all buffers freed immediately, no hold pool behavior.
         let b = MockBackend::new();
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         let heaps = vec!["system".to_string()];
         super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 0);
         assert_eq!(b.buffer_count(), 0);

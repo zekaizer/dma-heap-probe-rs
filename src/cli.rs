@@ -121,9 +121,9 @@ pub enum Command {
         #[arg(long)]
         fuzz: bool,
 
-        /// Max buffers held simultaneously (0 = disable hold pool).
-        #[arg(long, default_value_t = 32)]
-        max_hold: usize,
+        /// Max hold limit: count (e.g. 1000) or size (e.g. 512M, 1GiB). 0 = disable.
+        #[arg(long, default_value = "32")]
+        max_hold: String,
 
         /// Random seed for fuzz mode (auto if omitted).
         #[arg(long)]

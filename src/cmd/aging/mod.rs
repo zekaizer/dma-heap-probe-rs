@@ -18,8 +18,51 @@ use serde::{Deserialize, Serialize};
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::{self, LatencyStats};
+use crate::procfs;
 use crate::runner::{self, SubTestResult};
-use crate::{procfs, sysfs};
+
+// ── Hold limit ─────────────────────────────────────────────────────────────
+
+/// Hold pool limit mode: by buffer count, byte size, or disabled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HoldLimit {
+    Disabled,
+    Count(u64),
+    Bytes(u64),
+}
+
+/// Parse a hold limit string: pure number → count, suffix (K/M/G/KiB/MiB/GiB) → bytes, 0 → disabled.
+pub fn parse_hold_limit(s: &str) -> Result<HoldLimit, String> {
+    let s = s.trim();
+    if s == "0" {
+        return Ok(HoldLimit::Disabled);
+    }
+
+    // Try pure integer first.
+    if let Ok(n) = s.parse::<u64>() {
+        return Ok(HoldLimit::Count(n));
+    }
+
+    // Split into numeric prefix and suffix.
+    let pos = s
+        .find(|c: char| !c.is_ascii_digit())
+        .ok_or_else(|| format!("invalid hold limit: {s}"))?;
+    let (num_str, suffix) = s.split_at(pos);
+    let num: u64 = num_str
+        .parse()
+        .map_err(|_| format!("invalid number in hold limit: {s}"))?;
+
+    let multiplier = match suffix.to_ascii_lowercase().as_str() {
+        "k" | "kib" => 1024,
+        "m" | "mib" => 1024 * 1024,
+        "g" | "gib" => 1024 * 1024 * 1024,
+        _ => return Err(format!("unknown size suffix '{suffix}' in: {s}")),
+    };
+
+    num.checked_mul(multiplier)
+        .map(HoldLimit::Bytes)
+        .ok_or_else(|| format!("hold limit overflow: {s}"))
+}
 
 // ── Aging result ────────────────────────────────────────────────────────────
 
@@ -152,6 +195,9 @@ pub(crate) struct AgingState {
     pub total_allocs: AtomicU64,
     pub total_frees: AtomicU64,
     pub total_enomem: AtomicU64,
+    pub held_bufs: AtomicU64,
+    pub held_bytes: AtomicU64,
+    pub hold_limit: HoldLimit,
     pub interval_latencies: Mutex<Vec<u64>>,
 
     // Cumulative latency running stats (updated by reporter)
@@ -166,7 +212,7 @@ pub(crate) struct AgingState {
 }
 
 impl AgingState {
-    pub fn new() -> Self {
+    pub fn new(hold_limit: HoldLimit) -> Self {
         Self {
             running: AtomicBool::new(true),
             total_iters: AtomicU64::new(0),
@@ -174,6 +220,9 @@ impl AgingState {
             total_allocs: AtomicU64::new(0),
             total_frees: AtomicU64::new(0),
             total_enomem: AtomicU64::new(0),
+            held_bufs: AtomicU64::new(0),
+            held_bytes: AtomicU64::new(0),
+            hold_limit,
             interval_latencies: Mutex::new(Vec::new()),
             cum_count: AtomicU64::new(0),
             cum_sum: AtomicU64::new(0),
@@ -290,6 +339,17 @@ pub(crate) fn reset_sigint() {
 }
 
 // ── Termination check ───────────────────────────────────────────────────────
+
+/// Compute per-thread hold pool size from global `HoldLimit`.
+#[allow(clippy::cast_possible_truncation)]
+fn per_thread_pool_size(limit: HoldLimit, threads: u32) -> usize {
+    match limit {
+        HoldLimit::Disabled => 0,
+        HoldLimit::Count(n) => (n as usize / threads as usize).max(1),
+        // Bytes mode: per-thread eviction deferred to global byte check.
+        HoldLimit::Bytes(_) => usize::MAX,
+    }
+}
 
 pub(crate) fn should_stop(
     state: &AgingState,
@@ -420,16 +480,12 @@ pub(crate) struct SystemSnapshot {
     slab_kb: Option<u64>,
     compact_stall: Option<u64>,
     high_order_free: Option<u64>,
-    buf_count: usize,
 }
 
 fn take_snapshot() -> SystemSnapshot {
     let meminfo = procfs::read_meminfo().ok();
     let vmstat = procfs::read_vmstat().ok();
     let buddyinfo = procfs::read_buddyinfo().ok();
-    let buf_count = sysfs::snapshot()
-        .ok()
-        .map_or(0, |snap| sysfs::buffer_count(&snap));
 
     SystemSnapshot {
         mem_available_kb: meminfo.as_ref().map(|m| m.mem_available_kb),
@@ -437,7 +493,6 @@ fn take_snapshot() -> SystemSnapshot {
         slab_kb: meminfo.as_ref().and_then(|m| m.slab_kb),
         compact_stall: vmstat.as_ref().and_then(|v| v.compact_stall),
         high_order_free: buddyinfo.as_ref().map(|b| high_order_free_sum(b)),
-        buf_count,
     }
 }
 
@@ -480,9 +535,7 @@ pub(crate) fn reporter_loop(
             state.update_cumulative(stats);
         }
 
-        let buf_count = sysfs::snapshot()
-            .ok()
-            .map_or(0, |snap| sysfs::buffer_count(&snap));
+        let buf_count = state.held_bufs.load(Relaxed);
 
         let trend = state.trend();
 
@@ -498,6 +551,11 @@ pub(crate) fn reporter_loop(
         let avg_us = lat_stats.as_ref().map_or(0, |ls| ls.avg_us);
         let p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us);
         let errs = state.total_errors.load(Relaxed);
+        let held_str = format!(
+            "{}({})",
+            buf_count,
+            crate::cmd::info::format_size(state.held_bytes.load(Relaxed))
+        );
         let trend_str = format!("{trend:.1}x");
         crate::fmt::print_metric(
             heap_label,
@@ -506,12 +564,12 @@ pub(crate) fn reporter_loop(
             &[
                 ("elapsed", &format_args!("{elapsed_s}s")),
                 ("iters", &iters),
-                ("alloc", &interval_allocs),
-                ("free", &interval_frees),
+                ("\u{2191}", &interval_allocs),
+                ("\u{2193}", &interval_frees),
                 ("avg", &format_args!("{avg_us}us")),
                 ("p99", &format_args!("{p99_us}us")),
                 ("err", &errs),
-                ("bufs", &buf_count),
+                ("held", &held_str as &dyn std::fmt::Display),
                 ("trend", &trend_str as &dyn std::fmt::Display),
             ],
         );
@@ -563,6 +621,11 @@ where
     let final_snap = take_snapshot();
 
     let trend_str = format!("{:.1}x", state.trend());
+    let held_str = format!(
+        "{}({})",
+        state.held_bufs.load(Relaxed),
+        crate::cmd::info::format_size(state.held_bytes.load(Relaxed))
+    );
     crate::fmt::print_metric(
         heap_label,
         heap_w,
@@ -570,9 +633,10 @@ where
         &[
             ("elapsed", &format_args!("{}s", elapsed.as_secs())),
             ("iters", &state.total_iters.load(Relaxed)),
-            ("alloc", &state.total_allocs.load(Relaxed)),
-            ("free", &state.total_frees.load(Relaxed)),
+            ("\u{2191}", &state.total_allocs.load(Relaxed)),
+            ("\u{2193}", &state.total_frees.load(Relaxed)),
             ("err", &state.total_errors.load(Relaxed)),
+            ("held", &held_str as &dyn std::fmt::Display),
             ("trend", &trend_str as &dyn std::fmt::Display),
         ],
     );
@@ -632,8 +696,8 @@ fn build_result(
         ),
         cma_free_delta_kb: compute_delta_kb(initial.cma_free_kb, final_snap.cma_free_kb),
         slab_delta_kb: compute_delta_kb(initial.slab_kb, final_snap.slab_kb),
-        buf_count_start: initial.buf_count,
-        buf_count_end: final_snap.buf_count,
+        buf_count_start: 0,
+        buf_count_end: state.held_bufs.load(Relaxed) as usize,
         compaction_stall_delta: match (initial.compact_stall, final_snap.compact_stall) {
             (Some(i), Some(f)) => Some(f.saturating_sub(i)),
             _ => None,
@@ -659,7 +723,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     iterations: Option<u64>,
     report_interval: Duration,
     fuzz_mode: bool,
-    max_hold: usize,
+    hold_limit: HoldLimit,
     seed: Option<u64>,
     thresholds: &AgingThresholds,
     heap_w: usize,
@@ -695,18 +759,33 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         "aging sequence"
     );
 
-    let state = AgingState::new();
+    let per_thread_max = per_thread_pool_size(hold_limit, threads);
+    let state = AgingState::new(hold_limit);
     let heap_label = heaps.join(",");
 
     let (initial_snap, final_snap, elapsed) =
         run_with_reporter(&state, report_interval, &heap_label, heap_w, || {
             if fuzz_mode {
                 fuzz::run_workers(
-                    backend, heaps, threads, &state, duration, iterations, max_hold, seed,
+                    backend,
+                    heaps,
+                    threads,
+                    &state,
+                    duration,
+                    iterations,
+                    per_thread_max,
+                    seed,
                 );
             } else {
                 worker::run_workers(
-                    backend, heaps, size, threads, &state, duration, iterations, max_hold,
+                    backend,
+                    heaps,
+                    size,
+                    threads,
+                    &state,
+                    duration,
+                    iterations,
+                    per_thread_max,
                 );
             }
         });
@@ -730,14 +809,14 @@ mod tests {
 
     #[test]
     fn should_stop_iteration_limit() {
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         state.total_iters.store(10, Relaxed);
         assert!(should_stop(&state, None, Some(10)));
     }
 
     #[test]
     fn should_stop_running_false() {
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         state.running.store(false, Relaxed);
         assert!(should_stop(&state, None, None));
     }
@@ -755,7 +834,7 @@ mod tests {
             Some(10),
             Duration::from_secs(60),
             false,
-            32,
+            HoldLimit::Count(32),
             None,
             &AgingThresholds::default(),
             6,
@@ -782,7 +861,7 @@ mod tests {
             Some(10),
             Duration::from_secs(60),
             true,
-            8,
+            HoldLimit::Count(8),
             Some(42),
             &AgingThresholds::default(),
             6,
@@ -1036,7 +1115,7 @@ mod tests {
             Some(30),
             Duration::from_secs(60),
             false,
-            8,
+            HoldLimit::Count(8),
             None,
             &AgingThresholds::default(),
             6,
@@ -1066,7 +1145,7 @@ mod tests {
             Some(50),
             Duration::from_secs(60),
             false,
-            8,
+            HoldLimit::Count(8),
             None,
             &AgingThresholds::default(),
             6,
@@ -1094,7 +1173,7 @@ mod tests {
             Some(100),
             Duration::from_secs(60),
             true,
-            8,
+            HoldLimit::Count(8),
             Some(42),
             &AgingThresholds::default(),
             6,
@@ -1109,7 +1188,7 @@ mod tests {
     #[test]
     #[allow(clippy::similar_names)]
     fn reporter_updates_cumulative_stats() {
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         // Push latencies and simulate what reporter does
         {
             let mut lat = state.interval_latencies.lock().unwrap();
@@ -1154,7 +1233,7 @@ mod tests {
             Some(30),
             Duration::from_secs(60),
             false,
-            16,
+            HoldLimit::Count(16),
             None,
             &AgingThresholds::default(),
             6,
@@ -1171,7 +1250,7 @@ mod tests {
 
     #[test]
     fn cumulative_stats_accuracy() {
-        let state = AgingState::new();
+        let state = AgingState::new(HoldLimit::Count(1000));
         // Simulate two intervals
         let stats1 = LatencyStats {
             count: 10,
@@ -1202,5 +1281,69 @@ mod tests {
         assert_eq!(cum.p99_us, 190); // peak p99
         assert_eq!(state.first_interval_avg.load(Relaxed), 50);
         assert_eq!(state.final_interval_avg.load(Relaxed), 60);
+    }
+
+    // ── parse_hold_limit tests ──────────────────────────────────────────
+
+    #[test]
+    fn parse_hold_limit_disabled() {
+        assert_eq!(parse_hold_limit("0").unwrap(), HoldLimit::Disabled);
+    }
+
+    #[test]
+    fn parse_hold_limit_count() {
+        assert_eq!(parse_hold_limit("100").unwrap(), HoldLimit::Count(100));
+        assert_eq!(parse_hold_limit("10000").unwrap(), HoldLimit::Count(10000));
+    }
+
+    #[test]
+    fn parse_hold_limit_bytes_short() {
+        assert_eq!(
+            parse_hold_limit("512K").unwrap(),
+            HoldLimit::Bytes(512 * 1024)
+        );
+        assert_eq!(
+            parse_hold_limit("64M").unwrap(),
+            HoldLimit::Bytes(64 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_hold_limit("1G").unwrap(),
+            HoldLimit::Bytes(1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn parse_hold_limit_bytes_long() {
+        assert_eq!(
+            parse_hold_limit("512KiB").unwrap(),
+            HoldLimit::Bytes(512 * 1024)
+        );
+        assert_eq!(
+            parse_hold_limit("64MiB").unwrap(),
+            HoldLimit::Bytes(64 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_hold_limit("2GiB").unwrap(),
+            HoldLimit::Bytes(2 * 1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn parse_hold_limit_case_insensitive() {
+        assert_eq!(
+            parse_hold_limit("512m").unwrap(),
+            HoldLimit::Bytes(512 * 1024 * 1024)
+        );
+        assert_eq!(
+            parse_hold_limit("1gib").unwrap(),
+            HoldLimit::Bytes(1024 * 1024 * 1024)
+        );
+    }
+
+    #[test]
+    fn parse_hold_limit_invalid() {
+        assert!(parse_hold_limit("abc").is_err());
+        assert!(parse_hold_limit("512X").is_err());
+        assert!(parse_hold_limit("").is_err());
     }
 }
