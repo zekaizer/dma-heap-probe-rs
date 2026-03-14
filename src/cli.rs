@@ -97,9 +97,9 @@ pub enum Command {
 
     /// Aging tests (sustained alloc/free with periodic reporting).
     Aging {
-        /// Allocation size in bytes (ignored in fuzz mode).
-        #[arg(long, default_value_t = 4096)]
-        size: u64,
+        /// Allocation size, e.g. 4096, 64K, 1M (ignored in fuzz mode).
+        #[arg(long, default_value = "4096")]
+        size: String,
 
         /// Worker thread count.
         #[arg(long, default_value_t = 1)]
@@ -121,9 +121,9 @@ pub enum Command {
         #[arg(long)]
         fuzz: bool,
 
-        /// Max buffers held simultaneously (0 = disable hold pool).
-        #[arg(long, default_value_t = 32)]
-        max_hold: usize,
+        /// Max hold limit: count (e.g. 1000) or size (e.g. 512M, 1GiB). 0 = disable.
+        #[arg(long, default_value = "32")]
+        max_hold: String,
 
         /// Random seed for fuzz mode (auto if omitted).
         #[arg(long)]

@@ -228,17 +228,20 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
                 leak_threshold_mb: *leak_threshold_mb,
                 max_error_rate: *max_error_rate,
             };
+            let alloc_size = cmd::aging::parse_size(size).map_err(|e| anyhow::anyhow!(e))?;
+            let hold_limit =
+                cmd::aging::parse_hold_limit(max_hold).map_err(|e| anyhow::anyhow!(e))?;
             let start = Instant::now();
             let (sub, err, _aging_result) = cmd::aging::run(
                 backend,
                 heaps,
-                *size,
+                alloc_size,
                 *threads,
                 dur,
                 *iterations,
                 interval,
                 *fuzz,
-                *max_hold,
+                hold_limit,
                 *seed,
                 &thresholds,
                 heap_w,

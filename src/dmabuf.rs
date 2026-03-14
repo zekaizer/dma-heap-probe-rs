@@ -134,6 +134,13 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Explicitly unmap the buffer while keeping the fd open.
+    pub fn unmap(&mut self) {
+        if let Some(addr) = self.mapped.take() {
+            let _ = self.backend.munmap(addr, self.len);
+        }
+    }
 }
 
 impl<D: DmaBufBackend> Drop for DmaBuf<'_, D> {
