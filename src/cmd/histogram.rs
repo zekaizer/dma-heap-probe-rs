@@ -7,6 +7,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cli::HistMode;
 use crate::cmd::perf::{self, percentile};
 use crate::dmabuf::DmaBuf;
+use crate::fmt;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
@@ -23,6 +24,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     warmup: u32,
     mode: HistMode,
     buckets: usize,
+    heap_w: usize,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let bucket_count = if buckets == 0 {
         auto_buckets(samples as usize)
@@ -70,7 +72,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 bucket_count,
             ) {
                 Ok(()) => {
-                    tee_println!("[{heap_name}] [PASS] histogram::{test_name}");
+                    fmt::print_pass(heap_name, heap_w, &format!("histogram::{test_name}"));
                     results.push(SubTestResult {
                         name: test_name,
                         passed: true,
@@ -79,7 +81,12 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 }
                 Err(e) => {
                     let err_str = e.to_string();
-                    tee_println!("[{heap_name}] [FAIL] histogram::{test_name} — {err_str}");
+                    fmt::print_fail(
+                        heap_name,
+                        heap_w,
+                        &format!("histogram::{test_name}"),
+                        &err_str,
+                    );
                     results.push(SubTestResult {
                         name: test_name,
                         passed: false,
@@ -414,7 +421,7 @@ mod tests {
     fn run_alloc_only() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 100, 10, HistMode::AllocOnly, 0);
+        let (results, err) = run(&b, &heaps, &[4096], 100, 10, HistMode::AllocOnly, 0, 6);
         assert!(err.is_none());
         assert_eq!(results.len(), 1);
         assert!(results[0].passed);
@@ -425,7 +432,7 @@ mod tests {
     fn run_full_pipeline() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::FullPipeline, 5);
+        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::FullPipeline, 5, 6);
         assert!(err.is_none());
         assert!(results[0].passed);
     }
@@ -434,7 +441,7 @@ mod tests {
     fn run_close_only() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::CloseOnly, 0);
+        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::CloseOnly, 0, 6);
         assert!(err.is_none());
         assert!(results[0].passed);
     }
@@ -444,7 +451,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let sizes = [4096, 65536, 1_048_576];
-        let (results, err) = run(&b, &heaps, &sizes, 20, 5, HistMode::AllocOnly, 0);
+        let (results, err) = run(&b, &heaps, &sizes, 20, 5, HistMode::AllocOnly, 0, 6);
         assert!(err.is_none());
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.passed));
@@ -454,7 +461,7 @@ mod tests {
     fn run_multi_heap() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string(), "reserved".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 20, 5, HistMode::AllocOnly, 0);
+        let (results, err) = run(&b, &heaps, &[4096], 20, 5, HistMode::AllocOnly, 0, 8);
         assert!(err.is_none());
         assert_eq!(results.len(), 2);
     }

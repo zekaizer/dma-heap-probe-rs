@@ -85,13 +85,7 @@ fn init_tracing(stderr_level: LevelFilter, log_level: cli::LogLevel) {
         .with_filter(stderr_level);
 
     if let Some(file) = log::try_clone_file() {
-        let file_level = match log_level {
-            cli::LogLevel::Error => LevelFilter::ERROR,
-            cli::LogLevel::Warn => LevelFilter::WARN,
-            cli::LogLevel::Info => LevelFilter::INFO,
-            cli::LogLevel::Debug => LevelFilter::DEBUG,
-            cli::LogLevel::Trace => LevelFilter::TRACE,
-        };
+        let file_level: LevelFilter = log_level.into();
         let file_layer = tracing_subscriber::fmt::layer()
             .with_writer(std::sync::Mutex::new(file))
             .with_ansi(false)
@@ -265,8 +259,9 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
             buckets,
         } => {
             let start = Instant::now();
-            let (sub, err) =
-                cmd::histogram::run(backend, heaps, sizes, *samples, *warmup, *mode, *buckets);
+            let (sub, err) = cmd::histogram::run(
+                backend, heaps, sizes, *samples, *warmup, *mode, *buckets, heap_w,
+            );
             Ok(Some(build_single_stage_result(
                 "histogram",
                 heaps,

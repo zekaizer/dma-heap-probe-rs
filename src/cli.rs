@@ -227,6 +227,18 @@ pub enum LogLevel {
     Trace,
 }
 
+impl From<LogLevel> for tracing_subscriber::filter::LevelFilter {
+    fn from(level: LogLevel) -> Self {
+        match level {
+            LogLevel::Error => Self::ERROR,
+            LogLevel::Warn => Self::WARN,
+            LogLevel::Info => Self::INFO,
+            LogLevel::Debug => Self::DEBUG,
+            LogLevel::Trace => Self::TRACE,
+        }
+    }
+}
+
 impl std::fmt::Display for LogLevel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

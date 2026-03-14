@@ -10,21 +10,16 @@ use std::path::Path;
 use std::sync::{Mutex, OnceLock};
 use std::time::SystemTime;
 
-struct LogState {
-    writer: BufWriter<File>,
-}
-
-static LOG_STATE: OnceLock<Mutex<LogState>> = OnceLock::new();
+static LOG_STATE: OnceLock<Mutex<BufWriter<File>>> = OnceLock::new();
 
 /// Initialize the global log file. Must be called at most once.
 pub fn init(path: &Path) -> io::Result<()> {
     let file = File::create(path)?;
-    let state = LogState {
-        writer: BufWriter::new(file),
-    };
-    LOG_STATE.set(Mutex::new(state)).map_err(|_| {
-        io::Error::new(io::ErrorKind::AlreadyExists, "log file already initialized")
-    })?;
+    LOG_STATE
+        .set(Mutex::new(BufWriter::new(file)))
+        .map_err(|_| {
+            io::Error::new(io::ErrorKind::AlreadyExists, "log file already initialized")
+        })?;
     Ok(())
 }
 
@@ -38,25 +33,25 @@ pub fn is_initialized() -> bool {
 pub fn try_clone_file() -> Option<File> {
     let lock = LOG_STATE.get()?;
     let guard = lock.lock().ok()?;
-    guard.writer.get_ref().try_clone().ok()
+    guard.get_ref().try_clone().ok()
 }
 
 /// Write a line directly to the log file.
 #[doc(hidden)]
 pub fn push_line(line: &str) {
     if let Some(lock) = LOG_STATE.get()
-        && let Ok(mut state) = lock.lock()
+        && let Ok(mut w) = lock.lock()
     {
-        let _ = state.writer.write_all(line.as_bytes());
+        let _ = w.write_all(line.as_bytes());
     }
 }
 
 /// Flush the `BufWriter` to ensure all data reaches the file.
 pub fn flush() {
     if let Some(lock) = LOG_STATE.get()
-        && let Ok(mut state) = lock.lock()
+        && let Ok(mut w) = lock.lock()
     {
-        let _ = state.writer.flush();
+        let _ = w.flush();
     }
 }
 
@@ -93,7 +88,7 @@ pub fn walltime_prefix() -> String {
     format!("[{y:04}-{m:02}-{d:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}]")
 }
 
-/// Print to stdout and optionally tee to the log ring buffer with a walltime prefix.
+/// Print to stdout and optionally tee to the log file with a walltime prefix.
 #[macro_export]
 macro_rules! tee_println {
     () => {{
@@ -113,7 +108,7 @@ macro_rules! tee_println {
     }};
 }
 
-/// Print to stdout (no newline) and optionally tee to the log ring buffer with a walltime prefix.
+/// Print to stdout (no newline) and optionally tee to the log file with a walltime prefix.
 #[macro_export]
 macro_rules! tee_print {
     ($($arg:tt)*) => {{
