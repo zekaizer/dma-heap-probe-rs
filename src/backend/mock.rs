@@ -8,6 +8,7 @@ use std::os::unix::io::RawFd;
 use std::sync::{Arc, Mutex};
 
 use nix::errno::Errno;
+use rand::Rng;
 
 use crate::ioctl::dma_buf::{
     DMA_BUF_SYNC_END, DMA_BUF_SYNC_READ, DMA_BUF_SYNC_VALID_FLAGS_MASK, DMA_BUF_SYNC_WRITE,
@@ -26,6 +27,66 @@ const MAX_ALLOC_SIZE: u64 = 1024 * 1024 * 1024;
 /// Starting fd number for mock (avoids collision with real OS fds).
 const MOCK_FD_START: i32 = 1000;
 
+/// Anonymous mmap-backed buffer (demand-paged, zero-filled by OS).
+///
+/// Uses `libc::mmap(MAP_ANONYMOUS)` so physical pages are only allocated
+/// on first access, avoiding the malloc+zero-fill overhead of `Vec<u8>`.
+struct MmapBacking {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl MmapBacking {
+    fn new(len: usize) -> nix::Result<Self> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(Errno::ENOMEM);
+        }
+        Ok(Self {
+            ptr: ptr.cast(),
+            len,
+        })
+    }
+
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl Drop for MmapBacking {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.cast(), self.len);
+        }
+    }
+}
+
+impl std::fmt::Debug for MmapBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmapBacking")
+            .field("ptr", &self.ptr)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+// SAFETY: The mmap'd region is process-wide and the pointer is stable.
+unsafe impl Send for MmapBacking {}
+unsafe impl Sync for MmapBacking {}
+
 #[derive(Debug)]
 enum SyncState {
     None,
@@ -35,9 +96,9 @@ enum SyncState {
 #[derive(Debug)]
 struct BufferState {
     /// Shared buffer data (allows zero-copy dup).
-    data: Arc<[u8]>,
-    /// Current sync state.
-    sync_state: SyncState,
+    data: Arc<MmapBacking>,
+    /// Current sync state (shared across dup'd fds).
+    sync_state: Arc<Mutex<SyncState>>,
 }
 
 /// Simulation configuration for injecting faults into mock operations.
@@ -56,6 +117,9 @@ pub struct SimConfig {
     /// Every Nth mmap, flip the first byte to simulate data corruption.
     /// `0` = disabled. Useful for testing `WriteReadVerify` error detection.
     pub corrupt_every_nth: u64,
+
+    /// Simulated latency per 4K page (nanoseconds). `0` = disabled.
+    pub latency_ns_per_4k: u64,
 }
 
 #[derive(Debug)]
@@ -120,6 +184,18 @@ impl MockBackend {
         }
     }
 
+    /// Create a mock backend with realistic latency simulation.
+    ///
+    /// Uses 1000ns per 4K page with size-proportional delays on alloc, mmap,
+    /// sync, and close. Suitable for production use on non-Android hosts.
+    #[must_use]
+    pub fn new_realistic() -> Self {
+        Self::with_sim(SimConfig {
+            latency_ns_per_4k: 1000,
+            ..Default::default()
+        })
+    }
+
     /// Create a mock backend with simulation/fault injection config.
     #[must_use]
     pub fn with_sim(sim: SimConfig) -> Self {
@@ -149,6 +225,21 @@ fn page_align(size: u64) -> Option<u64> {
     size.checked_next_multiple_of(PAGE_SIZE)
 }
 
+/// Simulate size-proportional latency with +/-30% jitter.
+fn sim_delay(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64) {
+    if ns_per_4k == 0 {
+        return;
+    }
+    let pages = size.div_ceil(4096);
+    let base_ns = pages * ns_per_4k * ratio_num / ratio_den;
+    // +/-30% jitter
+    let jitter = rand::rng().random_range(700u64..=1300);
+    let ns = base_ns * jitter / 1000;
+    if ns > 0 {
+        std::thread::sleep(std::time::Duration::from_nanos(ns));
+    }
+}
+
 impl HeapBackend for MockBackend {
     fn open(&self, name: &str) -> nix::Result<RawFd> {
         if name.is_empty() {
@@ -161,62 +252,69 @@ impl HeapBackend for MockBackend {
     }
 
     fn alloc(&self, heap_fd: RawFd, data: &mut DmaHeapAllocationData) -> nix::Result<()> {
-        let mut state = self.state.lock().unwrap();
+        let aligned_size;
+        let ns_per_4k;
+        {
+            let mut state = self.state.lock().unwrap();
 
-        // Validate heap fd
-        if !state.heap_fds.contains(&heap_fd) {
-            return Err(Errno::EBADF);
-        }
-
-        // Validate allocation parameters
-        if data.len == 0 {
-            return Err(Errno::EINVAL);
-        }
-
-        if data.heap_flags != 0 {
-            return Err(Errno::EINVAL);
-        }
-
-        if data.fd_flags & !DMA_HEAP_VALID_FD_FLAGS != 0 {
-            return Err(Errno::EINVAL);
-        }
-
-        // Check for overflow in page alignment and size limit
-        let aligned_size = page_align(data.len).ok_or(Errno::EINVAL)?;
-        if aligned_size > MAX_ALLOC_SIZE {
-            return Err(Errno::ENOMEM);
-        }
-
-        // Simulation: fault injection
-        if let Some(sim) = state.sim.clone() {
-            state.alloc_count += 1;
-            if sim.fail_every_nth > 0 && state.alloc_count.is_multiple_of(sim.fail_every_nth) {
-                return Err(Errno::EIO);
+            // Validate heap fd
+            if !state.heap_fds.contains(&heap_fd) {
+                return Err(Errno::EBADF);
             }
-            if let Some(threshold) = sim.enomem_threshold
-                && state.buffers.len() >= threshold
-            {
+
+            // Validate allocation parameters
+            if data.len == 0 {
+                return Err(Errno::EINVAL);
+            }
+
+            if data.heap_flags != 0 {
+                return Err(Errno::EINVAL);
+            }
+
+            if data.fd_flags & !DMA_HEAP_VALID_FD_FLAGS != 0 {
+                return Err(Errno::EINVAL);
+            }
+
+            // Check for overflow in page alignment and size limit
+            aligned_size = page_align(data.len).ok_or(Errno::EINVAL)?;
+            if aligned_size > MAX_ALLOC_SIZE {
                 return Err(Errno::ENOMEM);
             }
+
+            // Simulation: fault injection
+            if let Some(sim) = state.sim.clone() {
+                state.alloc_count += 1;
+                if sim.fail_every_nth > 0 && state.alloc_count.is_multiple_of(sim.fail_every_nth) {
+                    return Err(Errno::EIO);
+                }
+                if let Some(threshold) = sim.enomem_threshold
+                    && state.buffers.len() >= threshold
+                {
+                    return Err(Errno::ENOMEM);
+                }
+            }
+
+            // Allocate demand-paged mmap buffer (zero-filled by OS)
+            #[allow(clippy::cast_possible_truncation)]
+            let buf = Arc::new(MmapBacking::new(aligned_size as usize)?);
+
+            let fd = state.alloc_fd();
+            state.buffers.insert(
+                fd,
+                BufferState {
+                    data: buf,
+                    sync_state: Arc::new(Mutex::new(SyncState::None)),
+                },
+            );
+
+            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+            {
+                data.fd = fd as u32;
+            }
+
+            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-
-        // Allocate zero-filled buffer
-        #[allow(clippy::cast_possible_truncation)]
-        let buf: Arc<[u8]> = vec![0u8; aligned_size as usize].into();
-
-        let fd = state.alloc_fd();
-        state.buffers.insert(
-            fd,
-            BufferState {
-                data: buf,
-                sync_state: SyncState::None,
-            },
-        );
-
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-        {
-            data.fd = fd as u32;
-        }
+        sim_delay(aligned_size, ns_per_4k, 1, 1); // alloc: 1.0x
         Ok(())
     }
 
@@ -232,33 +330,39 @@ impl HeapBackend for MockBackend {
 
 impl DmaBufBackend for MockBackend {
     fn mmap(&self, fd: RawFd, len: usize) -> nix::Result<*mut u8> {
-        let mut state = self.state.lock().unwrap();
+        let ptr;
+        let ns_per_4k;
+        {
+            let mut state = self.state.lock().unwrap();
 
-        // Extract corruption config before borrowing buffers.
-        let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
+            // Extract corruption config before borrowing buffers.
+            let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
 
-        let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+            let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
-        if len > buf.data.len() {
-            return Err(Errno::EINVAL);
-        }
+            if len > buf.data.len() {
+                return Err(Errno::EINVAL);
+            }
 
-        // Return raw pointer to the Arc buffer.
-        // Safe for mock: the Arc keeps data alive as long as any fd references it,
-        // and buffer data is immovable once allocated.
-        let ptr = buf.data.as_ptr().cast_mut();
+            // Return raw pointer to the mmap'd buffer.
+            // Safe for mock: the Arc keeps data alive as long as any fd references it,
+            // and the mmap region is stable once allocated.
+            ptr = buf.data.as_ptr();
 
-        // Simulation: data corruption injection
-        if corrupt_nth > 0 {
-            state.mmap_count += 1;
-            if state.mmap_count.is_multiple_of(corrupt_nth) && len > 0 {
-                // SAFETY: ptr is valid for len bytes and we only flip byte 0.
-                unsafe {
-                    *ptr ^= 0xFF;
+            // Simulation: data corruption injection
+            if corrupt_nth > 0 {
+                state.mmap_count += 1;
+                if state.mmap_count.is_multiple_of(corrupt_nth) && len > 0 {
+                    // SAFETY: ptr is valid for len bytes and we only flip byte 0.
+                    unsafe {
+                        *ptr ^= 0xFF;
+                    }
                 }
             }
-        }
 
+            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
+        }
+        sim_delay(len as u64, ns_per_4k, 1, 5); // mmap: 0.2x
         Ok(ptr)
     }
 
@@ -268,27 +372,36 @@ impl DmaBufBackend for MockBackend {
     }
 
     fn sync(&self, fd: RawFd, flags: u64) -> nix::Result<()> {
-        let mut state = self.state.lock().unwrap();
-        let buf = state.buffers.get_mut(&fd).ok_or(Errno::EBADF)?;
+        let buf_size;
+        let ns_per_4k;
+        {
+            let state = self.state.lock().unwrap();
+            let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
-        // Validate flags: only valid bits allowed
-        if flags & !DMA_BUF_SYNC_VALID_FLAGS_MASK != 0 {
-            return Err(Errno::EINVAL);
+            // Validate flags: only valid bits allowed
+            if flags & !DMA_BUF_SYNC_VALID_FLAGS_MASK != 0 {
+                return Err(Errno::EINVAL);
+            }
+
+            // Must specify at least READ or WRITE
+            validate_sync_direction(flags)?;
+
+            buf_size = buf.data.len() as u64;
+
+            let mut sync = buf.sync_state.lock().unwrap();
+            if flags & DMA_BUF_SYNC_END != 0 {
+                // END
+                *sync = SyncState::None;
+            } else {
+                // START
+                *sync = SyncState::Started {
+                    flags: flags & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE),
+                };
+            }
+
+            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-
-        // Must specify at least READ or WRITE
-        validate_sync_direction(flags)?;
-
-        if flags & DMA_BUF_SYNC_END != 0 {
-            // END
-            buf.sync_state = SyncState::None;
-        } else {
-            // START
-            buf.sync_state = SyncState::Started {
-                flags: flags & (DMA_BUF_SYNC_READ | DMA_BUF_SYNC_WRITE),
-            };
-        }
-
+        sim_delay(buf_size, ns_per_4k, 1, 2); // sync: 0.5x
         Ok(())
     }
 
@@ -355,7 +468,7 @@ impl DmaBufBackend for MockBackend {
         let original = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
         let new_buf = BufferState {
             data: Arc::clone(&original.data),
-            sync_state: SyncState::None,
+            sync_state: Arc::clone(&original.sync_state),
         };
 
         let new_fd = state.alloc_fd();
@@ -367,7 +480,11 @@ impl DmaBufBackend for MockBackend {
         let mut state = self.state.lock().unwrap();
 
         // Check buffers first, then sync_file fds
-        if state.buffers.remove(&fd).is_some() {
+        if let Some(removed) = state.buffers.remove(&fd) {
+            let size = removed.data.len() as u64;
+            let ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
+            drop(state);
+            sim_delay(size, ns_per_4k, 3, 10); // free: 0.3x
             return Ok(());
         }
         if state.sync_file_fds.remove(&fd) {

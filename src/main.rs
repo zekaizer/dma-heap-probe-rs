@@ -50,7 +50,7 @@ fn main() {
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
     #[cfg(not(target_os = "android"))]
-    let backend = backend::mock::MockBackend::new();
+    let backend = backend::mock::MockBackend::new_realistic();
     #[cfg(not(target_os = "android"))]
     tracing::warn!("running with mock backend (not Android) — DMA-BUF operations are simulated");
 
