@@ -340,14 +340,17 @@ pub(crate) fn reset_sigint() {
 
 // ── Termination check ───────────────────────────────────────────────────────
 
-/// Compute per-thread hold pool size from global `HoldLimit`.
+/// Compute per-thread hold pool limits: `(max_count, max_bytes)`.
+///
+/// - Count mode: `(count/threads, 0)` — count-based eviction.
+/// - Bytes mode: `(usize::MAX, bytes/threads)` — byte-based eviction.
+/// - Disabled: `(0, 0)`.
 #[allow(clippy::cast_possible_truncation)]
-fn per_thread_pool_size(limit: HoldLimit, threads: u32) -> usize {
+fn per_thread_pool_limits(limit: HoldLimit, threads: u32) -> (usize, u64) {
     match limit {
-        HoldLimit::Disabled => 0,
-        HoldLimit::Count(n) => (n as usize / threads as usize).max(1),
-        // Bytes mode: per-thread eviction deferred to global byte check.
-        HoldLimit::Bytes(_) => usize::MAX,
+        HoldLimit::Disabled => (0, 0),
+        HoldLimit::Count(n) => ((n as usize / threads as usize).max(1), 0),
+        HoldLimit::Bytes(max) => (usize::MAX, max / u64::from(threads)),
     }
 }
 
@@ -759,7 +762,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         "aging sequence"
     );
 
-    let per_thread_max = per_thread_pool_size(hold_limit, threads);
+    let (pt_max_count, pt_max_bytes) = per_thread_pool_limits(hold_limit, threads);
     let state = AgingState::new(hold_limit);
     let heap_label = heaps.join(",");
 
@@ -773,7 +776,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     &state,
                     duration,
                     iterations,
-                    per_thread_max,
+                    pt_max_count,
+                    pt_max_bytes,
                     seed,
                 );
             } else {
@@ -785,7 +789,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     &state,
                     duration,
                     iterations,
-                    per_thread_max,
+                    pt_max_count,
+                    pt_max_bytes,
                 );
             }
         });
