@@ -27,6 +27,66 @@ const MAX_ALLOC_SIZE: u64 = 1024 * 1024 * 1024;
 /// Starting fd number for mock (avoids collision with real OS fds).
 const MOCK_FD_START: i32 = 1000;
 
+/// Anonymous mmap-backed buffer (demand-paged, zero-filled by OS).
+///
+/// Uses `libc::mmap(MAP_ANONYMOUS)` so physical pages are only allocated
+/// on first access, avoiding the malloc+zero-fill overhead of `Vec<u8>`.
+struct MmapBacking {
+    ptr: *mut u8,
+    len: usize,
+}
+
+impl MmapBacking {
+    fn new(len: usize) -> nix::Result<Self> {
+        let ptr = unsafe {
+            libc::mmap(
+                std::ptr::null_mut(),
+                len,
+                libc::PROT_READ | libc::PROT_WRITE,
+                libc::MAP_ANONYMOUS | libc::MAP_PRIVATE,
+                -1,
+                0,
+            )
+        };
+        if ptr == libc::MAP_FAILED {
+            return Err(Errno::ENOMEM);
+        }
+        Ok(Self {
+            ptr: ptr.cast(),
+            len,
+        })
+    }
+
+    fn as_ptr(&self) -> *mut u8 {
+        self.ptr
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+}
+
+impl Drop for MmapBacking {
+    fn drop(&mut self) {
+        unsafe {
+            libc::munmap(self.ptr.cast(), self.len);
+        }
+    }
+}
+
+impl std::fmt::Debug for MmapBacking {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MmapBacking")
+            .field("ptr", &self.ptr)
+            .field("len", &self.len)
+            .finish()
+    }
+}
+
+// SAFETY: The mmap'd region is process-wide and the pointer is stable.
+unsafe impl Send for MmapBacking {}
+unsafe impl Sync for MmapBacking {}
+
 #[derive(Debug)]
 enum SyncState {
     None,
@@ -36,7 +96,7 @@ enum SyncState {
 #[derive(Debug)]
 struct BufferState {
     /// Shared buffer data (allows zero-copy dup).
-    data: Arc<[u8]>,
+    data: Arc<MmapBacking>,
     /// Current sync state (shared across dup'd fds).
     sync_state: Arc<Mutex<SyncState>>,
 }
@@ -234,9 +294,9 @@ impl HeapBackend for MockBackend {
                 }
             }
 
-            // Allocate zero-filled buffer
+            // Allocate demand-paged mmap buffer (zero-filled by OS)
             #[allow(clippy::cast_possible_truncation)]
-            let buf: Arc<[u8]> = vec![0u8; aligned_size as usize].into();
+            let buf = Arc::new(MmapBacking::new(aligned_size as usize)?);
 
             let fd = state.alloc_fd();
             state.buffers.insert(
@@ -284,10 +344,10 @@ impl DmaBufBackend for MockBackend {
                 return Err(Errno::EINVAL);
             }
 
-            // Return raw pointer to the Arc buffer.
+            // Return raw pointer to the mmap'd buffer.
             // Safe for mock: the Arc keeps data alive as long as any fd references it,
-            // and buffer data is immovable once allocated.
-            ptr = buf.data.as_ptr().cast_mut();
+            // and the mmap region is stable once allocated.
+            ptr = buf.data.as_ptr();
 
             // Simulation: data corruption injection
             if corrupt_nth > 0 {
