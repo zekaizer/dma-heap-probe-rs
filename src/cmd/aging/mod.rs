@@ -87,7 +87,7 @@ pub struct AgingResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub latency: Option<LatencyStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub first_interval_avg_us: Option<u64>,
+    pub baseline_avg_us: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub final_interval_avg_us: Option<u64>,
     pub peak_p99_us: u64,
@@ -127,6 +127,9 @@ pub struct AgingThresholds {
     /// Maximum non-ENOMEM error rate (fraction, e.g. 0.01 = 1%).
     pub max_error_rate: f64,
 }
+
+/// Number of initial report intervals averaged for the trend baseline.
+const BASELINE_INTERVALS: u64 = 5;
 
 impl Default for AgingThresholds {
     fn default() -> Self {
@@ -205,10 +208,10 @@ pub(crate) struct AgingState {
     pub cum_sum: AtomicU64,
     pub cum_max: AtomicU64,
     pub peak_p99: AtomicU64,
-    pub first_interval_avg: AtomicU64,
+    pub baseline_sum: AtomicU64,
+    pub baseline_count: AtomicU64,
+    pub baseline_ready: AtomicBool,
     pub final_interval_avg: AtomicU64,
-    /// Sentinel: 0 means `first_interval_avg` not yet set.
-    pub first_interval_set: AtomicBool,
 }
 
 impl AgingState {
@@ -228,9 +231,10 @@ impl AgingState {
             cum_sum: AtomicU64::new(0),
             cum_max: AtomicU64::new(0),
             peak_p99: AtomicU64::new(0),
-            first_interval_avg: AtomicU64::new(0),
+            baseline_sum: AtomicU64::new(0),
+            baseline_count: AtomicU64::new(0),
+            baseline_ready: AtomicBool::new(false),
             final_interval_avg: AtomicU64::new(0),
-            first_interval_set: AtomicBool::new(false),
         }
     }
 
@@ -262,10 +266,19 @@ impl AgingState {
                 Err(actual) => cur_p99 = actual,
             }
         }
-        // Set first interval avg once.
-        if !self.first_interval_set.load(Relaxed) {
-            self.first_interval_avg.store(stats.avg_us, Relaxed);
-            self.first_interval_set.store(true, Relaxed);
+        // Accumulate baseline from first BASELINE_INTERVALS intervals.
+        if !self.baseline_ready.load(Relaxed) {
+            self.baseline_sum.fetch_add(stats.avg_us, Relaxed);
+            let count = self.baseline_count.fetch_add(1, Relaxed) + 1;
+            if count >= BASELINE_INTERVALS {
+                self.baseline_ready.store(true, Relaxed);
+                let avg = self.baseline_sum.load(Relaxed) / count;
+                tracing::info!(
+                    baseline_avg_us = avg,
+                    intervals = count,
+                    "trend baseline established"
+                );
+            }
         }
         // Always update final interval avg.
         self.final_interval_avg.store(stats.avg_us, Relaxed);
@@ -294,19 +307,20 @@ impl AgingState {
         })
     }
 
-    /// Compute latency trend ratio (`final_avg` / `first_avg`).
+    /// Compute latency trend ratio (`final_avg` / `baseline_avg`).
     fn trend(&self) -> f64 {
-        if !self.first_interval_set.load(Relaxed) {
+        if !self.baseline_ready.load(Relaxed) {
             return 1.0;
         }
-        let first = self.first_interval_avg.load(Relaxed);
+        let sum = self.baseline_sum.load(Relaxed);
+        let count = self.baseline_count.load(Relaxed);
         let final_avg = self.final_interval_avg.load(Relaxed);
-        if first == 0 {
+        if count == 0 || sum == 0 {
             return 1.0;
         }
         #[allow(clippy::cast_precision_loss)]
         {
-            final_avg as f64 / first as f64
+            final_avg as f64 / (sum as f64 / count as f64)
         }
     }
 }
@@ -510,6 +524,7 @@ pub(crate) fn reporter_loop(
     _initial_mem_available_kb: Option<u64>,
     heap_label: &str,
     heap_w: usize,
+    fuzz_mode: bool,
 ) {
     let mut prev_allocs: u64 = 0;
     let mut prev_frees: u64 = 0;
@@ -551,8 +566,6 @@ pub(crate) fn reporter_loop(
 
         let elapsed_s = start_time.elapsed().as_secs();
         let iters = state.total_iters.load(Relaxed);
-        let avg_us = lat_stats.as_ref().map_or(0, |ls| ls.avg_us);
-        let p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us);
         let errs = state.total_errors.load(Relaxed);
         let held_str = format!(
             "{}({})",
@@ -560,22 +573,41 @@ pub(crate) fn reporter_loop(
             crate::cmd::info::format_size(state.held_bytes.load(Relaxed))
         );
         let trend_str = format!("{trend:.1}x");
-        crate::fmt::print_metric(
-            heap_label,
-            heap_w,
-            "aging::progress",
-            &[
-                ("elapsed", &format_args!("{elapsed_s}s")),
-                ("iters", &iters),
-                ("\u{2191}", &interval_allocs),
-                ("\u{2193}", &interval_frees),
-                ("avg", &format_args!("{avg_us}us")),
-                ("p99", &format_args!("{p99_us}us")),
-                ("err", &errs),
-                ("held", &held_str as &dyn std::fmt::Display),
-                ("trend", &trend_str as &dyn std::fmt::Display),
-            ],
-        );
+        if fuzz_mode {
+            crate::fmt::print_metric(
+                heap_label,
+                heap_w,
+                "aging::progress",
+                &[
+                    ("elapsed", &format_args!("{elapsed_s}s")),
+                    ("iters", &iters),
+                    ("\u{2191}", &interval_allocs),
+                    ("\u{2193}", &interval_frees),
+                    ("err", &errs),
+                    ("held", &held_str as &dyn std::fmt::Display),
+                    ("trend", &trend_str as &dyn std::fmt::Display),
+                ],
+            );
+        } else {
+            let avg_us = lat_stats.as_ref().map_or(0, |ls| ls.avg_us);
+            let p99_us = lat_stats.as_ref().map_or(0, |ls| ls.p99_us);
+            crate::fmt::print_metric(
+                heap_label,
+                heap_w,
+                "aging::progress",
+                &[
+                    ("elapsed", &format_args!("{elapsed_s}s")),
+                    ("iters", &iters),
+                    ("\u{2191}", &interval_allocs),
+                    ("\u{2193}", &interval_frees),
+                    ("avg", &format_args!("{avg_us}us")),
+                    ("p99", &format_args!("{p99_us}us")),
+                    ("err", &errs),
+                    ("held", &held_str as &dyn std::fmt::Display),
+                    ("trend", &trend_str as &dyn std::fmt::Display),
+                ],
+            );
+        }
     }
 }
 
@@ -588,6 +620,7 @@ pub(crate) fn run_with_reporter<F>(
     report_interval: Duration,
     heap_label: &str,
     heap_w: usize,
+    fuzz_mode: bool,
     worker_fn: F,
 ) -> (SystemSnapshot, SystemSnapshot, Duration)
 where
@@ -608,6 +641,7 @@ where
                 initial_mem,
                 heap_label,
                 heap_w,
+                fuzz_mode,
             );
         });
         worker_fn();
@@ -667,12 +701,14 @@ fn build_result(
         None
     };
 
-    let first_avg = if state.first_interval_set.load(Relaxed) {
-        Some(state.first_interval_avg.load(Relaxed))
+    let baseline_avg = if state.baseline_ready.load(Relaxed) {
+        let sum = state.baseline_sum.load(Relaxed);
+        let count = state.baseline_count.load(Relaxed);
+        if count > 0 { Some(sum / count) } else { None }
     } else {
         None
     };
-    let final_avg = if state.first_interval_set.load(Relaxed) {
+    let final_avg = if state.baseline_ready.load(Relaxed) {
         Some(state.final_interval_avg.load(Relaxed))
     } else {
         None
@@ -689,7 +725,7 @@ fn build_result(
         enomem_count: state.total_enomem.load(Relaxed),
         throughput_iters_per_sec: throughput,
         latency: state.cumulative_stats(),
-        first_interval_avg_us: first_avg,
+        baseline_avg_us: baseline_avg,
         final_interval_avg_us: final_avg,
         peak_p99_us: state.peak_p99.load(Relaxed),
         trend: state.trend(),
@@ -766,8 +802,13 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let state = AgingState::new(hold_limit);
     let heap_label = heaps.join(",");
 
-    let (initial_snap, final_snap, elapsed) =
-        run_with_reporter(&state, report_interval, &heap_label, heap_w, || {
+    let (initial_snap, final_snap, elapsed) = run_with_reporter(
+        &state,
+        report_interval,
+        &heap_label,
+        heap_w,
+        fuzz_mode,
+        || {
             if fuzz_mode {
                 fuzz::run_workers(
                     backend,
@@ -793,7 +834,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     pt_max_bytes,
                 );
             }
-        });
+        },
+    );
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     let passed = evaluate_thresholds(&aging_result, thresholds);
@@ -899,7 +941,7 @@ mod tests {
                 p95_us: 200,
                 p99_us: 400,
             }),
-            first_interval_avg_us: Some(40),
+            baseline_avg_us: Some(40),
             final_interval_avg_us: Some(55),
             peak_p99_us: 400,
             trend: 1.375,
@@ -932,7 +974,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: Some(10),
+            baseline_avg_us: Some(10),
             final_interval_avg_us: Some(150),
             peak_p99_us: 200,
             trend: 15.0,
@@ -965,7 +1007,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: Some(10),
+            baseline_avg_us: Some(10),
             final_interval_avg_us: Some(20),
             peak_p99_us: 30,
             trend: 2.0,
@@ -994,7 +1036,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: None,
+            baseline_avg_us: None,
             final_interval_avg_us: None,
             peak_p99_us: 0,
             trend: 1.0,
@@ -1023,7 +1065,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: None,
+            baseline_avg_us: None,
             final_interval_avg_us: None,
             peak_p99_us: 0,
             trend: 1.0,
@@ -1056,7 +1098,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: None,
+            baseline_avg_us: None,
             final_interval_avg_us: None,
             peak_p99_us: 0,
             trend: 1.0,
@@ -1086,7 +1128,7 @@ mod tests {
             enomem_count: 0,
             throughput_iters_per_sec: None,
             latency: None,
-            first_interval_avg_us: None,
+            baseline_avg_us: None,
             final_interval_avg_us: None,
             peak_p99_us: 0,
             trend: 1.0,
@@ -1203,8 +1245,9 @@ mod tests {
         let stats = perf::compute_stats(&latencies).unwrap();
         state.update_cumulative(&stats);
 
-        assert!(state.first_interval_set.load(Relaxed));
-        assert_eq!(state.first_interval_avg.load(Relaxed), stats.avg_us);
+        assert!(!state.baseline_ready.load(Relaxed)); // need 5 intervals
+        assert_eq!(state.baseline_count.load(Relaxed), 1);
+        assert_eq!(state.baseline_sum.load(Relaxed), stats.avg_us);
         assert_eq!(state.peak_p99.load(Relaxed), stats.p99_us);
 
         // Second interval with higher p99
@@ -1216,8 +1259,11 @@ mod tests {
         let stats2 = perf::compute_stats(&latencies2).unwrap();
         state.update_cumulative(&stats2);
 
-        // first_interval_avg should not change
-        assert_eq!(state.first_interval_avg.load(Relaxed), stats.avg_us);
+        // baseline_sum should accumulate both intervals
+        assert_eq!(
+            state.baseline_sum.load(Relaxed),
+            stats.avg_us + stats2.avg_us
+        );
         // final_interval_avg should be updated
         assert_eq!(state.final_interval_avg.load(Relaxed), stats2.avg_us);
         // peak_p99 should be the higher one
@@ -1284,7 +1330,7 @@ mod tests {
         assert_eq!(cum.avg_us, 56);
         assert_eq!(cum.max_us, 200);
         assert_eq!(cum.p99_us, 190); // peak p99
-        assert_eq!(state.first_interval_avg.load(Relaxed), 50);
+        assert_eq!(state.baseline_sum.load(Relaxed), 50 + 60); // 2 intervals
         assert_eq!(state.final_interval_avg.load(Relaxed), 60);
     }
 
