@@ -10,6 +10,8 @@ mod heap;
 #[allow(dead_code)]
 mod ioctl;
 #[allow(dead_code)]
+mod log;
+#[allow(dead_code)]
 mod probe;
 #[allow(dead_code)]
 mod procfs;
@@ -23,11 +25,19 @@ use std::time::Instant;
 
 use clap::Parser;
 use tracing_subscriber::filter::LevelFilter;
+use tracing_subscriber::prelude::*;
 
 use cli::{Cli, Command};
 
 fn main() {
     let cli = Cli::parse();
+
+    // Initialize log file (tee output) if --log is specified.
+    if let Some(ref path) = cli.log
+        && let Err(e) = log::init(path)
+    {
+        eprintln!("warning: failed to open log file: {e}");
+    }
 
     let level = match cli.verbose {
         0 => LevelFilter::WARN,
@@ -35,7 +45,7 @@ fn main() {
         2 => LevelFilter::DEBUG,
         _ => LevelFilter::TRACE,
     };
-    tracing_subscriber::fmt().with_max_level(level).init();
+    init_tracing(level, cli.log_level);
 
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
@@ -52,15 +62,40 @@ fn main() {
             {
                 tracing::error!(error = %e, "failed to write JSON output");
             }
+            log::flush();
             if !result.all_passed() {
                 std::process::exit(1);
             }
         }
-        Ok(None) => {}
+        Ok(None) => {
+            log::flush();
+        }
         Err(e) => {
             tracing::error!(error = %e, "command failed");
+            log::flush();
             std::process::exit(1);
         }
+    }
+}
+
+/// Initialize tracing subscriber with stderr layer and optional log file layer.
+fn init_tracing(stderr_level: LevelFilter, log_level: cli::LogLevel) {
+    let stderr_layer = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(stderr_level);
+
+    if let Some(file) = log::try_clone_file() {
+        let file_level: LevelFilter = log_level.into();
+        let file_layer = tracing_subscriber::fmt::layer()
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .with_filter(file_level);
+        tracing_subscriber::registry()
+            .with(stderr_layer)
+            .with(file_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry().with(stderr_layer).init();
     }
 }
 
@@ -224,8 +259,9 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
             buckets,
         } => {
             let start = Instant::now();
-            let (sub, err) =
-                cmd::histogram::run(backend, heaps, sizes, *samples, *warmup, *mode, *buckets);
+            let (sub, err) = cmd::histogram::run(
+                backend, heaps, sizes, *samples, *warmup, *mode, *buckets, heap_w,
+            );
             Ok(Some(build_single_stage_result(
                 "histogram",
                 heaps,
@@ -332,7 +368,7 @@ fn run_sysfs_dump() {
     match sysfs::snapshot() {
         Ok(snap) => {
             if let Ok(json) = serde_json::to_string_pretty(&snap) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "sysfs snapshot unavailable"),
@@ -341,7 +377,7 @@ fn run_sysfs_dump() {
     match procfs::read_meminfo() {
         Ok(info) => {
             if let Ok(json) = serde_json::to_string_pretty(&info) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "meminfo unavailable"),
@@ -350,7 +386,7 @@ fn run_sysfs_dump() {
     match procfs::read_vmstat() {
         Ok(stat) => {
             if let Ok(json) = serde_json::to_string_pretty(&stat) {
-                println!("{json}");
+                tee_println!("{json}");
             }
         }
         Err(e) => tracing::warn!(error = %e, "vmstat unavailable"),

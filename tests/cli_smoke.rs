@@ -257,3 +257,61 @@ fn global_options_after_subcommand() {
         .assert()
         .success();
 }
+
+// ---------------------------------------------------------------------------
+// E. Log file output
+// ---------------------------------------------------------------------------
+
+#[test]
+fn log_file_captures_output() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    dhp()
+        .args([
+            "--log",
+            tmp.path().to_str().unwrap(),
+            "basic",
+            "--sizes",
+            "4096",
+            "--repeat",
+            "2",
+        ])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("PASS"));
+
+    let content = std::fs::read_to_string(tmp.path()).expect("read log file");
+    assert!(
+        content.contains("PASS"),
+        "log file should contain PASS lines"
+    );
+    // Walltime prefix check
+    assert!(
+        content.contains("[20"),
+        "log file lines should have walltime prefix"
+    );
+}
+
+#[test]
+fn log_file_with_log_level() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    dhp()
+        .args([
+            "--log",
+            tmp.path().to_str().unwrap(),
+            "--log-level",
+            "debug",
+            "basic",
+            "--sizes",
+            "4096",
+            "--repeat",
+            "2",
+        ])
+        .assert()
+        .success();
+
+    let content = std::fs::read_to_string(tmp.path()).expect("read log file");
+    assert!(
+        content.contains("PASS"),
+        "log file should contain tee output"
+    );
+}
