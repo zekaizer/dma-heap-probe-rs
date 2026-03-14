@@ -7,6 +7,7 @@
 pub(crate) mod fuzz;
 pub(crate) mod worker;
 
+use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::time::{Duration, Instant};
@@ -20,6 +21,7 @@ use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cmd::perf::{self, LatencyStats};
 use crate::procfs;
 use crate::runner::{self, SubTestResult};
+use crate::tee_println;
 
 // ── Hold limit ─────────────────────────────────────────────────────────────
 
@@ -115,8 +117,54 @@ pub struct AgingResult {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub high_order_free_delta: Option<i64>,
 
+    // Per-heap breakdown
+    pub heap_results: Vec<HeapResult>,
+    pub drain_bufs: u64,
+    pub drain_bytes: u64,
+
     // Verdict
     pub warnings: Vec<String>,
+}
+
+/// Per-operation latency result (serialized from `OpLatency` atomics).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct OpResult {
+    pub count: u64,
+    pub avg_us: u64,
+    pub per_4k_us: u64,
+    pub min_us: u64,
+    pub max_us: u64,
+    pub p50_us: u64,
+    pub p99_us: u64,
+}
+
+impl OpResult {
+    fn from_op_latency(op: &OpLatency) -> Self {
+        let min_raw = op.min_us.load(Relaxed);
+        Self {
+            count: op.count.load(Relaxed),
+            avg_us: op.avg_us(),
+            per_4k_us: op.per_4k_us(),
+            min_us: if min_raw == u64::MAX { 0 } else { min_raw },
+            max_us: op.max_us.load(Relaxed),
+            p50_us: op.percentile(50.0),
+            p99_us: op.percentile(99.0),
+        }
+    }
+}
+
+/// Per-heap allocation and latency result (serialized from `HeapCounters`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HeapResult {
+    pub name: String,
+    pub allocs: u64,
+    pub frees: u64,
+    pub errors: u64,
+    pub enomem: u64,
+    pub alloc_lat: OpResult,
+    pub mmap_lat: OpResult,
+    pub sync_lat: OpResult,
+    pub free_lat: OpResult,
 }
 
 // ── Thresholds ──────────────────────────────────────────────────────────────
@@ -195,11 +243,9 @@ pub(crate) fn evaluate_thresholds(result: &AgingResult, thresholds: &AgingThresh
 // ── Per-heap operation latency ──────────────────────────────────────────────
 
 /// Log-scale bucket upper bounds (microseconds).
-#[allow(dead_code)]
 const BUCKET_BOUNDS: [u64; 7] = [1, 10, 100, 1_000, 10_000, 100_000, 1_000_000];
 
 /// Streaming latency statistics with log-scale histogram for approximate percentiles.
-#[allow(dead_code)]
 pub(crate) struct OpLatency {
     pub count: AtomicU64,
     pub sum_us: AtomicU64,
@@ -211,7 +257,6 @@ pub(crate) struct OpLatency {
     pub buckets: [AtomicU64; 8],
 }
 
-#[allow(dead_code)]
 impl OpLatency {
     fn new() -> Self {
         Self {
@@ -301,7 +346,6 @@ impl OpLatency {
 }
 
 /// Per-heap allocation and latency counters.
-#[allow(dead_code)]
 pub(crate) struct HeapCounters {
     pub name: String,
     pub allocs: AtomicU64,
@@ -344,7 +388,6 @@ pub(crate) struct AgingState {
     pub held_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
     pub interval_latencies: Mutex<Vec<u64>>,
-    #[allow(dead_code)]
     pub heap_counters: Vec<HeapCounters>,
 
     // Cumulative latency running stats (updated by reporter)
@@ -862,6 +905,22 @@ fn build_result(
         None
     };
 
+    let heap_results: Vec<HeapResult> = state
+        .heap_counters
+        .iter()
+        .map(|hc| HeapResult {
+            name: hc.name.clone(),
+            allocs: hc.allocs.load(Relaxed),
+            frees: hc.frees.load(Relaxed),
+            errors: hc.errors.load(Relaxed),
+            enomem: hc.enomem.load(Relaxed),
+            alloc_lat: OpResult::from_op_latency(&hc.alloc_lat),
+            mmap_lat: OpResult::from_op_latency(&hc.mmap_lat),
+            sync_lat: OpResult::from_op_latency(&hc.sync_lat),
+            free_lat: OpResult::from_op_latency(&hc.free_lat),
+        })
+        .collect();
+
     AgingResult {
         mode: mode.to_string(),
         elapsed_secs,
@@ -893,8 +952,229 @@ fn build_result(
             initial.high_order_free,
             final_snap.high_order_free,
         ),
+        heap_results,
+        drain_bufs: 0,
+        drain_bytes: 0,
         warnings: Vec::new(),
     }
+}
+
+// ── Summary printer ──────────────────────────────────────────────────────────
+
+/// Format a number with thousands separators (e.g. `1,234,567`).
+fn fmt_num(n: u64) -> String {
+    let s = n.to_string();
+    let mut result = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i).is_multiple_of(3) {
+            result.push(',');
+        }
+        result.push(c);
+    }
+    result
+}
+
+/// Format elapsed seconds as human-readable duration.
+fn fmt_elapsed(secs: u64) -> String {
+    if secs >= 60 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{secs}s")
+    }
+}
+
+/// Format an optional signed delta value with a sign prefix.
+fn fmt_delta(val: Option<i64>, unit: &str) -> String {
+    match val {
+        Some(v) => {
+            let sign = if v >= 0 { "+" } else { "" };
+            format!("{sign}{v} {unit}")
+        }
+        None => "-".to_string(),
+    }
+}
+
+/// Print a right-aligned table with 4-space indent. `headers` and each row
+/// must have the same number of columns.
+fn print_aligned_table(headers: &[&str], rows: &[Vec<String>]) {
+    let ncols = headers.len();
+    let mut col_w: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (i, cell) in row.iter().enumerate() {
+            if i < ncols {
+                col_w[i] = col_w[i].max(cell.len());
+            }
+        }
+    }
+    let mut hdr = String::from("    ");
+    for (i, h) in headers.iter().enumerate() {
+        if i > 0 {
+            hdr.push_str("  ");
+        }
+        let _ = write!(hdr, "{h:>w$}", w = col_w[i]);
+    }
+    tee_println!("{hdr}");
+    for row in rows {
+        let mut line = String::from("    ");
+        for (i, cell) in row.iter().enumerate() {
+            if i > 0 {
+                line.push_str("  ");
+            }
+            let w = if i < ncols { col_w[i] } else { cell.len() };
+            let _ = write!(line, "{cell:>w$}");
+        }
+        tee_println!("{line}");
+    }
+}
+
+/// Print per-heap normalized latency table.
+fn print_per_heap_table(result: &AgingResult) {
+    if result.heap_results.is_empty() {
+        return;
+    }
+    tee_println!("  Per-heap (lat normalized per 4K)");
+    let headers = [
+        "heap", "alloc", "free", "ENOMEM", "alloc/4K", "mmap/4K", "sync/4K", "free/4K",
+    ];
+    let rows: Vec<Vec<String>> = result
+        .heap_results
+        .iter()
+        .map(|h| {
+            vec![
+                h.name.clone(),
+                fmt_num(h.allocs),
+                fmt_num(h.frees),
+                fmt_num(h.enomem),
+                format!("{} us", h.alloc_lat.per_4k_us),
+                format!("{} us", h.mmap_lat.per_4k_us),
+                format!("{} us", h.sync_lat.per_4k_us),
+                format!("{} us", h.free_lat.per_4k_us),
+            ]
+        })
+        .collect();
+    print_aligned_table(&headers, &rows);
+    tee_println!();
+}
+
+/// Print per-op latency detail for each heap (normal mode only).
+fn print_per_op_latency(result: &AgingResult) {
+    for hr in &result.heap_results {
+        tee_println!("  Latency per-op: {}", hr.name);
+        let headers = ["", "avg", "p50", "p99", "max"];
+        let rows: Vec<Vec<String>> = [
+            ("alloc", &hr.alloc_lat),
+            ("mmap", &hr.mmap_lat),
+            ("sync", &hr.sync_lat),
+            ("free", &hr.free_lat),
+        ]
+        .iter()
+        .map(|(name, op)| {
+            vec![
+                (*name).into(),
+                format!("{} us", op.avg_us),
+                format!("{} us", op.p50_us),
+                format!("{} us", op.p99_us),
+                format!("{} us", op.max_us),
+            ]
+        })
+        .collect();
+        print_aligned_table(&headers, &rows);
+        tee_println!();
+    }
+}
+
+/// Print memory delta section (skipped on host where procfs is unavailable).
+fn print_memory_section(result: &AgingResult) {
+    let has_mem = result.mem_available_delta_mb.is_some()
+        || result.cma_free_delta_kb.is_some()
+        || result.slab_delta_kb.is_some()
+        || result.compaction_stall_delta.is_some();
+    if !has_mem {
+        return;
+    }
+    tee_println!("  Memory (start -> end delta)");
+    tee_println!(
+        "    available : {}",
+        fmt_delta(result.mem_available_delta_mb, "MB")
+    );
+    tee_println!(
+        "    CMA free  : {}",
+        fmt_delta(result.cma_free_delta_kb, "KB")
+    );
+    tee_println!("    slab      : {}", fmt_delta(result.slab_delta_kb, "KB"));
+    #[allow(clippy::cast_possible_wrap)]
+    let compact_delta = result.compaction_stall_delta.map(|v| v as i64);
+    tee_println!("    compact   : {}", fmt_delta(compact_delta, "stalls"));
+    tee_println!();
+}
+
+/// Print aging test summary to stdout (and tee to log file if enabled).
+#[allow(clippy::cast_precision_loss)]
+fn print_summary(result: &AgingResult, fuzz_mode: bool) {
+    let sep = "\u{2500}".repeat(61);
+    tee_println!();
+    tee_println!("\u{2500}\u{2500} aging summary {sep}");
+
+    // Run info
+    let heap_names: Vec<&str> = result
+        .heap_results
+        .iter()
+        .map(|h| h.name.as_str())
+        .collect();
+    let heap_list = if heap_names.is_empty() {
+        result.mode.clone()
+    } else {
+        heap_names.join(", ")
+    };
+    let throughput_str = result
+        .throughput_iters_per_sec
+        .map_or_else(|| "-".to_string(), |t| format!("{t:.0}"));
+
+    tee_println!(
+        "  mode        : {} x {} threads",
+        result.mode,
+        result.threads
+    );
+    tee_println!("  heaps       : {heap_list}");
+    tee_println!("  elapsed     : {}", fmt_elapsed(result.elapsed_secs));
+    tee_println!(
+        "  iters       : {} ({}/s)",
+        fmt_num(result.total_iters),
+        throughput_str
+    );
+    tee_println!(
+        "  alloc/free  : {} / {}",
+        fmt_num(result.total_allocs),
+        fmt_num(result.total_frees)
+    );
+    tee_println!();
+
+    // Trend
+    tee_println!("  Trend");
+    let baseline_str = result
+        .baseline_avg_us
+        .map_or_else(|| "-".to_string(), |v| format!("{v} us"));
+    let baseline_detail = if result.baseline_avg_us.is_some() {
+        format!(" ({BASELINE_INTERVALS}-interval avg)")
+    } else {
+        String::new()
+    };
+    tee_println!("    baseline  : {baseline_str}{baseline_detail}");
+    let final_str = result
+        .final_interval_avg_us
+        .map_or_else(|| "-".to_string(), |v| format!("{v} us"));
+    tee_println!("    final     : {final_str}");
+    tee_println!("    trend     : {:.1}x", result.trend);
+    tee_println!("    peak p99  : {} us", fmt_num(result.peak_p99_us));
+    tee_println!();
+
+    print_per_heap_table(result);
+    if !fuzz_mode {
+        print_per_op_latency(result);
+    }
+    print_memory_section(result);
+
+    tee_println!("{}", "\u{2500}".repeat(76));
 }
 
 // ── Public entry point ──────────────────────────────────────────────────────
@@ -986,6 +1266,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     );
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
+    print_summary(&aging_result, fuzz_mode);
     let passed = evaluate_thresholds(&aging_result, thresholds);
     let (sub_results, err) = if passed {
         runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))])
@@ -1100,6 +1381,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         let json = serde_json::to_string(&result).unwrap();
@@ -1133,6 +1417,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         let thresholds = AgingThresholds {
@@ -1166,6 +1453,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
@@ -1195,6 +1485,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         assert!(!evaluate_thresholds(&result, &AgingThresholds::default()));
@@ -1224,6 +1517,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         let thresholds = AgingThresholds {
@@ -1257,6 +1553,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         // leak_threshold_mb = 0 means disabled
@@ -1287,6 +1586,9 @@ mod tests {
             buf_count_end: 0,
             compaction_stall_delta: None,
             high_order_free_delta: None,
+            heap_results: vec![],
+            drain_bufs: 0,
+            drain_bytes: 0,
             warnings: vec![],
         };
         assert!(evaluate_thresholds(&result, &AgingThresholds::default()));
