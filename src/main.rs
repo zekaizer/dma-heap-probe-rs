@@ -10,6 +10,8 @@ mod heap;
 #[allow(dead_code)]
 mod ioctl;
 #[allow(dead_code)]
+mod log;
+#[allow(dead_code)]
 mod probe;
 #[allow(dead_code)]
 mod procfs;
