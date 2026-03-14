@@ -101,7 +101,11 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
 }
 
 /// Single worker loop: alloc → pipeline → hold/close, round-robin across heaps.
-#[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
+#[allow(
+    clippy::cast_possible_truncation,
+    clippy::too_many_arguments,
+    clippy::too_many_lines
+)]
 fn worker_loop<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     contexts: &[HeapContext<'_, B>],
@@ -144,6 +148,9 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                 state.total_enomem.fetch_add(1, Relaxed);
                 hc.enomem.fetch_add(1, Relaxed);
                 hold_pool.notify_enomem(worker_id);
+                if crate::trace::enabled() {
+                    crate::trace::instant("enomem");
+                }
                 tracing::debug!(
                     worker_id,
                     heap = ctx.caps.name.as_str(),

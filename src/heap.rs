@@ -4,6 +4,7 @@ use std::os::unix::io::RawFd;
 
 use crate::backend::HeapBackend;
 use crate::ioctl::dma_heap::DmaHeapAllocationData;
+use crate::trace;
 
 /// High-level wrapper for a `/dev/dma_heap/<name>` device.
 #[derive(Debug)]
@@ -37,8 +38,14 @@ impl<'a, H: HeapBackend> DmaHeap<'a, H> {
             fd_flags,
             heap_flags,
         };
+        if trace::enabled() {
+            trace::begin(&format!("alloc_{}_{}", self.fd, data.len));
+        }
         self.backend.alloc(self.fd, &mut data)?;
         let buf_fd = data.fd as RawFd;
+        if trace::enabled() {
+            trace::end();
+        }
         tracing::debug!(size, buf_fd, "buffer allocated");
         Ok(buf_fd)
     }
