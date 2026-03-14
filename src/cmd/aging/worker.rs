@@ -100,7 +100,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     worker_id: u32,
 ) {
     let mut local_index = worker_id as usize;
-    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(per_thread_max, state);
+    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(per_thread_max, state, u64::from(worker_id));
     tracing::debug!(worker_id, per_thread_max, "worker started");
 
     loop {

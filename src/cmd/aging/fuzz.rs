@@ -144,10 +144,11 @@ pub(super) struct HoldPool<'a, B: DmaBufBackend> {
     initial_max_size: usize,
     consecutive_enomem: u32,
     success_since_shrink: u32,
+    rng: SmallRng,
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
-    pub(super) fn new(max_size: usize, state: &'a AgingState) -> Self {
+    pub(super) fn new(max_size: usize, state: &'a AgingState, seed: u64) -> Self {
         Self {
             bufs: VecDeque::new(),
             state,
@@ -155,10 +156,27 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             initial_max_size: max_size,
             consecutive_enomem: 0,
             success_since_shrink: 0,
+            rng: SmallRng::seed_from_u64(seed),
         }
     }
 
-    pub(super) fn push(&mut self, buf: DmaBuf<'a, B>) {
+    /// Drain `n` buffers from the front, updating counters.
+    fn drain_n(&mut self, n: usize) {
+        let actual = n.min(self.bufs.len());
+        let mut freed_bytes: u64 = 0;
+        for _ in 0..actual {
+            if let Some(buf) = self.bufs.pop_front() {
+                freed_bytes += buf.len() as u64;
+            }
+        }
+        if actual > 0 {
+            self.state.total_frees.fetch_add(actual as u64, Relaxed);
+            self.state.held_bufs.fetch_sub(actual as u64, Relaxed);
+            self.state.held_bytes.fetch_sub(freed_bytes, Relaxed);
+        }
+    }
+
+    pub(super) fn push(&mut self, mut buf: DmaBuf<'a, B>) {
         // Global cap check.
         let at_limit = match self.state.hold_limit {
             HoldLimit::Disabled => false,
@@ -169,16 +187,26 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.state.total_frees.fetch_add(1, Relaxed);
             return; // buf dropped here
         }
-        if self.bufs.len() >= self.max_size {
-            tracing::trace!(pool_size = self.bufs.len(), "hold pool eviction");
-            if let Some(evicted) = self.bufs.pop_front() {
-                self.state
-                    .held_bytes
-                    .fetch_sub(evicted.len() as u64, Relaxed);
-            }
-            self.state.total_frees.fetch_add(1, Relaxed);
-            self.state.held_bufs.fetch_sub(1, Relaxed);
+
+        // 10% chance: unmap before holding (fd-only hold).
+        if self.rng.random_ratio(1, 10) {
+            buf.unmap();
         }
+
+        // Periodic random drain: ~5% probability, drain 20-40%.
+        if self.bufs.len() > 1 && self.rng.random_ratio(1, 20) {
+            let pct = self.rng.random_range(20..=40);
+            let to_drain = (self.bufs.len() * pct / 100).max(1);
+            self.drain_n(to_drain);
+        }
+
+        // Burst eviction when at capacity.
+        if self.bufs.len() >= self.max_size {
+            let max_burst = (self.max_size / 8).max(2);
+            let burst = self.rng.random_range(1..=max_burst);
+            self.drain_n(burst.min(self.bufs.len()));
+        }
+
         self.state.held_bytes.fetch_add(buf.len() as u64, Relaxed);
         self.bufs.push_back(buf);
         self.state.held_bufs.fetch_add(1, Relaxed);
@@ -186,17 +214,8 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
 
     /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
     pub(super) fn notify_enomem(&mut self, worker_id: u32) {
-        // Always drain half to free memory immediately.
         let to_drain = (self.bufs.len() / 2 + 1).min(self.bufs.len());
-        let mut drained_bytes: u64 = 0;
-        for _ in 0..to_drain {
-            if let Some(buf) = self.bufs.pop_front() {
-                drained_bytes += buf.len() as u64;
-            }
-        }
-        self.state.total_frees.fetch_add(to_drain as u64, Relaxed);
-        self.state.held_bufs.fetch_sub(to_drain as u64, Relaxed);
-        self.state.held_bytes.fetch_sub(drained_bytes, Relaxed);
+        self.drain_n(to_drain);
 
         self.consecutive_enomem += 1;
         self.success_since_shrink = 0;
@@ -205,18 +224,8 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             let old_max = self.max_size;
             self.max_size = (self.max_size / 2).max(MIN_HOLD_SIZE);
             // Trim pool to new max_size.
-            let mut trimmed: u64 = 0;
-            let mut trimmed_bytes: u64 = 0;
-            while self.bufs.len() > self.max_size {
-                if let Some(buf) = self.bufs.pop_front() {
-                    trimmed_bytes += buf.len() as u64;
-                }
-                trimmed += 1;
-            }
-            if trimmed > 0 {
-                self.state.total_frees.fetch_add(trimmed, Relaxed);
-                self.state.held_bufs.fetch_sub(trimmed, Relaxed);
-                self.state.held_bytes.fetch_sub(trimmed_bytes, Relaxed);
+            if self.bufs.len() > self.max_size {
+                self.drain_n(self.bufs.len() - self.max_size);
             }
             self.consecutive_enomem = 0;
             tracing::info!(
@@ -258,14 +267,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
 
     /// Drain all remaining buffers, counting frees.
     pub(super) fn drain_all(&mut self) {
-        let count = self.bufs.len() as u64;
-        let bytes: u64 = self.bufs.iter().map(|b| b.len() as u64).sum();
-        self.bufs.clear();
-        if count > 0 {
-            self.state.total_frees.fetch_add(count, Relaxed);
-            self.state.held_bufs.fetch_sub(count, Relaxed);
-            self.state.held_bytes.fetch_sub(bytes, Relaxed);
-        }
+        self.drain_n(self.bufs.len());
     }
 }
 
@@ -365,7 +367,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
     worker_id: u32,
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
-    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(per_thread_max, state);
+    let mut hold_pool: HoldPool<'_, B> = HoldPool::new(per_thread_max, state, seed);
     tracing::debug!(worker_id, seed, "fuzz worker started");
 
     loop {
@@ -651,7 +653,7 @@ mod tests {
     fn adaptive_shrink() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         // Fill pool
         for _ in 0..16 {
             pool.push(make_buf(&b));
@@ -668,7 +670,7 @@ mod tests {
     fn adaptive_min_floor() {
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE, &state, 42);
         // Even after repeated shrinks, should not go below MIN_HOLD_SIZE
         for _ in 0..ENOMEM_SHRINK_THRESHOLD * 3 {
             pool.notify_enomem(0);
@@ -680,7 +682,7 @@ mod tests {
     fn adaptive_recovery() {
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         // Shrink first
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
@@ -697,7 +699,7 @@ mod tests {
     fn adaptive_recovery_ceiling() {
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8, &state, 42);
         // Shrink to 4
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
@@ -719,7 +721,7 @@ mod tests {
     fn drain_on_every_enomem() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         for _ in 0..10 {
             pool.push(make_buf(&b));
         }
@@ -733,7 +735,7 @@ mod tests {
     fn held_bufs_tracks_push_and_drain() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         for i in 1..=5 {
             pool.push(make_buf(&b));
             assert_eq!(state.held_bufs.load(Relaxed), i);
@@ -746,17 +748,17 @@ mod tests {
     fn held_bufs_tracks_eviction() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(4, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(4, &state, 42);
         // Fill to capacity
         for _ in 0..4 {
             pool.push(make_buf(&b));
         }
         assert_eq!(state.held_bufs.load(Relaxed), 4);
-        // Push beyond capacity — eviction keeps count at max_size
+        // Push beyond capacity — burst eviction keeps count at or below max_size
         pool.push(make_buf(&b));
-        assert_eq!(state.held_bufs.load(Relaxed), 4);
+        assert!(state.held_bufs.load(Relaxed) <= 4);
         pool.push(make_buf(&b));
-        assert_eq!(state.held_bufs.load(Relaxed), 4);
+        assert!(state.held_bufs.load(Relaxed) <= 4);
         pool.drain_all();
         assert_eq!(state.held_bufs.load(Relaxed), 0);
     }
@@ -765,7 +767,7 @@ mod tests {
     fn held_bufs_tracks_enomem_drain() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         for _ in 0..10 {
             pool.push(make_buf(&b));
         }
@@ -800,7 +802,7 @@ mod tests {
         let b = MockBackend::new();
         // Global cap = 3 buffers, per-thread pool max = 16
         let state = AgingState::new(HoldLimit::Count(3));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         // Push 5 buffers — only 3 should be held, rest freed at global cap
         for _ in 0..5 {
             pool.push(make_buf(&b));
@@ -819,7 +821,7 @@ mod tests {
         let b = MockBackend::new();
         // Global cap = 8192 bytes (2 x 4096-byte buffers)
         let state = AgingState::new(HoldLimit::Bytes(8192));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         // Push 4 buffers — only 2 fit within 8192 byte limit
         for _ in 0..4 {
             pool.push(make_buf(&b));
@@ -835,7 +837,7 @@ mod tests {
     fn held_bytes_tracks_size() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, &state, 42);
         // Each mock buf is 4096 bytes
         for _ in 0..3 {
             pool.push(make_buf(&b));
@@ -849,13 +851,14 @@ mod tests {
     fn held_bytes_tracks_eviction() {
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000));
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(2, &state);
-        // Push 3 → evict 1, held should be 2 bufs = 8192 bytes
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(2, &state, 42);
+        // Push 3 → burst eviction, held should be ≤ 2 bufs
         for _ in 0..3 {
             pool.push(make_buf(&b));
         }
-        assert_eq!(state.held_bufs.load(Relaxed), 2);
-        assert_eq!(state.held_bytes.load(Relaxed), 2 * 4096);
+        let bufs = state.held_bufs.load(Relaxed);
+        assert!(bufs <= 2);
+        assert_eq!(state.held_bytes.load(Relaxed), bufs * 4096);
         pool.drain_all();
         assert_eq!(state.held_bytes.load(Relaxed), 0);
     }
