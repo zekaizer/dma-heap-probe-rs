@@ -101,6 +101,8 @@ struct BufferState {
     data: Arc<MmapBacking>,
     /// Current sync state (shared across dup'd fds).
     sync_state: Arc<Mutex<SyncState>>,
+    /// Heap name that allocated this buffer (for per-heap behavior).
+    heap_name: Option<String>,
 }
 
 /// Simulation configuration for injecting faults into mock operations.
@@ -124,6 +126,67 @@ pub struct SimConfig {
     pub latency_ns_per_4k: u64,
 }
 
+/// Per-heap simulation profile for multi-heap mock testing.
+///
+/// Controls latency characteristics, cache behavior, and CPU access
+/// restrictions for individual heaps in strict (multi-heap) mode.
+#[derive(Debug, Clone)]
+pub struct HeapProfile {
+    /// Latency multiplier relative to base (1.0 = normal, >1.0 = slower).
+    pub latency_multiplier: f64,
+    /// Whether this heap uses cached memory (affects sync latency ratio).
+    pub cached: bool,
+    /// Whether CPU access (mmap) is allowed on buffers from this heap.
+    /// `false` = mmap returns `EACCES`, sync is no-op (Samsung secure heap behavior).
+    pub cpu_access: bool,
+    /// Per-heap fault injection config (overrides global `SimConfig`).
+    pub sim_override: Option<SimConfig>,
+}
+
+impl Default for HeapProfile {
+    fn default() -> Self {
+        Self {
+            latency_multiplier: 1.0,
+            cached: true,
+            cpu_access: true,
+            sim_override: None,
+        }
+    }
+}
+
+impl HeapProfile {
+    /// Profile for `system` heap (CMA-backed, cached).
+    #[must_use]
+    pub fn system() -> Self {
+        Self::default()
+    }
+
+    /// Profile for `system-uncached` heap (write-combine, uncached).
+    /// Higher alloc latency (~1.8x), lower sync cost (no cache flush).
+    #[must_use]
+    pub fn system_uncached() -> Self {
+        Self {
+            latency_multiplier: 1.8,
+            cached: false,
+            cpu_access: true,
+            sim_override: None,
+        }
+    }
+
+    /// Profile for `restricted` (secure) heap.
+    /// Alloc succeeds but mmap returns `EACCES`, sync is no-op.
+    /// Matches Samsung kernel `DMA_HEAP_FLAG_PROTECTED` behavior.
+    #[must_use]
+    pub fn restricted() -> Self {
+        Self {
+            latency_multiplier: 1.0,
+            cached: false,
+            cpu_access: false,
+            sim_override: None,
+        }
+    }
+}
+
 /// State for a container fd (created by MERGE).
 #[derive(Debug, Clone)]
 struct ContainerState {
@@ -136,7 +199,7 @@ struct ContainerState {
 #[derive(Debug)]
 struct MockState {
     buffers: HashMap<RawFd, BufferState>,
-    heap_fds: HashSet<RawFd>,
+    heap_fds: HashMap<RawFd, String>,
     /// Tracks mock `sync_file` fds (from export).
     sync_file_fds: HashSet<RawFd>,
     /// Container fds created by MERGE.
@@ -146,7 +209,12 @@ struct MockState {
     next_fd: i32,
     /// Simulation configuration for fault injection.
     sim: Option<SimConfig>,
-    /// Total alloc calls (for `fail_every_nth`).
+    /// Per-heap configs. `None` = permissive mode (any name accepted).
+    /// `Some` = strict mode (only registered heaps accepted).
+    heap_configs: Option<HashMap<String, HeapProfile>>,
+    /// Per-heap alloc counts (for per-heap `fail_every_nth`).
+    heap_alloc_counts: HashMap<String, u64>,
+    /// Total alloc calls (for `fail_every_nth` in permissive mode).
     alloc_count: u64,
     /// Total mmap calls (for `corrupt_every_nth`).
     mmap_count: u64,
@@ -156,12 +224,14 @@ impl MockState {
     fn new() -> Self {
         Self {
             buffers: HashMap::new(),
-            heap_fds: HashSet::new(),
+            heap_fds: HashMap::new(),
             sync_file_fds: HashSet::new(),
             container_fds: HashMap::new(),
             container_device_fds: HashSet::new(),
             next_fd: MOCK_FD_START,
             sim: None,
+            heap_configs: None,
+            heap_alloc_counts: HashMap::new(),
             alloc_count: 0,
             mmap_count: 0,
         }
@@ -223,6 +293,66 @@ impl MockBackend {
         }
     }
 
+    /// Multi-heap mock with default profiles (system + system-uncached + restricted).
+    /// Strict mode: only registered heaps are accepted by `open()`.
+    #[must_use]
+    pub fn new_multi_heap() -> Self {
+        let mut configs = HashMap::new();
+        configs.insert("system".to_string(), HeapProfile::system());
+        configs.insert(
+            "system-uncached".to_string(),
+            HeapProfile::system_uncached(),
+        );
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        Self::with_heaps(configs)
+    }
+
+    /// Multi-heap mock with custom per-heap profiles. Strict mode.
+    #[must_use]
+    pub fn with_heaps(heaps: HashMap<String, HeapProfile>) -> Self {
+        let mut state = MockState::new();
+        state.heap_configs = Some(heaps);
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+
+    /// Multi-heap mock with default profiles and realistic latency simulation.
+    #[must_use]
+    pub fn new_multi_heap_realistic() -> Self {
+        let mut configs = HashMap::new();
+        configs.insert("system".to_string(), HeapProfile::system());
+        configs.insert(
+            "system-uncached".to_string(),
+            HeapProfile::system_uncached(),
+        );
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        let mut state = MockState::new();
+        state.heap_configs = Some(configs);
+        state.sim = Some(SimConfig {
+            latency_ns_per_4k: 1000,
+            ..Default::default()
+        });
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+
+    /// List available heap names (sorted).
+    /// Returns registered heaps in strict mode, `["system"]` in permissive mode.
+    #[must_use]
+    pub fn available_heaps(&self) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        match &state.heap_configs {
+            Some(configs) => {
+                let mut names: Vec<String> = configs.keys().cloned().collect();
+                names.sort();
+                names
+            }
+            None => vec!["system".to_string()],
+        }
+    }
+
     /// Return the number of active buffer file descriptors.
     ///
     /// Test-only utility for leak detection in repeated alloc/close loops.
@@ -238,20 +368,61 @@ impl Default for MockBackend {
     }
 }
 
+/// Look up per-heap latency multiplier from state. Returns 1.0 if not configured.
+fn lookup_multiplier(state: &MockState, heap_name: Option<&str>) -> f64 {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .map_or(1.0, |p| p.latency_multiplier)
+}
+
+/// Check if a buffer's heap has CPU access enabled. Returns `true` if not configured.
+fn has_cpu_access(state: &MockState, heap_name: Option<&str>) -> bool {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .is_none_or(|p| p.cpu_access)
+}
+
+/// Check if a buffer's heap uses cached memory. Returns `true` if not configured.
+fn is_cached(state: &MockState, heap_name: Option<&str>) -> bool {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .is_none_or(|p| p.cached)
+}
+
 fn page_align(size: u64) -> Option<u64> {
     size.checked_next_multiple_of(PAGE_SIZE)
 }
 
-/// Simulate size-proportional latency with +/-30% jitter.
+/// Simulate size-proportional latency with +/-30% jitter and optional multiplier.
 fn sim_delay(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64) {
-    if ns_per_4k == 0 {
+    sim_delay_scaled(size, ns_per_4k, ratio_num, ratio_den, 1.0);
+}
+
+/// Simulate size-proportional latency with per-heap multiplier.
+fn sim_delay_scaled(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64, multiplier: f64) {
+    if ns_per_4k == 0 || multiplier == 0.0 {
         return;
     }
     let pages = size.div_ceil(4096);
     let base_ns = pages * ns_per_4k * ratio_num / ratio_den;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let adjusted = (base_ns as f64 * multiplier) as u64;
     // +/-30% jitter
     let jitter = rand::rng().random_range(700u64..=1300);
-    let ns = base_ns * jitter / 1000;
+    let ns = adjusted * jitter / 1000;
     if ns > 0 {
         std::thread::sleep(std::time::Duration::from_nanos(ns));
     }
@@ -263,21 +434,26 @@ impl HeapBackend for MockBackend {
             return Err(Errno::ENOENT);
         }
         let mut state = self.state.lock().unwrap();
+        // Strict mode: reject unregistered heap names.
+        if let Some(ref configs) = state.heap_configs
+            && !configs.contains_key(name)
+        {
+            return Err(Errno::ENOENT);
+        }
         let fd = state.alloc_fd();
-        state.heap_fds.insert(fd);
+        state.heap_fds.insert(fd, name.to_string());
         Ok(fd)
     }
 
     fn alloc(&self, heap_fd: RawFd, data: &mut DmaHeapAllocationData) -> nix::Result<()> {
         let aligned_size;
         let ns_per_4k;
+        let latency_mul;
         {
             let mut state = self.state.lock().unwrap();
 
-            // Validate heap fd
-            if !state.heap_fds.contains(&heap_fd) {
-                return Err(Errno::EBADF);
-            }
+            // Validate heap fd and get heap name.
+            let heap_name = state.heap_fds.get(&heap_fd).ok_or(Errno::EBADF)?.clone();
 
             // Validate allocation parameters
             if data.len == 0 {
@@ -298,11 +474,35 @@ impl HeapBackend for MockBackend {
                 return Err(Errno::ENOMEM);
             }
 
-            // Simulation: fault injection
-            if let Some(sim) = state.sim.clone() {
-                state.alloc_count += 1;
-                if sim.fail_every_nth > 0 && state.alloc_count.is_multiple_of(sim.fail_every_nth) {
-                    return Err(Errno::EIO);
+            // Resolve effective SimConfig: per-heap override > global.
+            let effective_sim = state
+                .heap_configs
+                .as_ref()
+                .and_then(|c| c.get(&heap_name))
+                .and_then(|p| p.sim_override.as_ref())
+                .cloned()
+                .or_else(|| state.sim.clone());
+
+            // Fault injection with per-heap or global counters.
+            if let Some(ref sim) = effective_sim {
+                if state.heap_configs.is_some() {
+                    // Strict mode: per-heap counter.
+                    let count = state
+                        .heap_alloc_counts
+                        .entry(heap_name.clone())
+                        .or_insert(0);
+                    *count += 1;
+                    if sim.fail_every_nth > 0 && (*count).is_multiple_of(sim.fail_every_nth) {
+                        return Err(Errno::EIO);
+                    }
+                } else {
+                    // Permissive mode: global counter.
+                    state.alloc_count += 1;
+                    if sim.fail_every_nth > 0
+                        && state.alloc_count.is_multiple_of(sim.fail_every_nth)
+                    {
+                        return Err(Errno::EIO);
+                    }
                 }
                 if let Some(threshold) = sim.enomem_threshold
                     && state.buffers.len() >= threshold
@@ -321,6 +521,7 @@ impl HeapBackend for MockBackend {
                 BufferState {
                     data: buf,
                     sync_state: Arc::new(Mutex::new(SyncState::None)),
+                    heap_name: Some(heap_name.clone()),
                 },
             );
 
@@ -329,15 +530,23 @@ impl HeapBackend for MockBackend {
                 data.fd = fd as u32;
             }
 
-            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
+            ns_per_4k = effective_sim
+                .as_ref()
+                .or(state.sim.as_ref())
+                .map_or(0, |s| s.latency_ns_per_4k);
+            latency_mul = state
+                .heap_configs
+                .as_ref()
+                .and_then(|c| c.get(&heap_name))
+                .map_or(1.0, |p| p.latency_multiplier);
         }
-        sim_delay(aligned_size, ns_per_4k, 1, 1); // alloc: 1.0x
+        sim_delay_scaled(aligned_size, ns_per_4k, 1, 1, latency_mul); // alloc
         Ok(())
     }
 
     fn close_heap(&self, heap_fd: RawFd) -> nix::Result<()> {
         let mut state = self.state.lock().unwrap();
-        if state.heap_fds.remove(&heap_fd) {
+        if state.heap_fds.remove(&heap_fd).is_some() {
             Ok(())
         } else {
             Err(Errno::EBADF)
@@ -349,6 +558,7 @@ impl DmaBufBackend for MockBackend {
     fn mmap(&self, fd: RawFd, len: usize) -> nix::Result<*mut u8> {
         let ptr;
         let ns_per_4k;
+        let latency_mul;
         {
             let mut state = self.state.lock().unwrap();
 
@@ -360,16 +570,24 @@ impl DmaBufBackend for MockBackend {
             // Extract corruption config before borrowing buffers.
             let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
 
-            let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+            // Read buffer metadata and check cpu_access before mutable borrow.
+            let (heap_name_owned, buf_len, buf_ptr) = {
+                let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+                (buf.heap_name.clone(), buf.data.len(), buf.data.as_ptr())
+            };
 
-            if len > buf.data.len() {
+            // Restricted heap: CPU access denied (Samsung protected buffer behavior).
+            if !has_cpu_access(&state, heap_name_owned.as_deref()) {
+                return Err(Errno::EACCES);
+            }
+
+            if len > buf_len {
                 return Err(Errno::EINVAL);
             }
 
-            // Return raw pointer to the mmap'd buffer.
-            // Safe for mock: the Arc keeps data alive as long as any fd references it,
-            // and the mmap region is stable once allocated.
-            ptr = buf.data.as_ptr();
+            ptr = buf_ptr;
+            latency_mul = lookup_multiplier(&state, heap_name_owned.as_deref());
+            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
 
             // Simulation: data corruption injection
             if corrupt_nth > 0 {
@@ -381,10 +599,8 @@ impl DmaBufBackend for MockBackend {
                     }
                 }
             }
-
-            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-        sim_delay(len as u64, ns_per_4k, 1, 5); // mmap: 0.2x
+        sim_delay_scaled(len as u64, ns_per_4k, 1, 5, latency_mul); // mmap: 0.2x
         Ok(ptr)
     }
 
@@ -396,6 +612,8 @@ impl DmaBufBackend for MockBackend {
     fn sync(&self, fd: RawFd, flags: u64) -> nix::Result<()> {
         let buf_size;
         let ns_per_4k;
+        let latency_mul;
+        let cached;
         {
             let state = self.state.lock().unwrap();
 
@@ -414,7 +632,14 @@ impl DmaBufBackend for MockBackend {
             // Must specify at least READ or WRITE
             validate_sync_direction(flags)?;
 
+            // Restricted heap: sync is no-op (kernel skips cache ops on protected bufs).
+            if !has_cpu_access(&state, buf.heap_name.as_deref()) {
+                return Ok(());
+            }
+
             buf_size = buf.data.len() as u64;
+            cached = is_cached(&state, buf.heap_name.as_deref());
+            latency_mul = lookup_multiplier(&state, buf.heap_name.as_deref());
 
             let mut sync = buf.sync_state.lock().unwrap();
             if flags & DMA_BUF_SYNC_END != 0 {
@@ -429,7 +654,9 @@ impl DmaBufBackend for MockBackend {
 
             ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-        sim_delay(buf_size, ns_per_4k, 1, 2); // sync: 0.5x
+        // Cached heaps: 0.5x (cache flush needed). Uncached: 0.1x (no flush).
+        let (ratio_num, ratio_den) = if cached { (1, 2) } else { (1, 10) };
+        sim_delay_scaled(buf_size, ns_per_4k, ratio_num, ratio_den, latency_mul);
         Ok(())
     }
 
@@ -503,6 +730,7 @@ impl DmaBufBackend for MockBackend {
         let new_buf = BufferState {
             data: Arc::clone(&original.data),
             sync_state: Arc::clone(&original.sync_state),
+            heap_name: original.heap_name.clone(),
         };
 
         let new_fd = state.alloc_fd();
@@ -516,9 +744,10 @@ impl DmaBufBackend for MockBackend {
         // Check buffers first, then sync_file fds
         if let Some(removed) = state.buffers.remove(&fd) {
             let size = removed.data.len() as u64;
+            let mul = lookup_multiplier(&state, removed.heap_name.as_deref());
             let ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
             drop(state);
-            sim_delay(size, ns_per_4k, 3, 10); // free: 0.3x
+            sim_delay_scaled(size, ns_per_4k, 3, 10, mul); // free: 0.3x
             return Ok(());
         }
         if state.sync_file_fds.remove(&fd) {
@@ -1315,5 +1544,206 @@ mod tests {
 
         // Bit 3 (0b1000) should be invalid.
         assert_eq!(b.set_mask(dev_fd, outer, 0b1000), Err(Errno::EINVAL));
+    }
+
+    // ── Multi-heap tests ──
+
+    #[test]
+    fn multi_heap_open_known() {
+        let b = MockBackend::new_multi_heap();
+        b.open("system").unwrap();
+        b.open("system-uncached").unwrap();
+        b.open("restricted").unwrap();
+    }
+
+    #[test]
+    fn multi_heap_open_unknown_fails() {
+        let b = MockBackend::new_multi_heap();
+        assert_eq!(b.open("nonexistent"), Err(Errno::ENOENT));
+        assert_eq!(b.open("reserved"), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn permissive_mode_any_name() {
+        let b = MockBackend::new();
+        b.open("system").unwrap();
+        b.open("any_name_works").unwrap();
+        b.open("reserved").unwrap();
+    }
+
+    #[test]
+    fn per_heap_sim_override() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "failing".to_string(),
+            HeapProfile {
+                sim_override: Some(SimConfig {
+                    fail_every_nth: 1, // Every alloc fails
+                    ..Default::default()
+                }),
+                ..HeapProfile::default()
+            },
+        );
+        configs.insert("normal".to_string(), HeapProfile::default());
+        let b = MockBackend::with_heaps(configs);
+
+        // Normal heap allocs succeed.
+        let heap_fd = b.open("normal").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+
+        // Failing heap allocs return EIO.
+        let fail_fd = b.open("failing").unwrap();
+        let mut data2 = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(fail_fd, &mut data2), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn per_heap_fail_every_nth_isolated() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "a".to_string(),
+            HeapProfile {
+                sim_override: Some(SimConfig {
+                    fail_every_nth: 2,
+                    ..Default::default()
+                }),
+                ..HeapProfile::default()
+            },
+        );
+        configs.insert("b".to_string(), HeapProfile::default());
+        let b = MockBackend::with_heaps(configs);
+
+        let fd_a = b.open("a").unwrap();
+        let fd_b = b.open("b").unwrap();
+
+        // Heap B allocs don't affect heap A's counter.
+        for _ in 0..5 {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(fd_b, &mut data).unwrap();
+        }
+
+        // Heap A: 1st alloc succeeds, 2nd fails (every 2nd).
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(fd_a, &mut data).unwrap();
+        let mut data2 = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(fd_a, &mut data2), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn available_heaps_strict() {
+        let b = MockBackend::new_multi_heap();
+        assert_eq!(
+            b.available_heaps(),
+            vec!["restricted", "system", "system-uncached"]
+        );
+    }
+
+    #[test]
+    fn available_heaps_permissive() {
+        let b = MockBackend::new();
+        assert_eq!(b.available_heaps(), vec!["system"]);
+    }
+
+    #[test]
+    fn restricted_heap_deny_cpu_access() {
+        let b = MockBackend::new_multi_heap();
+        let (heap_fd, buf_fd) = {
+            let heap_fd = b.open("restricted").unwrap();
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(heap_fd, &mut data).unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            (heap_fd, data.fd as i32)
+        };
+
+        // mmap denied with EACCES.
+        assert_eq!(b.mmap(buf_fd, 4096), Err(Errno::EACCES));
+
+        // sync is no-op (returns Ok).
+        b.sync(buf_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)
+            .unwrap();
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
+    }
+
+    #[test]
+    fn restricted_heap_non_cpu_ops_ok() {
+        let b = MockBackend::new_multi_heap();
+        let heap_fd = b.open("restricted").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd = data.fd as i32;
+
+        // llseek works.
+        let size = b.llseek(buf_fd, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size, 4096);
+
+        // dup works.
+        let dup_fd = b.dup(buf_fd).unwrap();
+        assert_ne!(buf_fd, dup_fd);
+        b.close(dup_fd).unwrap();
+
+        // export_sync_file works.
+        let mut sf = DmaBufExportSyncFile {
+            flags: DMA_BUF_SYNC_READ as u32,
+            fd: -1,
+        };
+        b.export_sync_file(buf_fd, &mut sf).unwrap();
+        assert!(sf.fd >= MOCK_FD_START);
+        b.close(sf.fd).unwrap();
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
+    }
+
+    #[test]
+    fn system_heap_mmap_works() {
+        let b = MockBackend::new_multi_heap();
+        let heap_fd = b.open("system").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd = data.fd as i32;
+
+        // mmap succeeds on system heap.
+        let ptr = b.mmap(buf_fd, 4096).unwrap();
+        assert!(!ptr.is_null());
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
     }
 }

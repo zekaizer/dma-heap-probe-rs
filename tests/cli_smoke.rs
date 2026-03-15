@@ -144,7 +144,11 @@ fn output_basic_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heaps"][0], "system");
+    let heaps = json["heaps"].as_array().expect("heaps is an array");
+    assert!(
+        heaps.iter().any(|h| h == "system"),
+        "heaps should contain 'system'"
+    );
     assert!(json["stages"].is_array());
     assert!(json["stages"][0]["passed"].as_bool().unwrap());
     assert!(json["total_passed"].as_u64().unwrap() >= 1);
