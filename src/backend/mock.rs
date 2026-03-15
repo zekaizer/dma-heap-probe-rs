@@ -368,20 +368,61 @@ impl Default for MockBackend {
     }
 }
 
+/// Look up per-heap latency multiplier from state. Returns 1.0 if not configured.
+fn lookup_multiplier(state: &MockState, heap_name: Option<&str>) -> f64 {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .map_or(1.0, |p| p.latency_multiplier)
+}
+
+/// Check if a buffer's heap has CPU access enabled. Returns `true` if not configured.
+fn has_cpu_access(state: &MockState, heap_name: Option<&str>) -> bool {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .is_none_or(|p| p.cpu_access)
+}
+
+/// Check if a buffer's heap uses cached memory. Returns `true` if not configured.
+fn is_cached(state: &MockState, heap_name: Option<&str>) -> bool {
+    state
+        .heap_configs
+        .as_ref()
+        .zip(heap_name)
+        .and_then(|(configs, name)| configs.get(name))
+        .is_none_or(|p| p.cached)
+}
+
 fn page_align(size: u64) -> Option<u64> {
     size.checked_next_multiple_of(PAGE_SIZE)
 }
 
-/// Simulate size-proportional latency with +/-30% jitter.
+/// Simulate size-proportional latency with +/-30% jitter and optional multiplier.
 fn sim_delay(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64) {
-    if ns_per_4k == 0 {
+    sim_delay_scaled(size, ns_per_4k, ratio_num, ratio_den, 1.0);
+}
+
+/// Simulate size-proportional latency with per-heap multiplier.
+fn sim_delay_scaled(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64, multiplier: f64) {
+    if ns_per_4k == 0 || multiplier == 0.0 {
         return;
     }
     let pages = size.div_ceil(4096);
     let base_ns = pages * ns_per_4k * ratio_num / ratio_den;
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        clippy::cast_precision_loss
+    )]
+    let adjusted = (base_ns as f64 * multiplier) as u64;
     // +/-30% jitter
     let jitter = rand::rng().random_range(700u64..=1300);
-    let ns = base_ns * jitter / 1000;
+    let ns = adjusted * jitter / 1000;
     if ns > 0 {
         std::thread::sleep(std::time::Duration::from_nanos(ns));
     }
@@ -393,6 +434,12 @@ impl HeapBackend for MockBackend {
             return Err(Errno::ENOENT);
         }
         let mut state = self.state.lock().unwrap();
+        // Strict mode: reject unregistered heap names.
+        if let Some(ref configs) = state.heap_configs
+            && !configs.contains_key(name)
+        {
+            return Err(Errno::ENOENT);
+        }
         let fd = state.alloc_fd();
         state.heap_fds.insert(fd, name.to_string());
         Ok(fd)
@@ -401,13 +448,12 @@ impl HeapBackend for MockBackend {
     fn alloc(&self, heap_fd: RawFd, data: &mut DmaHeapAllocationData) -> nix::Result<()> {
         let aligned_size;
         let ns_per_4k;
+        let latency_mul;
         {
             let mut state = self.state.lock().unwrap();
 
-            // Validate heap fd
-            if !state.heap_fds.contains_key(&heap_fd) {
-                return Err(Errno::EBADF);
-            }
+            // Validate heap fd and get heap name.
+            let heap_name = state.heap_fds.get(&heap_fd).ok_or(Errno::EBADF)?.clone();
 
             // Validate allocation parameters
             if data.len == 0 {
@@ -428,11 +474,35 @@ impl HeapBackend for MockBackend {
                 return Err(Errno::ENOMEM);
             }
 
-            // Simulation: fault injection
-            if let Some(sim) = state.sim.clone() {
-                state.alloc_count += 1;
-                if sim.fail_every_nth > 0 && state.alloc_count.is_multiple_of(sim.fail_every_nth) {
-                    return Err(Errno::EIO);
+            // Resolve effective SimConfig: per-heap override > global.
+            let effective_sim = state
+                .heap_configs
+                .as_ref()
+                .and_then(|c| c.get(&heap_name))
+                .and_then(|p| p.sim_override.as_ref())
+                .cloned()
+                .or_else(|| state.sim.clone());
+
+            // Fault injection with per-heap or global counters.
+            if let Some(ref sim) = effective_sim {
+                if state.heap_configs.is_some() {
+                    // Strict mode: per-heap counter.
+                    let count = state
+                        .heap_alloc_counts
+                        .entry(heap_name.clone())
+                        .or_insert(0);
+                    *count += 1;
+                    if sim.fail_every_nth > 0 && (*count).is_multiple_of(sim.fail_every_nth) {
+                        return Err(Errno::EIO);
+                    }
+                } else {
+                    // Permissive mode: global counter.
+                    state.alloc_count += 1;
+                    if sim.fail_every_nth > 0
+                        && state.alloc_count.is_multiple_of(sim.fail_every_nth)
+                    {
+                        return Err(Errno::EIO);
+                    }
                 }
                 if let Some(threshold) = sim.enomem_threshold
                     && state.buffers.len() >= threshold
@@ -446,13 +516,12 @@ impl HeapBackend for MockBackend {
             let buf = Arc::new(MmapBacking::new(aligned_size as usize)?);
 
             let fd = state.alloc_fd();
-            let heap_name = state.heap_fds.get(&heap_fd).cloned();
             state.buffers.insert(
                 fd,
                 BufferState {
                     data: buf,
                     sync_state: Arc::new(Mutex::new(SyncState::None)),
-                    heap_name,
+                    heap_name: Some(heap_name.clone()),
                 },
             );
 
@@ -461,9 +530,17 @@ impl HeapBackend for MockBackend {
                 data.fd = fd as u32;
             }
 
-            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
+            ns_per_4k = effective_sim
+                .as_ref()
+                .or(state.sim.as_ref())
+                .map_or(0, |s| s.latency_ns_per_4k);
+            latency_mul = state
+                .heap_configs
+                .as_ref()
+                .and_then(|c| c.get(&heap_name))
+                .map_or(1.0, |p| p.latency_multiplier);
         }
-        sim_delay(aligned_size, ns_per_4k, 1, 1); // alloc: 1.0x
+        sim_delay_scaled(aligned_size, ns_per_4k, 1, 1, latency_mul); // alloc
         Ok(())
     }
 
@@ -481,6 +558,7 @@ impl DmaBufBackend for MockBackend {
     fn mmap(&self, fd: RawFd, len: usize) -> nix::Result<*mut u8> {
         let ptr;
         let ns_per_4k;
+        let latency_mul;
         {
             let mut state = self.state.lock().unwrap();
 
@@ -492,16 +570,24 @@ impl DmaBufBackend for MockBackend {
             // Extract corruption config before borrowing buffers.
             let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
 
-            let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+            // Read buffer metadata and check cpu_access before mutable borrow.
+            let (heap_name_owned, buf_len, buf_ptr) = {
+                let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
+                (buf.heap_name.clone(), buf.data.len(), buf.data.as_ptr())
+            };
 
-            if len > buf.data.len() {
+            // Restricted heap: CPU access denied (Samsung protected buffer behavior).
+            if !has_cpu_access(&state, heap_name_owned.as_deref()) {
+                return Err(Errno::EACCES);
+            }
+
+            if len > buf_len {
                 return Err(Errno::EINVAL);
             }
 
-            // Return raw pointer to the mmap'd buffer.
-            // Safe for mock: the Arc keeps data alive as long as any fd references it,
-            // and the mmap region is stable once allocated.
-            ptr = buf.data.as_ptr();
+            ptr = buf_ptr;
+            latency_mul = lookup_multiplier(&state, heap_name_owned.as_deref());
+            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
 
             // Simulation: data corruption injection
             if corrupt_nth > 0 {
@@ -513,10 +599,8 @@ impl DmaBufBackend for MockBackend {
                     }
                 }
             }
-
-            ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-        sim_delay(len as u64, ns_per_4k, 1, 5); // mmap: 0.2x
+        sim_delay_scaled(len as u64, ns_per_4k, 1, 5, latency_mul); // mmap: 0.2x
         Ok(ptr)
     }
 
@@ -528,6 +612,8 @@ impl DmaBufBackend for MockBackend {
     fn sync(&self, fd: RawFd, flags: u64) -> nix::Result<()> {
         let buf_size;
         let ns_per_4k;
+        let latency_mul;
+        let cached;
         {
             let state = self.state.lock().unwrap();
 
@@ -546,7 +632,14 @@ impl DmaBufBackend for MockBackend {
             // Must specify at least READ or WRITE
             validate_sync_direction(flags)?;
 
+            // Restricted heap: sync is no-op (kernel skips cache ops on protected bufs).
+            if !has_cpu_access(&state, buf.heap_name.as_deref()) {
+                return Ok(());
+            }
+
             buf_size = buf.data.len() as u64;
+            cached = is_cached(&state, buf.heap_name.as_deref());
+            latency_mul = lookup_multiplier(&state, buf.heap_name.as_deref());
 
             let mut sync = buf.sync_state.lock().unwrap();
             if flags & DMA_BUF_SYNC_END != 0 {
@@ -561,7 +654,9 @@ impl DmaBufBackend for MockBackend {
 
             ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
         }
-        sim_delay(buf_size, ns_per_4k, 1, 2); // sync: 0.5x
+        // Cached heaps: 0.5x (cache flush needed). Uncached: 0.1x (no flush).
+        let (ratio_num, ratio_den) = if cached { (1, 2) } else { (1, 10) };
+        sim_delay_scaled(buf_size, ns_per_4k, ratio_num, ratio_den, latency_mul);
         Ok(())
     }
 
@@ -649,9 +744,10 @@ impl DmaBufBackend for MockBackend {
         // Check buffers first, then sync_file fds
         if let Some(removed) = state.buffers.remove(&fd) {
             let size = removed.data.len() as u64;
+            let mul = lookup_multiplier(&state, removed.heap_name.as_deref());
             let ns_per_4k = state.sim.as_ref().map_or(0, |s| s.latency_ns_per_4k);
             drop(state);
-            sim_delay(size, ns_per_4k, 3, 10); // free: 0.3x
+            sim_delay_scaled(size, ns_per_4k, 3, 10, mul); // free: 0.3x
             return Ok(());
         }
         if state.sync_file_fds.remove(&fd) {
