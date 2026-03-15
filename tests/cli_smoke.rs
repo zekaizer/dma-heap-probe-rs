@@ -87,6 +87,19 @@ fn all_subcommand() {
 }
 
 #[test]
+fn container_defaults() {
+    dhp().arg("container").assert().success();
+}
+
+#[test]
+fn container_custom_heaps() {
+    dhp()
+        .args(["container", "--heaps", "system,reserved"])
+        .assert()
+        .success();
+}
+
+#[test]
 fn aging_defaults() {
     dhp()
         .args(["aging", "--iterations", "10"])

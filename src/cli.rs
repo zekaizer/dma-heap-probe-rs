@@ -406,6 +406,7 @@ mod tests {
             "negative",
             "aging",
             "histogram",
+            "container",
             "all",
             "info",
         ] {

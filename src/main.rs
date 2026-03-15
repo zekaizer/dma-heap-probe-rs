@@ -498,6 +498,7 @@ mod fuzz_tests {
                 "10".into(),
             ]),
             Just(vec!["info".into()]),
+            Just(vec!["container".into()]),
             (1..3u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string()]),
             (1..3u64).prop_map(|i| vec![
                 "aging".into(),
