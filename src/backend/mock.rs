@@ -1545,4 +1545,205 @@ mod tests {
         // Bit 3 (0b1000) should be invalid.
         assert_eq!(b.set_mask(dev_fd, outer, 0b1000), Err(Errno::EINVAL));
     }
+
+    // ── Multi-heap tests ──
+
+    #[test]
+    fn multi_heap_open_known() {
+        let b = MockBackend::new_multi_heap();
+        b.open("system").unwrap();
+        b.open("system-uncached").unwrap();
+        b.open("restricted").unwrap();
+    }
+
+    #[test]
+    fn multi_heap_open_unknown_fails() {
+        let b = MockBackend::new_multi_heap();
+        assert_eq!(b.open("nonexistent"), Err(Errno::ENOENT));
+        assert_eq!(b.open("reserved"), Err(Errno::ENOENT));
+    }
+
+    #[test]
+    fn permissive_mode_any_name() {
+        let b = MockBackend::new();
+        b.open("system").unwrap();
+        b.open("any_name_works").unwrap();
+        b.open("reserved").unwrap();
+    }
+
+    #[test]
+    fn per_heap_sim_override() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "failing".to_string(),
+            HeapProfile {
+                sim_override: Some(SimConfig {
+                    fail_every_nth: 1, // Every alloc fails
+                    ..Default::default()
+                }),
+                ..HeapProfile::default()
+            },
+        );
+        configs.insert("normal".to_string(), HeapProfile::default());
+        let b = MockBackend::with_heaps(configs);
+
+        // Normal heap allocs succeed.
+        let heap_fd = b.open("normal").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+
+        // Failing heap allocs return EIO.
+        let fail_fd = b.open("failing").unwrap();
+        let mut data2 = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(fail_fd, &mut data2), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn per_heap_fail_every_nth_isolated() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "a".to_string(),
+            HeapProfile {
+                sim_override: Some(SimConfig {
+                    fail_every_nth: 2,
+                    ..Default::default()
+                }),
+                ..HeapProfile::default()
+            },
+        );
+        configs.insert("b".to_string(), HeapProfile::default());
+        let b = MockBackend::with_heaps(configs);
+
+        let fd_a = b.open("a").unwrap();
+        let fd_b = b.open("b").unwrap();
+
+        // Heap B allocs don't affect heap A's counter.
+        for _ in 0..5 {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(fd_b, &mut data).unwrap();
+        }
+
+        // Heap A: 1st alloc succeeds, 2nd fails (every 2nd).
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(fd_a, &mut data).unwrap();
+        let mut data2 = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        assert_eq!(b.alloc(fd_a, &mut data2), Err(Errno::EIO));
+    }
+
+    #[test]
+    fn available_heaps_strict() {
+        let b = MockBackend::new_multi_heap();
+        assert_eq!(
+            b.available_heaps(),
+            vec!["restricted", "system", "system-uncached"]
+        );
+    }
+
+    #[test]
+    fn available_heaps_permissive() {
+        let b = MockBackend::new();
+        assert_eq!(b.available_heaps(), vec!["system"]);
+    }
+
+    #[test]
+    fn restricted_heap_deny_cpu_access() {
+        let b = MockBackend::new_multi_heap();
+        let (heap_fd, buf_fd) = {
+            let heap_fd = b.open("restricted").unwrap();
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(heap_fd, &mut data).unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            (heap_fd, data.fd as i32)
+        };
+
+        // mmap denied with EACCES.
+        assert_eq!(b.mmap(buf_fd, 4096), Err(Errno::EACCES));
+
+        // sync is no-op (returns Ok).
+        b.sync(buf_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)
+            .unwrap();
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
+    }
+
+    #[test]
+    fn restricted_heap_non_cpu_ops_ok() {
+        let b = MockBackend::new_multi_heap();
+        let heap_fd = b.open("restricted").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd = data.fd as i32;
+
+        // llseek works.
+        let size = b.llseek(buf_fd, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size, 4096);
+
+        // dup works.
+        let dup_fd = b.dup(buf_fd).unwrap();
+        assert_ne!(buf_fd, dup_fd);
+        b.close(dup_fd).unwrap();
+
+        // export_sync_file works.
+        let mut sf = DmaBufExportSyncFile {
+            flags: DMA_BUF_SYNC_READ as u32,
+            fd: -1,
+        };
+        b.export_sync_file(buf_fd, &mut sf).unwrap();
+        assert!(sf.fd >= MOCK_FD_START);
+        b.close(sf.fd).unwrap();
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
+    }
+
+    #[test]
+    fn system_heap_mmap_works() {
+        let b = MockBackend::new_multi_heap();
+        let heap_fd = b.open("system").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 4096,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd = data.fd as i32;
+
+        // mmap succeeds on system heap.
+        let ptr = b.mmap(buf_fd, 4096).unwrap();
+        assert!(!ptr.is_null());
+
+        b.close(buf_fd).unwrap();
+        b.close_heap(heap_fd).unwrap();
+    }
 }
