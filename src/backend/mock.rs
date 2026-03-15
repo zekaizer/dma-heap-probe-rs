@@ -136,7 +136,7 @@ struct ContainerState {
 #[derive(Debug)]
 struct MockState {
     buffers: HashMap<RawFd, BufferState>,
-    heap_fds: HashSet<RawFd>,
+    heap_fds: HashMap<RawFd, String>,
     /// Tracks mock `sync_file` fds (from export).
     sync_file_fds: HashSet<RawFd>,
     /// Container fds created by MERGE.
@@ -156,7 +156,7 @@ impl MockState {
     fn new() -> Self {
         Self {
             buffers: HashMap::new(),
-            heap_fds: HashSet::new(),
+            heap_fds: HashMap::new(),
             sync_file_fds: HashSet::new(),
             container_fds: HashMap::new(),
             container_device_fds: HashSet::new(),
@@ -264,7 +264,7 @@ impl HeapBackend for MockBackend {
         }
         let mut state = self.state.lock().unwrap();
         let fd = state.alloc_fd();
-        state.heap_fds.insert(fd);
+        state.heap_fds.insert(fd, name.to_string());
         Ok(fd)
     }
 
@@ -275,7 +275,7 @@ impl HeapBackend for MockBackend {
             let mut state = self.state.lock().unwrap();
 
             // Validate heap fd
-            if !state.heap_fds.contains(&heap_fd) {
+            if !state.heap_fds.contains_key(&heap_fd) {
                 return Err(Errno::EBADF);
             }
 
@@ -337,7 +337,7 @@ impl HeapBackend for MockBackend {
 
     fn close_heap(&self, heap_fd: RawFd) -> nix::Result<()> {
         let mut state = self.state.lock().unwrap();
-        if state.heap_fds.remove(&heap_fd) {
+        if state.heap_fds.remove(&heap_fd).is_some() {
             Ok(())
         } else {
             Err(Errno::EBADF)
