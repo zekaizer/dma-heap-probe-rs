@@ -56,10 +56,23 @@ fn main() {
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
     #[cfg(not(target_os = "android"))]
-    let backend = backend::mock::MockBackend::new_realistic();
+    let backend = if cli.heaps.is_some() {
+        // User-specified heaps: use permissive backend (accepts any heap name).
+        backend::mock::MockBackend::new_realistic()
+    } else {
+        // Default: multi-heap with system + system-uncached + restricted.
+        backend::mock::MockBackend::new_multi_heap_realistic()
+    };
     #[cfg(not(target_os = "android"))]
     tracing::warn!("running with mock backend (not Android) — DMA-BUF operations are simulated");
 
+    #[cfg(not(target_os = "android"))]
+    let heaps = if cli.heaps.is_some() {
+        probe::discover_heaps(cli.heaps.as_deref())
+    } else {
+        backend.available_heaps()
+    };
+    #[cfg(target_os = "android")]
     let heaps = probe::discover_heaps(cli.heaps.as_deref());
     let heap_w = fmt::heap_width(&heaps);
 
