@@ -3,6 +3,8 @@ mod backend;
 mod cli;
 mod cmd;
 #[allow(dead_code)]
+mod container;
+#[allow(dead_code)]
 mod dmabuf;
 mod fmt;
 #[allow(dead_code)]
@@ -109,7 +111,9 @@ fn init_tracing(stderr_level: LevelFilter, log_level: cli::LogLevel) {
 /// Returns `Ok(Some(RunResult))` for test commands, `Ok(None)` for info/side-effect
 /// commands, or `Err` on info failure.
 #[allow(clippy::too_many_lines)]
-fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+fn dispatch_command<
+    B: backend::HeapBackend + backend::DmaBufBackend + backend::ContainerBackend + Send + Sync,
+>(
     cli: &Cli,
     backend: &B,
     heaps: &[String],
@@ -270,6 +274,17 @@ fn dispatch_command<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sy
                 start.elapsed(),
             )))
         }
+        Command::Container => {
+            let start = Instant::now();
+            let (sub, err) = cmd::container::run(backend, heaps, heap_w);
+            Ok(Some(build_single_stage_result(
+                "container",
+                heaps,
+                &sub,
+                err,
+                start.elapsed(),
+            )))
+        }
         Command::All => Ok(Some(run_all(backend, heaps))),
     }
 }
@@ -312,7 +327,9 @@ where
 }
 
 /// Run all test stages sequentially with result tracking.
-fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
+fn run_all<
+    B: backend::HeapBackend + backend::DmaBufBackend + backend::ContainerBackend + Send + Sync,
+>(
     backend: &B,
     heaps: &[String],
 ) -> runner::RunResult {
@@ -352,6 +369,11 @@ fn run_all<B: backend::HeapBackend + backend::DmaBufBackend + Send + Sync>(
             stage_result(cmd::pressure::run(backend, heap, 4096, None, heap_w))
         });
     }
+
+    // Container tests run once across all heaps (not per-heap).
+    runner::run_stage(&mut results, "container", "container", heap_w, || {
+        stage_result(cmd::container::run(backend, heaps, heap_w))
+    });
 
     tracing::info!(
         passed = results.total_passed,
@@ -476,6 +498,7 @@ mod fuzz_tests {
                 "10".into(),
             ]),
             Just(vec!["info".into()]),
+            Just(vec!["container".into()]),
             (1..3u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string()]),
             (1..3u64).prop_map(|i| vec![
                 "aging".into(),

@@ -16,8 +16,11 @@ use nix::unistd;
 
 use crate::ioctl::dma_buf::{self, DmaBufExportSyncFile, DmaBufImportSyncFile, DmaBufSync};
 use crate::ioctl::dma_heap::{self, DmaHeapAllocationData};
+use crate::ioctl::dmabuf_container::{
+    self, DmaBufMask, DmaBufMerge, mask_from_array, mask_to_array,
+};
 
-use super::{DmaBufBackend, HeapBackend};
+use super::{ContainerBackend, DmaBufBackend, HeapBackend};
 
 /// Real backend using `/dev/dma_heap/` device nodes and ioctl/mmap syscalls.
 pub struct RealBackend;
@@ -115,6 +118,59 @@ impl DmaBufBackend for RealBackend {
     }
 
     fn close(&self, fd: RawFd) -> nix::Result<()> {
+        unistd::close(fd)
+    }
+}
+
+impl ContainerBackend for RealBackend {
+    fn open_container_device(&self) -> nix::Result<RawFd> {
+        let cpath = CString::new("/dev/dmabuf_container").map_err(|_| Errno::EINVAL)?;
+        let owned_fd = nix::fcntl::open(
+            cpath.as_c_str(),
+            OFlag::O_RDONLY | OFlag::O_CLOEXEC,
+            Mode::empty(),
+        )?;
+        Ok(owned_fd.into_raw_fd())
+    }
+
+    #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+    fn merge(&self, device_fd: RawFd, buf_fds: &[RawFd]) -> nix::Result<RawFd> {
+        let mut data = DmaBufMerge {
+            dma_bufs: buf_fds.as_ptr() as u64,
+            count: buf_fds.len() as i32,
+            dmabuf_container: 0,
+            reserved: [0; 2],
+        };
+        // SAFETY: device_fd is a valid /dev/dmabuf_container fd, buf_fds pointer is valid.
+        unsafe { dmabuf_container::dmabuf_container_merge(device_fd, &mut data) }?;
+        Ok(data.dmabuf_container)
+    }
+
+    fn set_mask(&self, device_fd: RawFd, container_fd: RawFd, mask: u64) -> nix::Result<()> {
+        #[allow(clippy::cast_possible_wrap)]
+        let data = DmaBufMask {
+            dmabuf_container: container_fd as i32,
+            reserved: 0,
+            mask: mask_to_array(mask),
+        };
+        // SAFETY: device_fd is a valid /dev/dmabuf_container fd.
+        unsafe { dmabuf_container::dmabuf_container_set_mask(device_fd, &raw const data) }?;
+        Ok(())
+    }
+
+    #[allow(clippy::cast_possible_wrap)]
+    fn get_mask(&self, device_fd: RawFd, container_fd: RawFd) -> nix::Result<u64> {
+        let mut data = DmaBufMask {
+            dmabuf_container: container_fd as i32,
+            reserved: 0,
+            mask: [0; 2],
+        };
+        // SAFETY: device_fd is a valid /dev/dmabuf_container fd.
+        unsafe { dmabuf_container::dmabuf_container_get_mask(device_fd, &mut data) }?;
+        Ok(mask_from_array(data.mask))
+    }
+
+    fn close_container(&self, fd: RawFd) -> nix::Result<()> {
         unistd::close(fd)
     }
 }

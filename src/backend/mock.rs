@@ -16,7 +16,9 @@ use crate::ioctl::dma_buf::{
 };
 use crate::ioctl::dma_heap::{DMA_HEAP_VALID_FD_FLAGS, DmaHeapAllocationData};
 
-use super::{DmaBufBackend, HeapBackend};
+use crate::ioctl::dmabuf_container::MAX_BUFCON_SRC_BUFS;
+
+use super::{ContainerBackend, DmaBufBackend, HeapBackend};
 
 /// Page size used for alignment in mock allocations.
 const PAGE_SIZE: u64 = 4096;
@@ -122,12 +124,25 @@ pub struct SimConfig {
     pub latency_ns_per_4k: u64,
 }
 
+/// State for a container fd (created by MERGE).
+#[derive(Debug, Clone)]
+struct ContainerState {
+    /// Buffer fds contained in this container.
+    buffer_fds: Vec<RawFd>,
+    /// Active buffer mask (0 = all unmasked on creation).
+    mask: u64,
+}
+
 #[derive(Debug)]
 struct MockState {
     buffers: HashMap<RawFd, BufferState>,
     heap_fds: HashSet<RawFd>,
     /// Tracks mock `sync_file` fds (from export).
     sync_file_fds: HashSet<RawFd>,
+    /// Container fds created by MERGE.
+    container_fds: HashMap<RawFd, ContainerState>,
+    /// Container device fds (`/dev/dmabuf_container`).
+    container_device_fds: HashSet<RawFd>,
     next_fd: i32,
     /// Simulation configuration for fault injection.
     sim: Option<SimConfig>,
@@ -143,6 +158,8 @@ impl MockState {
             buffers: HashMap::new(),
             heap_fds: HashSet::new(),
             sync_file_fds: HashSet::new(),
+            container_fds: HashMap::new(),
+            container_device_fds: HashSet::new(),
             next_fd: MOCK_FD_START,
             sim: None,
             alloc_count: 0,
@@ -335,6 +352,11 @@ impl DmaBufBackend for MockBackend {
         {
             let mut state = self.state.lock().unwrap();
 
+            // Container fds cannot be mmap'd (kernel returns EACCES).
+            if state.container_fds.contains_key(&fd) {
+                return Err(Errno::EACCES);
+            }
+
             // Extract corruption config before borrowing buffers.
             let corrupt_nth = state.sim.as_ref().map_or(0, |s| s.corrupt_every_nth);
 
@@ -376,6 +398,12 @@ impl DmaBufBackend for MockBackend {
         let ns_per_4k;
         {
             let state = self.state.lock().unwrap();
+
+            // Container fds cannot be synced.
+            if state.container_fds.contains_key(&fd) {
+                return Err(Errno::EINVAL);
+            }
+
             let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
             // Validate flags: only valid bits allowed
@@ -407,6 +435,12 @@ impl DmaBufBackend for MockBackend {
 
     fn llseek(&self, fd: RawFd, offset: i64, whence: i32) -> nix::Result<i64> {
         let state = self.state.lock().unwrap();
+
+        // Container fds do not support llseek.
+        if state.container_fds.contains_key(&fd) {
+            return Err(Errno::EINVAL);
+        }
+
         let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
 
         match whence {
@@ -488,6 +522,109 @@ impl DmaBufBackend for MockBackend {
             return Ok(());
         }
         if state.sync_file_fds.remove(&fd) {
+            return Ok(());
+        }
+
+        Err(Errno::EBADF)
+    }
+}
+
+impl ContainerBackend for MockBackend {
+    fn open_container_device(&self) -> nix::Result<RawFd> {
+        let mut state = self.state.lock().unwrap();
+        let fd = state.alloc_fd();
+        state.container_device_fds.insert(fd);
+        Ok(fd)
+    }
+
+    #[allow(clippy::cast_possible_truncation)]
+    fn merge(&self, device_fd: RawFd, buf_fds: &[RawFd]) -> nix::Result<RawFd> {
+        let mut state = self.state.lock().unwrap();
+
+        // Validate device fd.
+        if !state.container_device_fds.contains(&device_fd) {
+            return Err(Errno::EBADF);
+        }
+
+        // Validate count range (kernel: 1..=MAX_BUFCON_SRC_BUFS).
+        if buf_fds.is_empty() || buf_fds.len() > MAX_BUFCON_SRC_BUFS {
+            return Err(Errno::EINVAL);
+        }
+
+        // Flatten: resolve each fd — if it's a container, extract its buffers.
+        let mut resolved = Vec::new();
+        for &fd in buf_fds {
+            if let Some(container) = state.container_fds.get(&fd) {
+                resolved.extend_from_slice(&container.buffer_fds);
+            } else if state.buffers.contains_key(&fd) {
+                resolved.push(fd);
+            } else {
+                return Err(Errno::EBADF);
+            }
+        }
+
+        // Check total count after flattening.
+        if resolved.len() > crate::ioctl::dmabuf_container::MAX_BUFCON_BUFS {
+            return Err(Errno::EINVAL);
+        }
+
+        let container_fd = state.alloc_fd();
+        state.container_fds.insert(
+            container_fd,
+            ContainerState {
+                buffer_fds: resolved,
+                mask: 0,
+            },
+        );
+
+        Ok(container_fd)
+    }
+
+    fn set_mask(&self, device_fd: RawFd, container_fd: RawFd, mask: u64) -> nix::Result<()> {
+        let state = self.state.lock().unwrap();
+
+        if !state.container_device_fds.contains(&device_fd) {
+            return Err(Errno::EBADF);
+        }
+
+        let container = state.container_fds.get(&container_fd).ok_or(Errno::EBADF)?;
+
+        // Validate mask: bits beyond count are invalid.
+        let count = container.buffer_fds.len();
+        if count < 64 && mask & !((1u64 << count) - 1) != 0 {
+            return Err(Errno::EINVAL);
+        }
+
+        // Drop immutable borrow and re-acquire mutably.
+        drop(state);
+        let mut state = self.state.lock().unwrap();
+        state
+            .container_fds
+            .get_mut(&container_fd)
+            .ok_or(Errno::EBADF)?
+            .mask = mask;
+
+        Ok(())
+    }
+
+    fn get_mask(&self, device_fd: RawFd, container_fd: RawFd) -> nix::Result<u64> {
+        let state = self.state.lock().unwrap();
+
+        if !state.container_device_fds.contains(&device_fd) {
+            return Err(Errno::EBADF);
+        }
+
+        let container = state.container_fds.get(&container_fd).ok_or(Errno::EBADF)?;
+        Ok(container.mask)
+    }
+
+    fn close_container(&self, fd: RawFd) -> nix::Result<()> {
+        let mut state = self.state.lock().unwrap();
+
+        if state.container_fds.remove(&fd).is_some() {
+            return Ok(());
+        }
+        if state.container_device_fds.remove(&fd) {
             return Ok(());
         }
 
@@ -962,5 +1099,221 @@ mod tests {
             ..Default::default()
         };
         b.alloc(heap_fd, &mut data2).unwrap();
+    }
+
+    // ── Container backend tests ──
+
+    #[test]
+    fn container_open_device() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        assert!(dev_fd >= MOCK_FD_START);
+        b.close_container(dev_fd).unwrap();
+    }
+
+    #[test]
+    fn container_merge_two() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let (_, fd2) = open_and_alloc(&b, 8192);
+
+        let cfd = b.merge(dev_fd, &[fd1, fd2]).unwrap();
+        assert!(cfd >= MOCK_FD_START);
+
+        // Default mask is 0.
+        assert_eq!(b.get_mask(dev_fd, cfd).unwrap(), 0);
+
+        b.close_container(cfd).unwrap();
+        b.close_container(dev_fd).unwrap();
+    }
+
+    #[test]
+    fn container_merge_single() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+        assert!(cfd >= MOCK_FD_START);
+        b.close_container(cfd).unwrap();
+    }
+
+    #[test]
+    fn container_merge_empty_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        assert_eq!(b.merge(dev_fd, &[]), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn container_merge_over_max_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let heap_fd = b.open("system").unwrap();
+
+        // Allocate MAX_BUFCON_SRC_BUFS + 1 = 64 buffers.
+        let mut fds = Vec::new();
+        for _ in 0..=MAX_BUFCON_SRC_BUFS {
+            let mut data = DmaHeapAllocationData {
+                len: 4096,
+                fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+                ..Default::default()
+            };
+            b.alloc(heap_fd, &mut data).unwrap();
+            #[allow(clippy::cast_possible_wrap)]
+            fds.push(data.fd as i32);
+        }
+        assert_eq!(fds.len(), 64);
+        assert_eq!(b.merge(dev_fd, &fds), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn container_merge_invalid_fd() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        assert_eq!(b.merge(dev_fd, &[9999]), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_merge_bad_device_fd() {
+        let b = setup();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        assert_eq!(b.merge(9999, &[fd1]), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_set_get_mask_roundtrip() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let (_, fd2) = open_and_alloc(&b, 4096);
+        let (_, fd3) = open_and_alloc(&b, 4096);
+
+        let cfd = b.merge(dev_fd, &[fd1, fd2, fd3]).unwrap();
+
+        // Set mask = 0b101 (buffers 0 and 2 active).
+        b.set_mask(dev_fd, cfd, 0b101).unwrap();
+        assert_eq!(b.get_mask(dev_fd, cfd).unwrap(), 0b101);
+
+        // Set mask = 0b111 (all active).
+        b.set_mask(dev_fd, cfd, 0b111).unwrap();
+        assert_eq!(b.get_mask(dev_fd, cfd).unwrap(), 0b111);
+
+        // Set mask = 0 (all unmasked).
+        b.set_mask(dev_fd, cfd, 0).unwrap();
+        assert_eq!(b.get_mask(dev_fd, cfd).unwrap(), 0);
+    }
+
+    #[test]
+    fn container_set_mask_overflow_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let (_, fd2) = open_and_alloc(&b, 4096);
+
+        let cfd = b.merge(dev_fd, &[fd1, fd2]).unwrap();
+        // count=2 → valid bits are 0b11. Setting bit 2 (0b100) should fail.
+        assert_eq!(b.set_mask(dev_fd, cfd, 0b100), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn container_set_mask_bad_container() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        assert_eq!(b.set_mask(dev_fd, 9999, 0), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_get_mask_bad_container() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        assert_eq!(b.get_mask(dev_fd, 9999), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_close_then_ops_fail() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+
+        b.close_container(cfd).unwrap();
+        assert_eq!(b.set_mask(dev_fd, cfd, 0), Err(Errno::EBADF));
+        assert_eq!(b.get_mask(dev_fd, cfd), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_close_preserves_source_bufs() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+
+        b.close_container(cfd).unwrap();
+        // Source buffer should still be usable.
+        let size = b.llseek(fd1, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size, 4096);
+    }
+
+    #[test]
+    fn container_close_bad_fd() {
+        let b = setup();
+        assert_eq!(b.close_container(9999), Err(Errno::EBADF));
+    }
+
+    #[test]
+    fn container_mmap_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+
+        assert_eq!(b.mmap(cfd, 4096), Err(Errno::EACCES));
+    }
+
+    #[test]
+    fn container_sync_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+
+        assert_eq!(
+            b.sync(cfd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ),
+            Err(Errno::EINVAL)
+        );
+    }
+
+    #[test]
+    fn container_llseek_fails() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let cfd = b.merge(dev_fd, &[fd1]).unwrap();
+
+        assert_eq!(b.llseek(cfd, 0, libc::SEEK_END), Err(Errno::EINVAL));
+    }
+
+    #[test]
+    fn container_flatten_nested() {
+        let b = setup();
+        let dev_fd = b.open_container_device().unwrap();
+        let (_, fd1) = open_and_alloc(&b, 4096);
+        let (_, fd2) = open_and_alloc(&b, 4096);
+        let (_, fd3) = open_and_alloc(&b, 4096);
+
+        // Create inner container [fd1, fd2].
+        let inner = b.merge(dev_fd, &[fd1, fd2]).unwrap();
+
+        // Merge inner container + fd3 → should flatten to [fd1, fd2, fd3].
+        let outer = b.merge(dev_fd, &[inner, fd3]).unwrap();
+
+        // Mask with 3 bits should be valid (count=3 after flatten).
+        b.set_mask(dev_fd, outer, 0b111).unwrap();
+        assert_eq!(b.get_mask(dev_fd, outer).unwrap(), 0b111);
+
+        // Bit 3 (0b1000) should be invalid.
+        assert_eq!(b.set_mask(dev_fd, outer, 0b1000), Err(Errno::EINVAL));
     }
 }

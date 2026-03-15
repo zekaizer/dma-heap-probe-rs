@@ -153,7 +153,10 @@ pub enum Command {
         buckets: usize,
     },
 
-    /// Run all test stages (basic, negative, perf, pressure).
+    /// Samsung dma-buf container tests (merge, mask, cross-heap).
+    Container,
+
+    /// Run all test stages (basic, negative, perf, pressure, container).
     All,
 
     /// Display system DMA heap information and buffer status.
@@ -403,6 +406,7 @@ mod tests {
             "negative",
             "aging",
             "histogram",
+            "container",
             "all",
             "info",
         ] {
