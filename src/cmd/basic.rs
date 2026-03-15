@@ -38,15 +38,33 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, ?sizes, repeat, threads, "basic sequence");
 
+    let caps = crate::probe::probe_heap(backend, heap_name);
+    let mmap_ok = caps.can_mmap;
+
     let tests: [(&str, nix::Result<()>); 8] = [
         (
             "alloc_and_map",
-            test_alloc_and_map(backend, heap_name, sizes),
+            if mmap_ok {
+                test_alloc_and_map(backend, heap_name, sizes)
+            } else {
+                Ok(())
+            },
         ),
-        ("alloc_zeroed", test_alloc_zeroed(backend, heap_name, sizes)),
+        (
+            "alloc_zeroed",
+            if mmap_ok {
+                test_alloc_zeroed(backend, heap_name, sizes)
+            } else {
+                Ok(())
+            },
+        ),
         (
             "repeated_alloc",
-            test_repeated_alloc(backend, heap_name, sizes, repeat),
+            if mmap_ok {
+                test_repeated_alloc(backend, heap_name, sizes, repeat)
+            } else {
+                Ok(())
+            },
         ),
         ("llseek_size", test_llseek_size(backend, heap_name, sizes)),
         (
@@ -59,9 +77,20 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
         (
             "concurrent_alloc",
-            test_concurrent_alloc(backend, heap_name, threads),
+            if mmap_ok {
+                test_concurrent_alloc(backend, heap_name, threads)
+            } else {
+                Ok(())
+            },
         ),
-        ("dup_fd", test_dup_fd(backend, heap_name)),
+        (
+            "dup_fd",
+            if mmap_ok {
+                test_dup_fd(backend, heap_name)
+            } else {
+                Ok(())
+            },
+        ),
     ];
 
     runner::collect_test_results("basic", heap_name, heap_w, &tests)

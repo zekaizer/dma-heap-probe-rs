@@ -46,7 +46,30 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let mut results = Vec::new();
 
+    // Skip FullPipeline mode for heaps that don't support mmap.
+    let needs_mmap = matches!(mode, HistMode::FullPipeline);
+
     for heap_name in heaps {
+        if needs_mmap {
+            let caps = crate::probe::probe_heap(backend, heap_name);
+            if !caps.can_mmap {
+                tracing::info!(
+                    heap = heap_name.as_str(),
+                    "skipping histogram: mmap unsupported"
+                );
+                for &size in sizes {
+                    let test_name = format!("{heap_name}@{size}");
+                    fmt::print_pass(heap_name, heap_w, &format!("histogram::{test_name} (skip)"));
+                    results.push(SubTestResult {
+                        name: test_name,
+                        passed: true,
+                        error: None,
+                    });
+                }
+                continue;
+            }
+        }
+
         let heap = match DmaHeap::open(backend, heap_name) {
             Ok(h) => h,
             Err(e) => {

@@ -26,6 +26,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(heap = heap_name, "negative sequence");
 
+    let caps = crate::probe::probe_heap(backend, heap_name);
+
     let tests: Vec<(&str, nix::Result<()>)> = vec![
         // Layer 1: Heap device access
         ("neg_open_nonexistent", neg_open_nonexistent(backend)),
@@ -60,10 +62,14 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             neg_sync_on_closed_fd(backend, heap_name),
         ),
         ("neg_llseek_invalid", neg_llseek_invalid(backend, heap_name)),
-        // Layer 4: mmap
+        // Layer 4: mmap (skip if heap does not support mmap)
         (
             "neg_mmap_beyond_size",
-            neg_mmap_beyond_size(backend, heap_name),
+            if caps.can_mmap {
+                neg_mmap_beyond_size(backend, heap_name)
+            } else {
+                Ok(())
+            },
         ),
         // Layer 5: sync_file
         (
