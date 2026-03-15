@@ -92,6 +92,47 @@ pub trait DmaBufBackend {
     fn close(&self, fd: RawFd) -> nix::Result<()>;
 }
 
+/// Backend for Samsung dma-buf container device operations.
+///
+/// All ioctls are invoked on the `/dev/dmabuf_container` device fd.
+/// The target container is identified by its fd passed as a parameter.
+pub trait ContainerBackend {
+    /// Open the `/dev/dmabuf_container` device. Returns a device fd.
+    ///
+    /// # Errors
+    /// - `ENOENT` if the device does not exist (non-Samsung)
+    /// - `EACCES` if permission is denied
+    fn open_container_device(&self) -> nix::Result<RawFd>;
+
+    /// Merge dma-buf fds into a container via `DMABUF_CONTAINER_IOCTL_MERGE`.
+    /// Returns the new container fd.
+    ///
+    /// # Errors
+    /// - `EINVAL` if `buf_fds` is empty or exceeds `MAX_BUFCON_SRC_BUFS`
+    /// - `EBADF` if `device_fd` or any buffer fd is invalid
+    fn merge(&self, device_fd: RawFd, buf_fds: &[RawFd]) -> nix::Result<RawFd>;
+
+    /// Set the active buffer mask via `DMABUF_CONTAINER_IOCTL_SET_MASK`.
+    ///
+    /// # Errors
+    /// - `EINVAL` if mask has bits set beyond the buffer count, or fd is not a container
+    /// - `EBADF` if `device_fd` or `container_fd` is invalid
+    fn set_mask(&self, device_fd: RawFd, container_fd: RawFd, mask: u64) -> nix::Result<()>;
+
+    /// Get the current buffer mask via `DMABUF_CONTAINER_IOCTL_GET_MASK`.
+    ///
+    /// # Errors
+    /// - `EINVAL` if fd is not a container
+    /// - `EBADF` if `device_fd` or `container_fd` is invalid
+    fn get_mask(&self, device_fd: RawFd, container_fd: RawFd) -> nix::Result<u64>;
+
+    /// Close a container fd or container device fd.
+    ///
+    /// # Errors
+    /// - `EBADF` if `fd` is invalid
+    fn close_container(&self, fd: RawFd) -> nix::Result<()>;
+}
+
 #[cfg(target_os = "android")]
 pub mod real;
 
