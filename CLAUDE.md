@@ -84,6 +84,19 @@ Each feature branch is based on `main` and merged back via PR after review.
 - `tasks/todo.md` — implementation checklist with checkable items per phase. Update progress as tasks are completed.
 - `tasks/lessons.md` — patterns and corrections discovered during development. Record mistakes and fixes here to avoid repeating them.
 
+## Claude Code Hooks
+
+Hooks are defined in `.claude/settings.json` and scripts live in `.claude/hooks/`.
+
+| Hook | Event | Trigger | Action |
+|---|---|---|---|
+| `format-rs.sh` | PostToolUse (Write\|Edit) | `*.rs` modified | `rustfmt` on the file |
+| `clippy-rs.sh` | PostToolUse (Write\|Edit) | `*.rs` modified | `cargo clippy` (full project) |
+| `check-cargo.sh` | PostToolUse (Write\|Edit) | `Cargo.toml` modified | `cargo clippy` (full project) |
+| `pre-git.sh` | PreToolUse (Bash) | `git commit` or `git push` | `cargo test` + `cargo clippy` |
+
+All hooks exit 2 on failure, blocking the action and feeding errors back to Claude for auto-fix.
+
 ## CI/CD
 
 - **CI** (`.github/workflows/ci.yml`): push/PR to `main`
