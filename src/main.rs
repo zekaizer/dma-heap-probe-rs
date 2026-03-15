@@ -3,6 +3,8 @@ mod backend;
 mod cli;
 mod cmd;
 #[allow(dead_code)]
+mod container;
+#[allow(dead_code)]
 mod dmabuf;
 mod fmt;
 #[allow(dead_code)]
