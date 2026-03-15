@@ -101,6 +101,8 @@ struct BufferState {
     data: Arc<MmapBacking>,
     /// Current sync state (shared across dup'd fds).
     sync_state: Arc<Mutex<SyncState>>,
+    /// Heap name that allocated this buffer (for per-heap behavior).
+    heap_name: Option<String>,
 }
 
 /// Simulation configuration for injecting faults into mock operations.
@@ -122,6 +124,67 @@ pub struct SimConfig {
 
     /// Simulated latency per 4K page (nanoseconds). `0` = disabled.
     pub latency_ns_per_4k: u64,
+}
+
+/// Per-heap simulation profile for multi-heap mock testing.
+///
+/// Controls latency characteristics, cache behavior, and CPU access
+/// restrictions for individual heaps in strict (multi-heap) mode.
+#[derive(Debug, Clone)]
+pub struct HeapProfile {
+    /// Latency multiplier relative to base (1.0 = normal, >1.0 = slower).
+    pub latency_multiplier: f64,
+    /// Whether this heap uses cached memory (affects sync latency ratio).
+    pub cached: bool,
+    /// Whether CPU access (mmap) is allowed on buffers from this heap.
+    /// `false` = mmap returns `EACCES`, sync is no-op (Samsung secure heap behavior).
+    pub cpu_access: bool,
+    /// Per-heap fault injection config (overrides global `SimConfig`).
+    pub sim_override: Option<SimConfig>,
+}
+
+impl Default for HeapProfile {
+    fn default() -> Self {
+        Self {
+            latency_multiplier: 1.0,
+            cached: true,
+            cpu_access: true,
+            sim_override: None,
+        }
+    }
+}
+
+impl HeapProfile {
+    /// Profile for `system` heap (CMA-backed, cached).
+    #[must_use]
+    pub fn system() -> Self {
+        Self::default()
+    }
+
+    /// Profile for `system-uncached` heap (write-combine, uncached).
+    /// Higher alloc latency (~1.8x), lower sync cost (no cache flush).
+    #[must_use]
+    pub fn system_uncached() -> Self {
+        Self {
+            latency_multiplier: 1.8,
+            cached: false,
+            cpu_access: true,
+            sim_override: None,
+        }
+    }
+
+    /// Profile for `restricted` (secure) heap.
+    /// Alloc succeeds but mmap returns `EACCES`, sync is no-op.
+    /// Matches Samsung kernel `DMA_HEAP_FLAG_PROTECTED` behavior.
+    #[must_use]
+    pub fn restricted() -> Self {
+        Self {
+            latency_multiplier: 1.0,
+            cached: false,
+            cpu_access: false,
+            sim_override: None,
+        }
+    }
 }
 
 /// State for a container fd (created by MERGE).
@@ -146,7 +209,12 @@ struct MockState {
     next_fd: i32,
     /// Simulation configuration for fault injection.
     sim: Option<SimConfig>,
-    /// Total alloc calls (for `fail_every_nth`).
+    /// Per-heap configs. `None` = permissive mode (any name accepted).
+    /// `Some` = strict mode (only registered heaps accepted).
+    heap_configs: Option<HashMap<String, HeapProfile>>,
+    /// Per-heap alloc counts (for per-heap `fail_every_nth`).
+    heap_alloc_counts: HashMap<String, u64>,
+    /// Total alloc calls (for `fail_every_nth` in permissive mode).
     alloc_count: u64,
     /// Total mmap calls (for `corrupt_every_nth`).
     mmap_count: u64,
@@ -162,6 +230,8 @@ impl MockState {
             container_device_fds: HashSet::new(),
             next_fd: MOCK_FD_START,
             sim: None,
+            heap_configs: None,
+            heap_alloc_counts: HashMap::new(),
             alloc_count: 0,
             mmap_count: 0,
         }
@@ -220,6 +290,66 @@ impl MockBackend {
         mock_state.sim = Some(sim);
         Self {
             state: Mutex::new(mock_state),
+        }
+    }
+
+    /// Multi-heap mock with default profiles (system + system-uncached + restricted).
+    /// Strict mode: only registered heaps are accepted by `open()`.
+    #[must_use]
+    pub fn new_multi_heap() -> Self {
+        let mut configs = HashMap::new();
+        configs.insert("system".to_string(), HeapProfile::system());
+        configs.insert(
+            "system-uncached".to_string(),
+            HeapProfile::system_uncached(),
+        );
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        Self::with_heaps(configs)
+    }
+
+    /// Multi-heap mock with custom per-heap profiles. Strict mode.
+    #[must_use]
+    pub fn with_heaps(heaps: HashMap<String, HeapProfile>) -> Self {
+        let mut state = MockState::new();
+        state.heap_configs = Some(heaps);
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+
+    /// Multi-heap mock with default profiles and realistic latency simulation.
+    #[must_use]
+    pub fn new_multi_heap_realistic() -> Self {
+        let mut configs = HashMap::new();
+        configs.insert("system".to_string(), HeapProfile::system());
+        configs.insert(
+            "system-uncached".to_string(),
+            HeapProfile::system_uncached(),
+        );
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        let mut state = MockState::new();
+        state.heap_configs = Some(configs);
+        state.sim = Some(SimConfig {
+            latency_ns_per_4k: 1000,
+            ..Default::default()
+        });
+        Self {
+            state: Mutex::new(state),
+        }
+    }
+
+    /// List available heap names (sorted).
+    /// Returns registered heaps in strict mode, `["system"]` in permissive mode.
+    #[must_use]
+    pub fn available_heaps(&self) -> Vec<String> {
+        let state = self.state.lock().unwrap();
+        match &state.heap_configs {
+            Some(configs) => {
+                let mut names: Vec<String> = configs.keys().cloned().collect();
+                names.sort();
+                names
+            }
+            None => vec!["system".to_string()],
         }
     }
 
@@ -316,11 +446,13 @@ impl HeapBackend for MockBackend {
             let buf = Arc::new(MmapBacking::new(aligned_size as usize)?);
 
             let fd = state.alloc_fd();
+            let heap_name = state.heap_fds.get(&heap_fd).cloned();
             state.buffers.insert(
                 fd,
                 BufferState {
                     data: buf,
                     sync_state: Arc::new(Mutex::new(SyncState::None)),
+                    heap_name,
                 },
             );
 
@@ -503,6 +635,7 @@ impl DmaBufBackend for MockBackend {
         let new_buf = BufferState {
             data: Arc::clone(&original.data),
             sync_state: Arc::clone(&original.sync_state),
+            heap_name: original.heap_name.clone(),
         };
 
         let new_fd = state.alloc_fd();
