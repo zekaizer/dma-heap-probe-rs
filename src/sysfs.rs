@@ -84,6 +84,66 @@ pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
     Ok(SysfsSnapshot { buffers })
 }
 
+// ---------------------------------------------------------------------------
+// CMA area stats — /sys/kernel/mm/cma/<name>/
+// ---------------------------------------------------------------------------
+
+const CMA_SYSFS_PATH: &str = "/sys/kernel/mm/cma";
+
+/// Per-CMA-area allocation statistics from sysfs (`CONFIG_CMA_SYSFS`, kernel 5.13+).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CmaAreaStats {
+    /// CMA area name (e.g. `"reserved"`, `"default_cma_region"`).
+    pub name: String,
+    /// Cumulative pages successfully allocated.
+    pub alloc_pages_success: u64,
+    /// Cumulative pages failed to allocate.
+    pub alloc_pages_fail: u64,
+    /// Cumulative pages released (active = `alloc_success` - `release_success`).
+    pub release_pages_success: u64,
+}
+
+/// Read all CMA area stats from `/sys/kernel/mm/cma/`.
+///
+/// Returns an empty vec if the directory does not exist (`CONFIG_CMA_SYSFS` not enabled).
+pub fn read_cma_areas() -> Vec<CmaAreaStats> {
+    read_cma_areas_from(CMA_SYSFS_PATH)
+}
+
+/// Testable implementation that accepts an arbitrary base path.
+fn read_cma_areas_from(base_path: &str) -> Vec<CmaAreaStats> {
+    let base = Path::new(base_path);
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return Vec::new();
+    };
+
+    let mut areas: Vec<CmaAreaStats> = entries
+        .filter_map(std::result::Result::ok)
+        .filter_map(|entry| {
+            let name = entry.file_name().to_string_lossy().to_string();
+            let dir = entry.path();
+            if !dir.is_dir() {
+                return None;
+            }
+            let read_counter = |file: &str| -> u64 {
+                std::fs::read_to_string(dir.join(file))
+                    .ok()
+                    .and_then(|s| s.trim().parse().ok())
+                    .unwrap_or(0)
+            };
+            Some(CmaAreaStats {
+                name,
+                alloc_pages_success: read_counter("alloc_pages_success"),
+                alloc_pages_fail: read_counter("alloc_pages_fail"),
+                release_pages_success: read_counter("release_pages_success"),
+            })
+        })
+        .collect();
+
+    areas.sort_by(|a, b| a.name.cmp(&b.name));
+    areas
+}
+
 /// Count total active buffers in a snapshot.
 pub fn buffer_count(snap: &SysfsSnapshot) -> usize {
     snap.buffers.len()
@@ -169,5 +229,73 @@ mod tests {
         let json = serde_json::to_string(&snap).unwrap();
         let deserialized: SysfsSnapshot = serde_json::from_str(&json).unwrap();
         assert_eq!(snap, deserialized);
+    }
+
+    #[test]
+    fn read_cma_areas_from_tempdir() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = dir.path().join("default_cma_region");
+        std::fs::create_dir(&area).unwrap();
+        std::fs::write(area.join("alloc_pages_success"), "500\n").unwrap();
+        std::fs::write(area.join("alloc_pages_fail"), "3\n").unwrap();
+        std::fs::write(area.join("release_pages_success"), "200\n").unwrap();
+
+        let areas = read_cma_areas_from(dir.path().to_str().unwrap());
+        assert_eq!(areas.len(), 1);
+        assert_eq!(areas[0].name, "default_cma_region");
+        assert_eq!(areas[0].alloc_pages_success, 500);
+        assert_eq!(areas[0].alloc_pages_fail, 3);
+        assert_eq!(areas[0].release_pages_success, 200);
+    }
+
+    #[test]
+    fn read_cma_areas_multiple_sorted() {
+        let dir = tempfile::tempdir().unwrap();
+        for name in &["reserved", "default"] {
+            let area = dir.path().join(name);
+            std::fs::create_dir(&area).unwrap();
+            std::fs::write(area.join("alloc_pages_success"), "100\n").unwrap();
+            std::fs::write(area.join("alloc_pages_fail"), "0\n").unwrap();
+            std::fs::write(area.join("release_pages_success"), "50\n").unwrap();
+        }
+
+        let areas = read_cma_areas_from(dir.path().to_str().unwrap());
+        assert_eq!(areas.len(), 2);
+        assert_eq!(areas[0].name, "default");
+        assert_eq!(areas[1].name, "reserved");
+    }
+
+    #[test]
+    fn read_cma_areas_nonexistent() {
+        let areas = read_cma_areas_from("/nonexistent/cma/path");
+        assert!(areas.is_empty());
+    }
+
+    #[test]
+    fn read_cma_areas_missing_counter_defaults_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let area = dir.path().join("partial");
+        std::fs::create_dir(&area).unwrap();
+        std::fs::write(area.join("alloc_pages_success"), "42\n").unwrap();
+        // alloc_pages_fail and release_pages_success are missing
+
+        let areas = read_cma_areas_from(dir.path().to_str().unwrap());
+        assert_eq!(areas.len(), 1);
+        assert_eq!(areas[0].alloc_pages_success, 42);
+        assert_eq!(areas[0].alloc_pages_fail, 0);
+        assert_eq!(areas[0].release_pages_success, 0);
+    }
+
+    #[test]
+    fn cma_area_stats_serde_roundtrip() {
+        let stats = CmaAreaStats {
+            name: "test_cma".into(),
+            alloc_pages_success: 1000,
+            alloc_pages_fail: 5,
+            release_pages_success: 800,
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        let deserialized: CmaAreaStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats, deserialized);
     }
 }
