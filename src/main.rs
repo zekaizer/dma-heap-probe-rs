@@ -217,6 +217,7 @@ fn dispatch_command<
         }
         Command::Info {
             detail,
+            probe,
             dump,
             follow,
             interval,
@@ -233,9 +234,12 @@ fn dispatch_command<
                     None
                 };
                 cmd::info::run(
+                    backend,
+                    heaps,
                     *detail,
                     heap_filter.as_deref(),
                     cli.procfs,
+                    *probe,
                     cli.output.as_ref(),
                 )?;
             }

@@ -165,6 +165,10 @@ pub enum Command {
         #[arg(long)]
         detail: bool,
 
+        /// Probe heap capabilities (alloc, mmap, sync, dup, granularity).
+        #[arg(long)]
+        probe: bool,
+
         /// Dump raw sysfs/procfs snapshot (JSON).
         #[arg(long)]
         dump: bool,
@@ -353,11 +357,13 @@ mod tests {
         match cli.command {
             Command::Info {
                 detail,
+                probe,
                 dump,
                 follow,
                 interval,
             } => {
                 assert!(!detail);
+                assert!(!probe);
                 assert!(!dump);
                 assert!(!follow);
                 assert_eq!(interval, 5);

@@ -107,6 +107,8 @@ pub struct InfoReport {
     pub zones: Option<Vec<ZoneEntry>>,
     pub buddyinfo: Option<Vec<BuddyInfoEntry>>,
     pub pagetypeinfo: Option<Vec<PageTypeInfoEntry>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub heap_caps: Option<Vec<crate::probe::HeapCaps>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1088,6 +1090,54 @@ pub fn format_human(report: &InfoReport) -> String {
         }
     }
 
+    // --- Heap Capabilities (--probe) ---
+    if let Some(ref caps) = report.heap_caps {
+        out.push_str("[Heap Capabilities]\n");
+        if caps.is_empty() {
+            out.push_str("  (no heaps probed)\n");
+        } else {
+            let name_w = caps.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
+            let widths = [name_w, 5, 4, 4, 5, 6, 9, 3, 11];
+            let aligns = [Align::Left; 9];
+            out.push_str(&format_row(
+                &widths,
+                &aligns,
+                &[
+                    "HEAP",
+                    "ALLOC",
+                    "MMAP",
+                    "SYNC",
+                    "WRITE",
+                    "LLSEEK",
+                    "SYNC_FILE",
+                    "DUP",
+                    "GRANULARITY",
+                ],
+            ));
+            out.push('\n');
+            for c in caps {
+                let yn = |b: bool| if b { "Y" } else { "-" };
+                out.push_str(&format_row(
+                    &widths,
+                    &aligns,
+                    &[
+                        &c.name,
+                        yn(c.can_alloc),
+                        yn(c.can_mmap),
+                        yn(c.can_sync),
+                        yn(c.can_write),
+                        yn(c.can_llseek),
+                        yn(c.can_sync_file),
+                        yn(c.can_dup),
+                        &c.alloc_granularity.to_string(),
+                    ],
+                ));
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
     out
 }
 
@@ -1097,14 +1147,20 @@ pub fn format_human(report: &InfoReport) -> String {
 
 /// Run the info subcommand.
 ///
+/// - `backend`/`heap_names`: needed for `--probe` capability probing.
 /// - `detail`: show individual buffer list and per-process usage.
 /// - `heap_filter`: when detail is true, filter buffers by heap/exporter name(s).
 /// - `show_procfs`: include extended memory info (zoneinfo, buddyinfo, pagetypeinfo, vm params).
+/// - `show_probe`: probe heap capabilities (alloc, mmap, sync, etc.).
 /// - `output`: if Some, write JSON report to file instead of human-readable stdout.
-pub fn run(
+#[allow(clippy::too_many_arguments)]
+pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
+    backend: &B,
+    heap_names: &[String],
     detail: bool,
     heap_filter: Option<&[&str]>,
     show_procfs: bool,
+    show_probe: bool,
     output: Option<&PathBuf>,
 ) -> anyhow::Result<()> {
     // 1. Enumerate heaps
@@ -1166,6 +1222,13 @@ pub fn run(
         .then(|| procfs::read_pagetypeinfo().ok())
         .flatten();
 
+    // 6. Heap capability probe (--probe)
+    let heap_caps = if show_probe {
+        Some(crate::probe::discover_and_probe(backend, Some(heap_names)))
+    } else {
+        None
+    };
+
     let report = InfoReport {
         heaps,
         buffer_summary,
@@ -1178,6 +1241,7 @@ pub fn run(
         zones,
         buddyinfo,
         pagetypeinfo,
+        heap_caps,
     };
 
     // Output
@@ -1574,6 +1638,7 @@ Node 0, zone    Normal
             zones: None,
             buddyinfo: None,
             pagetypeinfo: None,
+            heap_caps: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[DMA Heaps]"));
@@ -1624,6 +1689,7 @@ Node 0, zone    Normal
             zones: None,
             buddyinfo: None,
             pagetypeinfo: None,
+            heap_caps: None,
         };
         let output = format_human(&report);
         assert!(output.contains("system"));
@@ -1657,6 +1723,7 @@ Node 0, zone    Normal
             zones: None,
             buddyinfo: None,
             pagetypeinfo: None,
+            heap_caps: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[Buffer Details]"));
@@ -1684,6 +1751,7 @@ Node 0, zone    Normal
             zones: None,
             buddyinfo: None,
             pagetypeinfo: None,
+            heap_caps: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: InfoReport = serde_json::from_str(&json).unwrap();

@@ -2,6 +2,8 @@
 
 use nix::errno::Errno;
 
+use serde::{Deserialize, Serialize};
+
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -43,7 +45,7 @@ pub(crate) fn discover_heaps(override_heaps: Option<&[String]>) -> Vec<String> {
 // ── Heap capability probing ─────────────────────────────────────────────────
 
 /// Per-heap capability flags determined by probing.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(clippy::struct_excessive_bools)]
 pub(crate) struct HeapCaps {
     pub name: String,
