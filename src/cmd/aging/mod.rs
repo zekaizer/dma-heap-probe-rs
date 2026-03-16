@@ -977,6 +977,24 @@ fn print_aligned_table(headers: &[&str], rows: &[Vec<String>]) {
     }
 }
 
+/// Format an `OpResult` per-4K latency, showing "-" when no samples recorded.
+fn fmt_op_per_4k(op: &OpResult) -> String {
+    if op.count == 0 {
+        "-".into()
+    } else {
+        format!("{:.3} us", op.per_4k_us)
+    }
+}
+
+/// Format a latency value in microseconds, showing "-" when no samples recorded.
+fn fmt_op_us(val: u64, count: u64) -> String {
+    if count == 0 {
+        "-".into()
+    } else {
+        format!("{val} us")
+    }
+}
+
 /// Print per-heap normalized latency table.
 fn print_per_heap_table(result: &AgingResult) {
     if result.heap_results.is_empty() {
@@ -995,10 +1013,10 @@ fn print_per_heap_table(result: &AgingResult) {
                 fmt_num(h.allocs),
                 fmt_num(h.frees),
                 fmt_num(h.enomem),
-                format!("{:.3} us", h.alloc_lat.per_4k_us),
-                format!("{:.3} us", h.mmap_lat.per_4k_us),
-                format!("{:.3} us", h.sync_lat.per_4k_us),
-                format!("{:.3} us", h.free_lat.per_4k_us),
+                fmt_op_per_4k(&h.alloc_lat),
+                fmt_op_per_4k(&h.mmap_lat),
+                fmt_op_per_4k(&h.sync_lat),
+                fmt_op_per_4k(&h.free_lat),
             ]
         })
         .collect();
@@ -1021,10 +1039,10 @@ fn print_per_op_latency(result: &AgingResult) {
         .map(|(name, op)| {
             vec![
                 (*name).into(),
-                format!("{} us", op.avg_us),
-                format!("{} us", op.p50_us),
-                format!("{} us", op.p99_us),
-                format!("{} us", op.max_us),
+                fmt_op_us(op.avg_us, op.count),
+                fmt_op_us(op.p50_us, op.count),
+                fmt_op_us(op.p99_us, op.count),
+                fmt_op_us(op.max_us, op.count),
             ]
         })
         .collect();
