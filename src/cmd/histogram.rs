@@ -71,18 +71,9 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             }
         }
 
-        let heap = match DmaHeap::open(backend, heap_name) {
-            Ok(h) => h,
-            Err(e) => {
-                results.push(SubTestResult {
-                    name: format!("{heap_name}@open"),
-                    passed: false,
-                    skipped: false,
-                    error: Some(e.to_string()),
-                });
-                return (results, Some(anyhow::Error::from(e)));
-            }
-        };
+        // Heap existence is validated at the framework level (Layer 1).
+        let heap = DmaHeap::open(backend, heap_name)
+            .expect("heap open should succeed (validated by framework)");
 
         for &size in sizes {
             let test_name = format!("{heap_name}@{size}");

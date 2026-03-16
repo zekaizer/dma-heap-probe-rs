@@ -56,13 +56,7 @@ fn main() {
     #[cfg(target_os = "android")]
     let backend = backend::real::RealBackend::new();
     #[cfg(not(target_os = "android"))]
-    let backend = if cli.heaps.is_some() {
-        // User-specified heaps: use permissive backend (accepts any heap name).
-        backend::mock::MockBackend::new_realistic()
-    } else {
-        // Default: multi-heap with system + system-uncached + restricted.
-        backend::mock::MockBackend::new_multi_heap_realistic()
-    };
+    let backend = backend::mock::MockBackend::new_multi_heap_realistic();
     #[cfg(not(target_os = "android"))]
     tracing::warn!("running with mock backend (not Android) — DMA-BUF operations are simulated");
 
@@ -120,6 +114,15 @@ fn init_tracing(stderr_level: LevelFilter, log_level: cli::LogLevel) {
     }
 }
 
+/// Validate that all specified heaps can be opened.
+fn validate_heaps<B: backend::HeapBackend>(backend: &B, heaps: &[String]) -> anyhow::Result<()> {
+    for heap in heaps {
+        let _h = heap::DmaHeap::open(backend, heap)
+            .map_err(|e| anyhow::anyhow!("heap '{heap}' not accessible: {e}"))?;
+    }
+    Ok(())
+}
+
 /// Dispatch a parsed command to the appropriate handler.
 /// Returns `Ok(Some(RunResult))` for test commands, `Ok(None)` for info/side-effect
 /// commands, or `Err` on info failure.
@@ -132,6 +135,11 @@ fn dispatch_command<
     heaps: &[String],
     heap_w: usize,
 ) -> anyhow::Result<Option<runner::RunResult>> {
+    // Layer 1: validate global --heaps option before entering any subcommand.
+    if !matches!(cli.command, Command::Info { .. }) {
+        validate_heaps(backend, heaps)?;
+    }
+
     match &cli.command {
         Command::Basic {
             sizes,

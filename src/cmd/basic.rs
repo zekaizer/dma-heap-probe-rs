@@ -33,17 +33,6 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     tracing::debug!(heap = heap_name, ?sizes, repeat, threads, "basic sequence");
 
     let caps = crate::probe::probe_heap(backend, heap_name);
-
-    // Heap not available — no tests to run.
-    if !caps.can_alloc {
-        return (
-            vec![],
-            Some(anyhow::anyhow!(
-                "heap '{heap_name}' not available (open/alloc failed)"
-            )),
-        );
-    }
-
     let mmap_ok = caps.can_mmap;
     let granularity = caps.alloc_granularity;
 
@@ -588,10 +577,11 @@ mod tests {
 
     #[test]
     fn run_bad_heap() {
+        // Bad heap validation is handled at the framework level (Layer 1).
+        // When called directly, individual tests fail with proper errors.
         let backend = MockBackend::new();
         let (results, err) = run(&backend, "", &[4096], 10, 10, 6);
         assert!(err.is_some());
-        // Heap not available → empty results (no fake PASS).
-        assert!(results.is_empty());
+        assert!(results.iter().any(|r| !r.passed));
     }
 }
