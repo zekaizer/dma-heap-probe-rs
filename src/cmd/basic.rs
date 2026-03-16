@@ -36,33 +36,36 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let mmap_ok = caps.can_mmap;
     let granularity = caps.alloc_granularity;
 
-    let tests: [(&str, nix::Result<()>, bool); 8] = [
+    let tests: [(&str, nix::Result<()>, bool); 9] = [
+        // Always runs (no mmap needed)
         (
-            "alloc_and_map",
+            "alloc_close",
+            test_alloc_close(backend, heap_name, sizes),
+            false,
+        ),
+        (
+            "write_read_verify",
             if mmap_ok {
-                test_alloc_and_map(backend, heap_name, sizes)
+                test_write_read_verify(backend, heap_name, sizes)
             } else {
                 Ok(())
             },
             !mmap_ok,
         ),
         (
-            "alloc_zeroed",
+            "zero_on_alloc",
             if mmap_ok {
-                test_alloc_zeroed(backend, heap_name, sizes)
+                test_zero_on_alloc(backend, heap_name, sizes)
             } else {
                 Ok(())
             },
             !mmap_ok,
         ),
+        // alloc/free stability — no mmap needed
         (
-            "repeated_alloc",
-            if mmap_ok {
-                test_repeated_alloc(backend, heap_name, sizes, repeat)
-            } else {
-                Ok(())
-            },
-            !mmap_ok,
+            "alloc_free_loop",
+            test_alloc_free_loop(backend, heap_name, sizes, repeat),
+            false,
         ),
         (
             "llseek_size",
@@ -80,18 +83,18 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             false,
         ),
         (
-            "concurrent_alloc",
+            "concurrent_write_verify",
             if mmap_ok {
-                test_concurrent_alloc(backend, heap_name, threads)
+                test_concurrent_write_verify(backend, heap_name, threads)
             } else {
                 Ok(())
             },
             !mmap_ok,
         ),
         (
-            "dup_fd",
+            "dup_survives_close",
             if mmap_ok {
-                test_dup_fd(backend, heap_name)
+                test_dup_survives_close(backend, heap_name)
             } else {
                 Ok(())
             },
@@ -102,9 +105,11 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     runner::collect_test_results("basic", heap_name, heap_w, &tests)
 }
 
-/// Alloc → mmap → pattern write → read verify for each size.
+// ── alloc_close ─────────────────────────────────────────────────────────────
+
+/// Alloc → close for each size (no mmap). Verifies basic alloc path on all heaps.
 #[allow(clippy::cast_possible_truncation)]
-fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
+fn test_alloc_close<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     sizes: &[u64],
@@ -112,7 +117,28 @@ fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for &size in sizes {
-        tracing::debug!(size, "alloc_and_map");
+        tracing::debug!(size, "alloc_close");
+        let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let buf = DmaBuf::new(backend, buf_fd, size as usize);
+        drop(buf);
+    }
+
+    Ok(())
+}
+
+// ── write_read_verify ───────────────────────────────────────────────────────
+
+/// Alloc → mmap → pattern write → read verify for each size.
+#[allow(clippy::cast_possible_truncation)]
+fn test_write_read_verify<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+    sizes: &[u64],
+) -> nix::Result<()> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+
+    for &size in sizes {
+        tracing::debug!(size, "write_read_verify");
         let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let mut buf = DmaBuf::new(backend, buf_fd, size as usize);
         let ptr = buf.mmap()?;
@@ -141,15 +167,16 @@ fn test_alloc_and_map<B: HeapBackend + DmaBufBackend>(
             }
         }
         buf.sync_end(DMA_BUF_SYNC_READ)?;
-        // Drop handles munmap + close
     }
 
     Ok(())
 }
 
+// ── zero_on_alloc ───────────────────────────────────────────────────────────
+
 /// Alloc 16 buffers, contaminate with 0xAA, close, reallocate, verify zeroed.
 #[allow(clippy::cast_possible_truncation)]
-fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
+fn test_zero_on_alloc<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     sizes: &[u64],
@@ -157,7 +184,7 @@ fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for &size in sizes {
-        tracing::debug!(size, "alloc_zeroed");
+        tracing::debug!(size, "zero_on_alloc");
 
         // Pass 1: contaminate
         {
@@ -174,7 +201,6 @@ fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
 
                 bufs.push(buf);
             }
-            // All bufs dropped here — munmap + close
         }
 
         // Pass 2: verify zero
@@ -203,9 +229,11 @@ fn test_alloc_zeroed<B: HeapBackend + DmaBufBackend>(
     Ok(())
 }
 
-/// Repeated alloc/mmap/close loop to verify stability and absence of leaks.
+// ── alloc_free_loop ─────────────────────────────────────────────────────────
+
+/// Repeated alloc/close loop to verify stability and absence of leaks.
 #[allow(clippy::cast_possible_truncation)]
-fn test_repeated_alloc<B: HeapBackend + DmaBufBackend>(
+fn test_alloc_free_loop<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     sizes: &[u64],
@@ -214,27 +242,19 @@ fn test_repeated_alloc<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for &size in sizes {
-        tracing::debug!(size, repeat, "repeated_alloc");
+        tracing::debug!(size, repeat, "alloc_free_loop");
 
-        for i in 0..repeat {
+        for _ in 0..repeat {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-            let mut buf = DmaBuf::new(backend, fd, size as usize);
-            let ptr = buf.mmap()?;
-
-            buf.sync_start(DMA_BUF_SYNC_WRITE)?;
-            // Write iteration index into the first 4 bytes
-            let tag = i.to_ne_bytes();
-            let len = tag.len().min(size as usize);
-            unsafe {
-                std::ptr::copy_nonoverlapping(tag.as_ptr(), ptr, len);
-            }
-            buf.sync_end(DMA_BUF_SYNC_WRITE)?;
-            // Drop handles munmap + close
+            let buf = DmaBuf::new(backend, fd, size as usize);
+            drop(buf);
         }
     }
 
     Ok(())
 }
+
+// ── llseek_size ─────────────────────────────────────────────────────────────
 
 /// Verify that `llseek(SEEK_END)` returns the granularity-aligned buffer size.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
@@ -318,7 +338,7 @@ fn test_import_sync_file<B: HeapBackend + DmaBufBackend>(
 
 /// Concurrent alloc → mmap → sync → write → verify → close from N threads.
 #[allow(clippy::cast_possible_truncation)]
-fn test_concurrent_alloc<B: HeapBackend + DmaBufBackend + Send + Sync>(
+fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
     backend: &B,
     heap_name: &str,
     threads: u32,
@@ -379,7 +399,10 @@ fn test_concurrent_alloc<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
 /// Dup a dma-buf fd, close the original, and verify the dup still works.
 #[allow(clippy::cast_possible_truncation)]
-fn test_dup_fd<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> nix::Result<()> {
+fn test_dup_survives_close<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let fd = heap.alloc(
         EDGE_ALLOC_SIZE,
@@ -414,7 +437,7 @@ fn test_dup_fd<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name: &str) -> 
     }
     dup_buf.sync_end(DMA_BUF_SYNC_READ)?;
 
-    tracing::debug!("dup_fd passed");
+    tracing::debug!("dup_survives_close passed");
     Ok(())
 }
 
@@ -450,48 +473,56 @@ mod tests {
         assert_eq!(align_to(65537, 65536), 131_072);
     }
 
-    // ── test_alloc_and_map ──
+    // ── test_alloc_close ──
 
     #[test]
-    fn alloc_and_map_single_page() {
+    fn alloc_close_basic() {
         let backend = MockBackend::new();
-        test_alloc_and_map(&backend, "system", &[4096]).unwrap();
+        test_alloc_close(&backend, "system", &[4096, 65536]).unwrap();
+    }
+
+    // ── test_write_read_verify ──
+
+    #[test]
+    fn write_read_verify_single_page() {
+        let backend = MockBackend::new();
+        test_write_read_verify(&backend, "system", &[4096]).unwrap();
     }
 
     #[test]
-    fn alloc_and_map_multiple_sizes() {
+    fn write_read_verify_multiple_sizes() {
         let backend = MockBackend::new();
-        test_alloc_and_map(&backend, "system", &[4096, 65536, 1_048_576]).unwrap();
+        test_write_read_verify(&backend, "system", &[4096, 65536, 1_048_576]).unwrap();
     }
 
-    // ── test_alloc_zeroed ──
+    // ── test_zero_on_alloc ──
 
     #[test]
-    fn alloc_zeroed_single() {
+    fn zero_on_alloc_single() {
         let backend = MockBackend::new();
-        test_alloc_zeroed(&backend, "system", &[4096]).unwrap();
+        test_zero_on_alloc(&backend, "system", &[4096]).unwrap();
     }
 
     #[test]
-    fn alloc_zeroed_large() {
+    fn zero_on_alloc_large() {
         let backend = MockBackend::new();
-        test_alloc_zeroed(&backend, "system", &[1_048_576]).unwrap();
+        test_zero_on_alloc(&backend, "system", &[1_048_576]).unwrap();
     }
 
-    // ── test_repeated_alloc ──
+    // ── test_alloc_free_loop ──
 
     #[test]
-    fn repeated_alloc_no_leak() {
+    fn alloc_free_loop_no_leak() {
         let backend = MockBackend::new();
         let initial = backend.buffer_count();
-        test_repeated_alloc(&backend, "system", &[4096], 100).unwrap();
+        test_alloc_free_loop(&backend, "system", &[4096], 100).unwrap();
         assert_eq!(backend.buffer_count(), initial, "buffer leak detected");
     }
 
     #[test]
-    fn repeated_alloc_default_count() {
+    fn alloc_free_loop_default_count() {
         let backend = MockBackend::new();
-        test_repeated_alloc(&backend, "system", &[4096], 1024).unwrap();
+        test_alloc_free_loop(&backend, "system", &[4096], 1024).unwrap();
     }
 
     // ── test_llseek_size ──
@@ -539,28 +570,28 @@ mod tests {
         }
     }
 
-    // ── test_concurrent_alloc ──
+    // ── test_concurrent_write_verify ──
 
     #[test]
     fn concurrent_basic() {
         let backend = MockBackend::new();
-        test_concurrent_alloc(&backend, "system", 10).unwrap();
+        test_concurrent_write_verify(&backend, "system", 10).unwrap();
     }
 
     #[test]
     fn concurrent_no_leak() {
         let backend = MockBackend::new();
         let initial = backend.buffer_count();
-        test_concurrent_alloc(&backend, "system", 20).unwrap();
+        test_concurrent_write_verify(&backend, "system", 20).unwrap();
         assert_eq!(backend.buffer_count(), initial, "buffer leak detected");
     }
 
-    // ── test_dup_fd ──
+    // ── test_dup_survives_close ──
 
     #[test]
     fn dup_survives_original_close() {
         let backend = MockBackend::new();
-        test_dup_fd(&backend, "system").unwrap();
+        test_dup_survives_close(&backend, "system").unwrap();
     }
 
     // ── run() integration ──
@@ -572,7 +603,7 @@ mod tests {
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert!(results.iter().all(|t| !t.skipped));
-        assert_eq!(results.len(), 8);
+        assert_eq!(results.len(), 9);
     }
 
     #[test]

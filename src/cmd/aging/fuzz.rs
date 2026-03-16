@@ -9,7 +9,9 @@ use rand::Rng;
 use rand::SeedableRng;
 use rand::rngs::SmallRng;
 
-use crate::backend::{DmaBufBackend, HeapBackend};
+use std::os::unix::io::RawFd;
+
+use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_RW, DMA_BUF_SYNC_WRITE};
@@ -58,6 +60,7 @@ enum Pipeline {
     LlseekAfterWrite,
     SyncFileRoundtrip,
     AllocHold,
+    MergeAndOperate,
 }
 
 /// Write fill pattern.
@@ -95,6 +98,9 @@ fn build_weighted_table(caps: &HeapCaps) -> Vec<(Pipeline, u32)> {
     }
     if caps.can_sync_file {
         table.push((Pipeline::SyncFileRoundtrip, 5));
+    }
+    if caps.can_mmap && caps.can_write {
+        table.push((Pipeline::MergeAndOperate, 5));
     }
 
     table
@@ -322,7 +328,7 @@ struct FuzzHeapContext<'a, B: HeapBackend> {
 
 /// Spawn fuzz workers.
 #[allow(clippy::too_many_arguments)]
-pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
+pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
     threads: u32,
@@ -378,6 +384,9 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
         "fuzz workers starting"
     );
 
+    // Open container device once for merge pipeline (graceful: skip if unavailable).
+    let container_device_fd = backend.open_container_device().ok();
+
     let deadline = duration.map(|d| Instant::now() + d);
     let contexts_ref = &contexts;
 
@@ -395,15 +404,21 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     per_thread_max_bytes,
                     worker_seed,
                     worker_id,
+                    container_device_fd,
                 );
             });
         }
     });
+
+    // Close container device.
+    if let Some(dev_fd) = container_device_fd {
+        let _ = backend.close_container(dev_fd);
+    }
 }
 
 /// Single fuzz worker loop.
 #[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
-fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
+fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     backend: &B,
     contexts: &[FuzzHeapContext<'_, B>],
     state: &AgingState,
@@ -413,6 +428,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
     per_thread_max_bytes: u64,
     seed: u64,
     worker_id: u32,
+    container_device_fd: Option<RawFd>,
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut hold_pool: HoldPool<'_, B> =
@@ -496,12 +512,15 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
             &ctx.caps,
             hc,
             &mut hold_pool,
+            state,
+            container_device_fd,
+            &ctx.heap,
         );
 
         if error_occurred {
             state.total_errors.fetch_add(1, Relaxed);
         }
-        if !matches!(pipeline, Pipeline::AllocHold) {
+        if !matches!(pipeline, Pipeline::AllocHold | Pipeline::MergeAndOperate) {
             hc.frees.fetch_add(1, Relaxed);
             state.total_frees.fetch_add(1, Relaxed);
         }
@@ -530,15 +549,18 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend>(
     clippy::too_many_lines,
     clippy::cast_possible_truncation
 )]
-fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
+fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
     backend: &'a B,
     rng: &mut SmallRng,
-    fd: std::os::unix::io::RawFd,
+    fd: RawFd,
     size: u64,
     pipeline: Pipeline,
     caps: &HeapCaps,
     hc: &super::HeapCounters,
     hold_pool: &mut HoldPool<'a, B>,
+    state: &AgingState,
+    container_device_fd: Option<RawFd>,
+    heap: &DmaHeap<'a, B>,
 ) -> bool {
     let size_usize = size as usize;
 
@@ -785,6 +807,82 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend>(
         Pipeline::AllocHold => {
             let buf = DmaBuf::new(backend, fd, size_usize);
             hold_pool.push(buf);
+            false
+        }
+
+        Pipeline::MergeAndOperate => {
+            let Some(dev_fd) = container_device_fd else {
+                // No container device — fallback to simple alloc/close.
+                let buf = DmaBuf::new(backend, fd, size_usize);
+                drop(buf);
+                return false;
+            };
+
+            // Alloc 1~3 extra buffers to merge with the primary `fd`.
+            let extra_count = rng.random_range(1u32..=3);
+            let mut src_fds = vec![fd];
+            let mut merged_len = size;
+            for _ in 0..extra_count {
+                let extra_size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())].min(1_048_576);
+                if let Ok(extra_fd) = heap.alloc(
+                    extra_size,
+                    DMA_HEAP_ALLOC_FD_FLAGS,
+                    DMA_HEAP_VALID_HEAP_FLAGS,
+                ) {
+                    src_fds.push(extra_fd);
+                    merged_len += extra_size;
+                    state.total_allocs.fetch_add(1, Relaxed);
+                    hc.allocs.fetch_add(1, Relaxed);
+                } else {
+                    break;
+                }
+            }
+
+            if let Ok(merged_fd) = backend.merge(dev_fd, &src_fds) {
+                state.total_merges.fetch_add(1, Relaxed);
+                // Merged buf is a new buffer — count as alloc for balance.
+                state.total_allocs.fetch_add(1, Relaxed);
+                hc.allocs.fetch_add(1, Relaxed);
+
+                // Close source fds (container holds its own references).
+                for &sfd in &src_fds {
+                    let _ = backend.close(sfd);
+                }
+                state.total_frees.fetch_add(src_fds.len() as u64, Relaxed);
+                hc.frees.fetch_add(src_fds.len() as u64, Relaxed);
+
+                // Operate on merged dma-buf.
+                #[allow(clippy::cast_possible_truncation)]
+                let merged_usize = merged_len as usize;
+                let mut buf = DmaBuf::new(backend, merged_fd, merged_usize);
+                if caps.can_mmap
+                    && let Ok(ptr) = buf.mmap()
+                {
+                    let pat = random_write_pattern(rng);
+                    let _ = buf.sync_start(DMA_BUF_SYNC_WRITE);
+                    unsafe {
+                        super::sparse_fill(ptr, merged_usize, pattern_byte(pat), Some(rng));
+                    }
+                    let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+                }
+
+                // 50% hold, 50% immediate close.
+                if rng.random_bool(0.5) {
+                    hold_pool.push(buf);
+                } else {
+                    drop(buf);
+                    state.total_frees.fetch_add(1, Relaxed);
+                    hc.frees.fetch_add(1, Relaxed);
+                }
+            } else {
+                state.total_merge_errors.fetch_add(1, Relaxed);
+                // Merge failed — close source bufs.
+                for &sfd in &src_fds {
+                    let _ = backend.close(sfd);
+                }
+                state.total_frees.fetch_add(src_fds.len() as u64, Relaxed);
+                hc.frees.fetch_add(src_fds.len() as u64, Relaxed);
+            }
             false
         }
     }

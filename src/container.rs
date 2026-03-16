@@ -186,13 +186,16 @@ mod tests {
     }
 
     #[test]
-    fn mmap_on_container_fd_fails() {
+    fn merge_and_llseek() {
         let b = MockBackend::new();
         let container = DmaBufContainer::open(&b).unwrap();
         let fd1 = alloc_buf(&b, 4096);
-        let cfd = container.merge(&[fd1]).unwrap();
+        let fd2 = alloc_buf(&b, 8192);
+        let cfd = container.merge(&[fd1, fd2]).unwrap();
 
-        assert_eq!(b.mmap(cfd, 4096).unwrap_err(), nix::errno::Errno::EACCES);
+        // Merged fd is a normal dma-buf; llseek returns combined size.
+        let size = b.llseek(cfd, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size, 4096 + 8192);
 
         container.close(cfd).unwrap();
     }

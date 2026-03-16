@@ -16,7 +16,7 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{DmaBufBackend, HeapBackend};
+use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::cmd::perf::{self, LatencyStats};
 use crate::procfs;
 use crate::runner::{self, SubTestResult};
@@ -85,6 +85,8 @@ pub struct AgingResult {
     pub total_frees: u64,
     pub total_errors: u64,
     pub enomem_count: u64,
+    pub total_merges: u64,
+    pub total_merge_errors: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub throughput_iters_per_sec: Option<f64>,
 
@@ -314,6 +316,8 @@ pub(crate) struct AgingState {
     pub total_allocs: AtomicU64,
     pub total_frees: AtomicU64,
     pub total_enomem: AtomicU64,
+    pub total_merges: AtomicU64,
+    pub total_merge_errors: AtomicU64,
     pub held_bufs: AtomicU64,
     pub held_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
@@ -340,6 +344,8 @@ impl AgingState {
             total_allocs: AtomicU64::new(0),
             total_frees: AtomicU64::new(0),
             total_enomem: AtomicU64::new(0),
+            total_merges: AtomicU64::new(0),
+            total_merge_errors: AtomicU64::new(0),
             held_bufs: AtomicU64::new(0),
             held_bytes: AtomicU64::new(0),
             hold_limit,
@@ -872,6 +878,8 @@ fn build_result(
         total_frees: state.total_frees.load(Relaxed),
         total_errors: state.total_errors.load(Relaxed),
         enomem_count: state.total_enomem.load(Relaxed),
+        total_merges: state.total_merges.load(Relaxed),
+        total_merge_errors: state.total_merge_errors.load(Relaxed),
         throughput_iters_per_sec: throughput,
         latency: state.cumulative_stats(),
         baseline_avg_us: baseline_avg,
@@ -969,6 +977,24 @@ fn print_aligned_table(headers: &[&str], rows: &[Vec<String>]) {
     }
 }
 
+/// Format an `OpResult` per-4K latency, showing "-" when no samples recorded.
+fn fmt_op_per_4k(op: &OpResult) -> String {
+    if op.count == 0 {
+        "-".into()
+    } else {
+        format!("{:.3} us", op.per_4k_us)
+    }
+}
+
+/// Format a latency value in microseconds, showing "-" when no samples recorded.
+fn fmt_op_us(val: u64, count: u64) -> String {
+    if count == 0 {
+        "-".into()
+    } else {
+        format!("{val} us")
+    }
+}
+
 /// Print per-heap normalized latency table.
 fn print_per_heap_table(result: &AgingResult) {
     if result.heap_results.is_empty() {
@@ -987,10 +1013,10 @@ fn print_per_heap_table(result: &AgingResult) {
                 fmt_num(h.allocs),
                 fmt_num(h.frees),
                 fmt_num(h.enomem),
-                format!("{:.3} us", h.alloc_lat.per_4k_us),
-                format!("{:.3} us", h.mmap_lat.per_4k_us),
-                format!("{:.3} us", h.sync_lat.per_4k_us),
-                format!("{:.3} us", h.free_lat.per_4k_us),
+                fmt_op_per_4k(&h.alloc_lat),
+                fmt_op_per_4k(&h.mmap_lat),
+                fmt_op_per_4k(&h.sync_lat),
+                fmt_op_per_4k(&h.free_lat),
             ]
         })
         .collect();
@@ -1013,10 +1039,10 @@ fn print_per_op_latency(result: &AgingResult) {
         .map(|(name, op)| {
             vec![
                 (*name).into(),
-                format!("{} us", op.avg_us),
-                format!("{} us", op.p50_us),
-                format!("{} us", op.p99_us),
-                format!("{} us", op.max_us),
+                fmt_op_us(op.avg_us, op.count),
+                fmt_op_us(op.p50_us, op.count),
+                fmt_op_us(op.p99_us, op.count),
+                fmt_op_us(op.max_us, op.count),
             ]
         })
         .collect();
@@ -1089,6 +1115,13 @@ fn print_summary(result: &AgingResult, fuzz_mode: bool) {
         fmt_num(result.total_allocs),
         fmt_num(result.total_frees)
     );
+    if result.total_merges > 0 || result.total_merge_errors > 0 {
+        tee_println!(
+            "  merges      : {} (err {})",
+            fmt_num(result.total_merges),
+            result.total_merge_errors
+        );
+    }
     tee_println!();
 
     // Trend
@@ -1123,7 +1156,7 @@ fn print_summary(result: &AgingResult, fuzz_mode: bool) {
 
 /// Run the aging test.
 #[allow(clippy::too_many_arguments)]
-pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
+pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
     size: u64,
@@ -1308,6 +1341,8 @@ mod tests {
             total_frees: 1000,
             total_errors: 0,
             enomem_count: 0,
+            total_merges: 0,
+            total_merge_errors: 0,
             throughput_iters_per_sec: Some(16.7),
             latency: Some(LatencyStats {
                 count: 1000,

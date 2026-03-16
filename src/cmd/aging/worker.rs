@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use nix::errno::Errno;
 
-use crate::backend::{DmaBufBackend, HeapBackend};
+use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
@@ -30,7 +30,7 @@ struct HeapContext<'a, B: HeapBackend> {
 
 /// Spawn `threads` workers, each round-robin allocating across `heaps`.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_arguments)]
-pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
+pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
     size: u64,
