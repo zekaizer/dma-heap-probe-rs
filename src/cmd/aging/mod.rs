@@ -16,7 +16,7 @@ use rand::Rng;
 use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
-use crate::backend::{DmaBufBackend, HeapBackend};
+use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::cmd::perf::{self, LatencyStats};
 use crate::procfs;
 use crate::runner::{self, SubTestResult};
@@ -85,6 +85,8 @@ pub struct AgingResult {
     pub total_frees: u64,
     pub total_errors: u64,
     pub enomem_count: u64,
+    pub total_merges: u64,
+    pub total_merge_errors: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub throughput_iters_per_sec: Option<f64>,
 
@@ -314,6 +316,8 @@ pub(crate) struct AgingState {
     pub total_allocs: AtomicU64,
     pub total_frees: AtomicU64,
     pub total_enomem: AtomicU64,
+    pub total_merges: AtomicU64,
+    pub total_merge_errors: AtomicU64,
     pub held_bufs: AtomicU64,
     pub held_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
@@ -340,6 +344,8 @@ impl AgingState {
             total_allocs: AtomicU64::new(0),
             total_frees: AtomicU64::new(0),
             total_enomem: AtomicU64::new(0),
+            total_merges: AtomicU64::new(0),
+            total_merge_errors: AtomicU64::new(0),
             held_bufs: AtomicU64::new(0),
             held_bytes: AtomicU64::new(0),
             hold_limit,
@@ -872,6 +878,8 @@ fn build_result(
         total_frees: state.total_frees.load(Relaxed),
         total_errors: state.total_errors.load(Relaxed),
         enomem_count: state.total_enomem.load(Relaxed),
+        total_merges: state.total_merges.load(Relaxed),
+        total_merge_errors: state.total_merge_errors.load(Relaxed),
         throughput_iters_per_sec: throughput,
         latency: state.cumulative_stats(),
         baseline_avg_us: baseline_avg,
@@ -1089,6 +1097,13 @@ fn print_summary(result: &AgingResult, fuzz_mode: bool) {
         fmt_num(result.total_allocs),
         fmt_num(result.total_frees)
     );
+    if result.total_merges > 0 || result.total_merge_errors > 0 {
+        tee_println!(
+            "  merges      : {} (err {})",
+            fmt_num(result.total_merges),
+            result.total_merge_errors
+        );
+    }
     tee_println!();
 
     // Trend
@@ -1123,7 +1138,7 @@ fn print_summary(result: &AgingResult, fuzz_mode: bool) {
 
 /// Run the aging test.
 #[allow(clippy::too_many_arguments)]
-pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
+pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
     size: u64,
@@ -1308,6 +1323,8 @@ mod tests {
             total_frees: 1000,
             total_errors: 0,
             enomem_count: 0,
+            total_merges: 0,
+            total_merge_errors: 0,
             throughput_iters_per_sec: Some(16.7),
             latency: Some(LatencyStats {
                 count: 1000,
