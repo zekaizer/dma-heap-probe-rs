@@ -1608,6 +1608,8 @@ struct FollowSnapshot {
     total_size: u64,
     mem_available_kb: Option<u64>,
     vmstat: Option<VmStat>,
+    psi_mem_avg10: Option<f64>,
+    pool_kb: Option<u64>,
 }
 
 /// Selected vmstat counters for follow-mode delta display.
@@ -1682,6 +1684,8 @@ fn collect_follow_snapshot() -> FollowSnapshot {
     let meminfo = procfs::read_meminfo().ok();
     let mem_available_kb = meminfo.as_ref().map(|m| m.mem_available_kb);
     let vmstat = procfs::read_vmstat().ok();
+    let psi_mem_avg10 = procfs::read_psi_memory().map(|p| p.some.avg10);
+    let pool_kb = sysfs::read_dma_heap_pool_kb();
 
     FollowSnapshot {
         heap_count,
@@ -1689,6 +1693,8 @@ fn collect_follow_snapshot() -> FollowSnapshot {
         total_size,
         mem_available_kb,
         vmstat,
+        psi_mem_avg10,
+        pool_kb,
     }
 }
 
@@ -1719,8 +1725,15 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
             String::new()
         };
 
+        let psi_str = snap
+            .psi_mem_avg10
+            .map_or(String::new(), |v| format!(" psi={v:.1}%"));
+        let pool_str = snap
+            .pool_kb
+            .map_or(String::new(), |kb| format!(" pool={}", format_size_kb(kb)));
+
         tee_println!(
-            "[{}] heaps={} bufs={} size={} mem_avail={}{}",
+            "[{}] heaps={} bufs={} size={} mem_avail={}{psi_str}{pool_str}{}",
             ts,
             snap.heap_count,
             snap.total_buffers,
