@@ -1489,12 +1489,65 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
     Ok(())
 }
 
-/// Compact snapshot for follow mode: buffer count + total size + available memory.
+/// Compact snapshot for follow mode: buffer count + total size + memory state.
 struct FollowSnapshot {
     heap_count: usize,
     total_buffers: usize,
     total_size: u64,
     mem_available_kb: Option<u64>,
+    vmstat: Option<VmStat>,
+}
+
+/// Selected vmstat counters for follow-mode delta display.
+struct VmStatDelta {
+    pgscan_direct: u64,
+    pgsteal_direct: u64,
+    pgscan_kswapd: u64,
+    compact_stall: u64,
+    allocstall_normal: u64,
+    oom_kill: u64,
+}
+
+impl VmStatDelta {
+    /// Compute delta between two vmstat snapshots. Returns None if either is absent.
+    fn compute(prev: Option<&VmStat>, curr: Option<&VmStat>) -> Option<Self> {
+        let (p, c) = (prev?, curr?);
+        Some(Self {
+            pgscan_direct: c
+                .pgscan_direct
+                .unwrap_or(0)
+                .saturating_sub(p.pgscan_direct.unwrap_or(0)),
+            pgsteal_direct: c
+                .pgsteal_direct
+                .unwrap_or(0)
+                .saturating_sub(p.pgsteal_direct.unwrap_or(0)),
+            pgscan_kswapd: c
+                .pgscan_kswapd
+                .unwrap_or(0)
+                .saturating_sub(p.pgscan_kswapd.unwrap_or(0)),
+            compact_stall: c
+                .compact_stall
+                .unwrap_or(0)
+                .saturating_sub(p.compact_stall.unwrap_or(0)),
+            allocstall_normal: c
+                .allocstall_normal
+                .unwrap_or(0)
+                .saturating_sub(p.allocstall_normal.unwrap_or(0)),
+            oom_kill: c
+                .oom_kill
+                .unwrap_or(0)
+                .saturating_sub(p.oom_kill.unwrap_or(0)),
+        })
+    }
+
+    /// True if any counter changed since last sample.
+    fn has_activity(&self) -> bool {
+        self.pgscan_direct > 0
+            || self.pgscan_kswapd > 0
+            || self.compact_stall > 0
+            || self.allocstall_normal > 0
+            || self.oom_kill > 0
+    }
 }
 
 /// Collect a lightweight snapshot for follow mode.
@@ -1514,17 +1567,23 @@ fn collect_follow_snapshot() -> FollowSnapshot {
         (0, 0)
     };
 
-    let mem_available_kb = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
+    let meminfo = procfs::read_meminfo().ok();
+    let mem_available_kb = meminfo.as_ref().map(|m| m.mem_available_kb);
+    let vmstat = procfs::read_vmstat().ok();
 
     FollowSnapshot {
         heap_count,
         total_buffers,
         total_size,
         mem_available_kb,
+        vmstat,
     }
 }
 
 /// Run info in follow mode: periodically print a compact status line.
+///
+/// When reclaim/compaction activity is detected between samples, a second
+/// line shows vmstat counter deltas so memory pressure is immediately visible.
 pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String]) {
     let mut prev: Option<FollowSnapshot> = None;
 
@@ -1557,6 +1616,35 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
             mem_str,
             delta,
         );
+
+        // Show vmstat delta when reclaim/compaction activity detected
+        if let Some(vd) = VmStatDelta::compute(
+            prev.as_ref().and_then(|p| p.vmstat.as_ref()),
+            snap.vmstat.as_ref(),
+        )
+        .filter(VmStatDelta::has_activity)
+        {
+            let mut parts = Vec::new();
+            if vd.pgscan_direct > 0 {
+                parts.push(format!(
+                    "direct_reclaim: +{}/+{}",
+                    vd.pgscan_direct, vd.pgsteal_direct
+                ));
+            }
+            if vd.pgscan_kswapd > 0 {
+                parts.push(format!("kswapd: +{}", vd.pgscan_kswapd));
+            }
+            if vd.compact_stall > 0 {
+                parts.push(format!("compact: +{}", vd.compact_stall));
+            }
+            if vd.allocstall_normal > 0 {
+                parts.push(format!("alloc_stall: +{}", vd.allocstall_normal));
+            }
+            if vd.oom_kill > 0 {
+                parts.push(format!("oom_kill: +{}", vd.oom_kill));
+            }
+            tee_println!("           {}", parts.join("  "));
+        }
 
         if detail && !heaps.is_empty() {
             // Per-heap summary from debugfs
