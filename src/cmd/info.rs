@@ -711,6 +711,54 @@ pub fn format_human(report: &InfoReport) -> String {
     }
     out.push('\n');
 
+    // --- Heap Capabilities (--probe) ---
+    if let Some(ref caps) = report.heap_caps {
+        out.push_str("[Heap Capabilities]\n");
+        if caps.is_empty() {
+            out.push_str("  (no heaps probed)\n");
+        } else {
+            let name_w = caps.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
+            let widths = [name_w, 5, 4, 4, 5, 6, 9, 3, 11];
+            let aligns = [Align::Left; 9];
+            out.push_str(&format_row(
+                &widths,
+                &aligns,
+                &[
+                    "HEAP",
+                    "ALLOC",
+                    "MMAP",
+                    "SYNC",
+                    "WRITE",
+                    "LLSEEK",
+                    "SYNC_FILE",
+                    "DUP",
+                    "GRANULARITY",
+                ],
+            ));
+            out.push('\n');
+            for c in caps {
+                let yn = |b: bool| if b { "Y" } else { "-" };
+                out.push_str(&format_row(
+                    &widths,
+                    &aligns,
+                    &[
+                        &c.name,
+                        yn(c.can_alloc),
+                        yn(c.can_mmap),
+                        yn(c.can_sync),
+                        yn(c.can_write),
+                        yn(c.can_llseek),
+                        yn(c.can_sync_file),
+                        yn(c.can_dup),
+                        &c.alloc_granularity.to_string(),
+                    ],
+                ));
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
     // --- DMA Buffers ---
     out.push_str("[DMA Buffers]\n");
     if report.buffer_summary.is_empty() && report.total_buffers == 0 {
@@ -1088,54 +1136,6 @@ pub fn format_human(report: &InfoReport) -> String {
             }
             out.push('\n');
         }
-    }
-
-    // --- Heap Capabilities (--probe) ---
-    if let Some(ref caps) = report.heap_caps {
-        out.push_str("[Heap Capabilities]\n");
-        if caps.is_empty() {
-            out.push_str("  (no heaps probed)\n");
-        } else {
-            let name_w = caps.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4);
-            let widths = [name_w, 5, 4, 4, 5, 6, 9, 3, 11];
-            let aligns = [Align::Left; 9];
-            out.push_str(&format_row(
-                &widths,
-                &aligns,
-                &[
-                    "HEAP",
-                    "ALLOC",
-                    "MMAP",
-                    "SYNC",
-                    "WRITE",
-                    "LLSEEK",
-                    "SYNC_FILE",
-                    "DUP",
-                    "GRANULARITY",
-                ],
-            ));
-            out.push('\n');
-            for c in caps {
-                let yn = |b: bool| if b { "Y" } else { "-" };
-                out.push_str(&format_row(
-                    &widths,
-                    &aligns,
-                    &[
-                        &c.name,
-                        yn(c.can_alloc),
-                        yn(c.can_mmap),
-                        yn(c.can_sync),
-                        yn(c.can_write),
-                        yn(c.can_llseek),
-                        yn(c.can_sync_file),
-                        yn(c.can_dup),
-                        &c.alloc_granularity.to_string(),
-                    ],
-                ));
-                out.push('\n');
-            }
-        }
-        out.push('\n');
     }
 
     out
