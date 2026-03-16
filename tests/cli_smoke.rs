@@ -251,6 +251,30 @@ fn error_unknown_global_option() {
     dhp().args(["--nonexistent", "basic"]).assert().failure();
 }
 
+#[test]
+fn error_nonexistent_heap() {
+    dhp()
+        .args([
+            "--heaps",
+            "nonexistent",
+            "basic",
+            "--sizes",
+            "4096",
+            "--repeat",
+            "1",
+        ])
+        .assert()
+        .failure();
+}
+
+#[test]
+fn error_nonexistent_heap_aging() {
+    dhp()
+        .args(["--heaps", "nonexistent", "aging", "--iterations", "1"])
+        .assert()
+        .failure();
+}
+
 // ---------------------------------------------------------------------------
 // D. Global option combinations
 // ---------------------------------------------------------------------------
