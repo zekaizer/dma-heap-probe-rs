@@ -702,6 +702,69 @@ fn format_frag_summary(out: &mut String, buddy: &[BuddyInfoEntry]) {
     out.push('\n');
 }
 
+/// Summary of CMA migrate type entries from pagetypeinfo.
+///
+/// Extracts only CMA rows and shows per-zone: total free CMA pages, max
+/// contiguous block, and block counts at key thresholds — directly answering
+/// "can a CMA-backed DMA heap allocate N contiguous pages?"
+fn format_cma_migrate_summary(out: &mut String, pti: &[PageTypeInfoEntry]) {
+    const PAGE_SIZE: u64 = 4096;
+    const ORDER_64K: usize = 4;
+    const ORDER_2M: usize = 9;
+
+    let cma_rows: Vec<_> = pti.iter().filter(|p| p.page_type == "CMA").collect();
+    if cma_rows.is_empty() {
+        return;
+    }
+
+    out.push_str("  CMA migrate type summary (page size: 4 KiB):\n");
+    let zone_w = cma_rows
+        .iter()
+        .map(|p| p.zone.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    writeln!(
+        out,
+        "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+        "NODE", "ZONE", "TOTAL FREE", "MAX BLOCK", "BLK>=64K", "BLK>=2M",
+    )
+    .unwrap();
+    for p in &cma_rows {
+        let total_pages: u64 = p
+            .free_counts
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| c * (1u64 << i))
+            .sum();
+        let total_bytes = total_pages * PAGE_SIZE;
+
+        let max_order = p
+            .free_counts
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| **c > 0)
+            .map_or(0, |(i, _)| i);
+        let max_bytes = (1u64 << max_order) * PAGE_SIZE;
+
+        let blocks_ge = |threshold: usize| -> u64 { p.free_counts.iter().skip(threshold).sum() };
+
+        writeln!(
+            out,
+            "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+            p.node,
+            p.zone,
+            format_size(total_bytes),
+            format_size(max_bytes),
+            blocks_ge(ORDER_64K),
+            blocks_ge(ORDER_2M),
+        )
+        .unwrap();
+    }
+    out.push('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Human-readable formatting
 // ---------------------------------------------------------------------------
@@ -1363,6 +1426,9 @@ pub fn format_human(report: &InfoReport) -> String {
                 out.push('\n');
             }
             out.push('\n');
+
+            // CMA migrate type summary
+            format_cma_migrate_summary(&mut out, pti);
         }
     }
 
@@ -2199,6 +2265,45 @@ Node 0, zone    Normal
         assert!(out.contains("204"));
         // blocks >= order 9 = 1 + 98 = 99
         assert!(out.contains("99"));
+    }
+
+    #[test]
+    fn format_cma_migrate_summary_basic() {
+        let pti = vec![
+            PageTypeInfoEntry {
+                node: 0,
+                zone: "Normal".into(),
+                page_type: "Movable".into(),
+                free_counts: vec![400, 260, 150, 85, 45, 25, 14, 7, 3, 1, 98],
+            },
+            PageTypeInfoEntry {
+                node: 0,
+                zone: "Normal".into(),
+                page_type: "CMA".into(),
+                free_counts: vec![12, 10, 9, 5, 2, 1, 0, 0, 0, 0, 0],
+            },
+        ];
+        let mut out = String::new();
+        format_cma_migrate_summary(&mut out, &pti);
+
+        assert!(out.contains("CMA migrate type"));
+        assert!(out.contains("Normal"));
+        // blocks >= order 4 = 2 + 1 + 0 + 0 + 0 + 0 + 0 = 3
+        assert!(out.contains("3"));
+    }
+
+    #[test]
+    fn format_cma_migrate_summary_no_cma_rows() {
+        let pti = vec![PageTypeInfoEntry {
+            node: 0,
+            zone: "Normal".into(),
+            page_type: "Movable".into(),
+            free_counts: vec![100, 50],
+        }];
+        let mut out = String::new();
+        format_cma_migrate_summary(&mut out, &pti);
+        // No CMA rows → no output
+        assert!(out.is_empty());
     }
 
     #[test]
