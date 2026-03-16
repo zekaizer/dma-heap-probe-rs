@@ -56,23 +56,8 @@ pub struct BufferSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryContext {
-    pub mem_total_kb: u64,
-    pub mem_free_kb: u64,
-    pub mem_available_kb: u64,
-    pub cma_total_kb: Option<u64>,
-    pub cma_free_kb: Option<u64>,
-    pub buffers_kb: Option<u64>,
-    pub cached_kb: Option<u64>,
-    pub active_kb: Option<u64>,
-    pub inactive_kb: Option<u64>,
-    pub shmem_kb: Option<u64>,
-    pub slab_kb: Option<u64>,
-    pub compact_stall: Option<u64>,
-    pub compact_success: Option<u64>,
-    pub compact_fail: Option<u64>,
-    pub cma_alloc_success: Option<u64>,
-    pub cma_alloc_fail: Option<u64>,
-    pub nr_free_cma: Option<u64>,
+    pub meminfo: MemInfo,
+    pub vmstat: VmStat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -595,26 +580,8 @@ pub fn aggregate_process_usage(entries: &[ProcessBufEntry]) -> Vec<ProcessSummar
 // Memory context builder
 // ---------------------------------------------------------------------------
 
-fn build_memory_context(meminfo: &MemInfo, vmstat: &VmStat) -> MemoryContext {
-    MemoryContext {
-        mem_total_kb: meminfo.mem_total_kb,
-        mem_free_kb: meminfo.mem_free_kb,
-        mem_available_kb: meminfo.mem_available_kb,
-        cma_total_kb: meminfo.cma_total_kb,
-        cma_free_kb: meminfo.cma_free_kb,
-        buffers_kb: meminfo.buffers_kb,
-        cached_kb: meminfo.cached_kb,
-        active_kb: meminfo.active_kb,
-        inactive_kb: meminfo.inactive_kb,
-        shmem_kb: meminfo.shmem_kb,
-        slab_kb: meminfo.slab_kb,
-        compact_stall: vmstat.compact_stall,
-        compact_success: vmstat.compact_success,
-        compact_fail: vmstat.compact_fail,
-        cma_alloc_success: vmstat.cma_alloc_success,
-        cma_alloc_fail: vmstat.cma_alloc_fail,
-        nr_free_cma: vmstat.nr_free_cma,
-    }
+fn build_memory_context(meminfo: MemInfo, vmstat: VmStat) -> MemoryContext {
+    MemoryContext { meminfo, vmstat }
 }
 
 // ---------------------------------------------------------------------------
@@ -932,6 +899,9 @@ pub fn format_human(report: &InfoReport) -> String {
 
     // --- Memory ---
     if let Some(ref mem) = report.memory {
+        let mi = &mem.meminfo;
+        let vs = &mem.vmstat;
+
         out.push_str("[Memory]\n");
         out.push_str("  /proc/meminfo + /proc/vmstat\n\n");
 
@@ -940,47 +910,90 @@ pub fn format_human(report: &InfoReport) -> String {
             out,
             "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
             "Total",
-            format_size_kb(mem.mem_total_kb),
+            format_size_kb(mi.mem_total_kb),
             "Free",
-            format_size_kb(mem.mem_free_kb),
+            format_size_kb(mi.mem_free_kb),
             "Available",
-            format_size_kb(mem.mem_available_kb),
+            format_size_kb(mi.mem_available_kb),
         )
         .unwrap();
 
         // Row 2: Buffers, Cached, Shmem
-        if mem.buffers_kb.is_some() || mem.cached_kb.is_some() || mem.shmem_kb.is_some() {
+        if mi.buffers_kb.is_some() || mi.cached_kb.is_some() || mi.shmem_kb.is_some() {
             writeln!(
                 out,
                 "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
                 "Buffers",
-                mem.buffers_kb.map_or("-".into(), format_size_kb),
+                mi.buffers_kb.map_or("-".into(), format_size_kb),
                 "Cached",
-                mem.cached_kb.map_or("-".into(), format_size_kb),
+                mi.cached_kb.map_or("-".into(), format_size_kb),
                 "Shmem",
-                mem.shmem_kb.map_or("-".into(), format_size_kb),
+                mi.shmem_kb.map_or("-".into(), format_size_kb),
             )
             .unwrap();
         }
 
         // Row 3: Active, Inactive, Slab
-        if mem.active_kb.is_some() || mem.inactive_kb.is_some() || mem.slab_kb.is_some() {
+        if mi.active_kb.is_some() || mi.inactive_kb.is_some() || mi.slab_kb.is_some() {
             writeln!(
                 out,
                 "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
                 "Active",
-                mem.active_kb.map_or("-".into(), format_size_kb),
+                mi.active_kb.map_or("-".into(), format_size_kb),
                 "Inactive",
-                mem.inactive_kb.map_or("-".into(), format_size_kb),
+                mi.inactive_kb.map_or("-".into(), format_size_kb),
                 "Slab",
-                mem.slab_kb.map_or("-".into(), format_size_kb),
+                mi.slab_kb.map_or("-".into(), format_size_kb),
+            )
+            .unwrap();
+        }
+
+        // Row 4: AnonPages, Mapped, Dirty/Writeback
+        if mi.anon_pages_kb.is_some() || mi.mapped_kb.is_some() || mi.dirty_kb.is_some() {
+            writeln!(
+                out,
+                "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
+                "AnonPages",
+                mi.anon_pages_kb.map_or("-".into(), format_size_kb),
+                "Mapped",
+                mi.mapped_kb.map_or("-".into(), format_size_kb),
+                "Dirty",
+                mi.dirty_kb.map_or("-".into(), format_size_kb),
+            )
+            .unwrap();
+        }
+
+        // Row 5: Slab breakdown + Writeback
+        if mi.s_reclaimable_kb.is_some() || mi.s_unreclaim_kb.is_some() {
+            writeln!(
+                out,
+                "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
+                "SReclaimable",
+                mi.s_reclaimable_kb.map_or("-".into(), format_size_kb),
+                "SUnreclaim",
+                mi.s_unreclaim_kb.map_or("-".into(), format_size_kb),
+                "Writeback",
+                mi.writeback_kb.map_or("-".into(), format_size_kb),
             )
             .unwrap();
         }
         out.push('\n');
 
+        // Swap
+        if let (Some(total), Some(free)) = (mi.swap_total_kb, mi.swap_free_kb) {
+            let used = total.saturating_sub(free);
+            writeln!(
+                out,
+                "  Swap Total {:>10}    Swap Free  {:>10}   ({} used)",
+                format_size_kb(total),
+                format_size_kb(free),
+                pct(used, total),
+            )
+            .unwrap();
+        }
+
         // CMA
-        if let (Some(total), Some(free)) = (mem.cma_total_kb, mem.cma_free_kb) {
+        if let (Some(total), Some(free)) = (mi.cma_total_kb, mi.cma_free_kb) {
             let used = total.saturating_sub(free);
             writeln!(
                 out,
@@ -990,23 +1003,23 @@ pub fn format_human(report: &InfoReport) -> String {
                 pct(used, total),
             )
             .unwrap();
-            if mem.cma_alloc_success.is_some() || mem.cma_alloc_fail.is_some() {
+            if vs.cma_alloc_success.is_some() || vs.cma_alloc_fail.is_some() {
                 writeln!(
                     out,
                     "  CMA Alloc   ok: {}    fail: {}",
-                    mem.cma_alloc_success.map_or("-".into(), |v| v.to_string()),
-                    mem.cma_alloc_fail.map_or("-".into(), |v| v.to_string()),
+                    vs.cma_alloc_success.map_or("-".into(), |v| v.to_string()),
+                    vs.cma_alloc_fail.map_or("-".into(), |v| v.to_string()),
                 )
                 .unwrap();
             }
-            out.push('\n');
         }
+        out.push('\n');
 
         // Compaction
-        if mem.compact_stall.is_some() {
-            let stall = mem.compact_stall.unwrap_or(0);
-            let success = mem.compact_success.unwrap_or(0);
-            let fail = mem.compact_fail.unwrap_or(0);
+        if vs.compact_stall.is_some() {
+            let stall = vs.compact_stall.unwrap_or(0);
+            let success = vs.compact_success.unwrap_or(0);
+            let fail = vs.compact_fail.unwrap_or(0);
             let rate = if stall > 0 {
                 pct(success, stall)
             } else {
@@ -1015,6 +1028,90 @@ pub fn format_human(report: &InfoReport) -> String {
             writeln!(
                 out,
                 "  Compaction  stall: {stall}  success: {success}  fail: {fail}  ({rate} success rate)"
+            )
+            .unwrap();
+
+            // Extended compaction detail
+            if vs.compact_isolated.is_some() || vs.compactmigrate_scanned.is_some() {
+                write!(out, "              ").unwrap();
+                if let Some(v) = vs.compact_isolated {
+                    write!(out, "isolated: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.compactmigrate_scanned {
+                    write!(out, "migrate_scan: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.compactfree_scanned {
+                    write!(out, "free_scan: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.kcompactd_wake {
+                    write!(out, "kcompactd: {v}").unwrap();
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+
+        // Reclaim activity
+        let has_reclaim = vs.pgscan_direct.is_some() || vs.pgscan_kswapd.is_some();
+        if has_reclaim {
+            out.push_str("  Reclaim\n");
+
+            if let (Some(scan), Some(steal)) = (vs.pgscan_direct, vs.pgsteal_direct) {
+                let eff = if scan > 0 {
+                    pct(steal, scan)
+                } else {
+                    "N/A".to_string()
+                };
+                writeln!(
+                    out,
+                    "    direct    scan: {scan:<10} steal: {steal:<10} ({eff} efficiency)"
+                )
+                .unwrap();
+            }
+
+            if let (Some(scan), Some(steal)) = (vs.pgscan_kswapd, vs.pgsteal_kswapd) {
+                let eff = if scan > 0 {
+                    pct(steal, scan)
+                } else {
+                    "N/A".to_string()
+                };
+                writeln!(
+                    out,
+                    "    kswapd    scan: {scan:<10} steal: {steal:<10} ({eff} efficiency)"
+                )
+                .unwrap();
+            }
+
+            // Allocation stalls
+            if vs.allocstall_normal.is_some() || vs.allocstall_movable.is_some() {
+                writeln!(
+                    out,
+                    "    stalls    normal: {}  movable: {}",
+                    vs.allocstall_normal.unwrap_or(0),
+                    vs.allocstall_movable.unwrap_or(0),
+                )
+                .unwrap();
+            }
+
+            if let Some(oom) = vs.oom_kill {
+                writeln!(out, "    oom_kill: {oom}").unwrap();
+            }
+            out.push('\n');
+        }
+
+        // Migration
+        if vs.pgmigrate_success.is_some() || vs.pgmigrate_fail.is_some() {
+            let ok = vs.pgmigrate_success.unwrap_or(0);
+            let fail = vs.pgmigrate_fail.unwrap_or(0);
+            let total = ok + fail;
+            let rate = if total > 0 {
+                pct(ok, total)
+            } else {
+                "N/A".to_string()
+            };
+            writeln!(
+                out,
+                "  Migration   ok: {ok}  fail: {fail}  ({rate} success rate)"
             )
             .unwrap();
             out.push('\n');
@@ -1209,8 +1306,8 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
 
     // 4. Memory context
     let memory = match (procfs::read_meminfo(), procfs::read_vmstat()) {
-        (Ok(meminfo), Ok(vmstat)) => Some(build_memory_context(&meminfo, &vmstat)),
-        (Ok(meminfo), Err(_)) => Some(build_memory_context(&meminfo, &VmStat::default())),
+        (Ok(meminfo), Ok(vmstat)) => Some(build_memory_context(meminfo, vmstat)),
+        (Ok(meminfo), Err(_)) => Some(build_memory_context(meminfo, VmStat::default())),
         _ => None,
     };
 
@@ -1667,23 +1764,50 @@ Node 0, zone    Normal
             buffers: None,
             process_usage: None,
             memory: Some(MemoryContext {
-                mem_total_kb: 8_052_444,
-                mem_free_kb: 3_145_728,
-                mem_available_kb: 5_242_880,
-                cma_total_kb: Some(262_144),
-                cma_free_kb: Some(131_072),
-                buffers_kb: Some(123_456),
-                cached_kb: Some(1_234_567),
-                active_kb: Some(3_355_443),
-                inactive_kb: Some(1_572_864),
-                shmem_kb: Some(65_536),
-                slab_kb: Some(262_144),
-                compact_stall: Some(42),
-                compact_success: Some(30),
-                compact_fail: Some(12),
-                cma_alloc_success: Some(100),
-                cma_alloc_fail: Some(2),
-                nr_free_cma: Some(32_768),
+                meminfo: MemInfo {
+                    mem_total_kb: 8_052_444,
+                    mem_free_kb: 3_145_728,
+                    mem_available_kb: 5_242_880,
+                    cma_total_kb: Some(262_144),
+                    cma_free_kb: Some(131_072),
+                    buffers_kb: Some(123_456),
+                    cached_kb: Some(1_234_567),
+                    active_kb: Some(3_355_443),
+                    inactive_kb: Some(1_572_864),
+                    shmem_kb: Some(65_536),
+                    slab_kb: Some(262_144),
+                    s_reclaimable_kb: Some(196_608),
+                    s_unreclaim_kb: Some(65_536),
+                    swap_total_kb: Some(2_097_152),
+                    swap_free_kb: Some(1_835_008),
+                    dirty_kb: Some(12_288),
+                    writeback_kb: Some(256),
+                    anon_pages_kb: Some(2_097_152),
+                    mapped_kb: Some(524_288),
+                },
+                vmstat: VmStat {
+                    compact_stall: Some(42),
+                    compact_success: Some(30),
+                    compact_fail: Some(12),
+                    compact_isolated: Some(500),
+                    compactmigrate_scanned: Some(8000),
+                    compactfree_scanned: Some(12_000),
+                    kcompactd_wake: Some(15),
+                    pgalloc_normal: Some(123_456),
+                    pgfree: Some(234_567),
+                    pgscan_direct: Some(3000),
+                    pgsteal_direct: Some(2800),
+                    allocstall_normal: Some(5),
+                    allocstall_movable: Some(2),
+                    pgscan_kswapd: Some(50_000),
+                    pgsteal_kswapd: Some(48_000),
+                    pgmigrate_success: Some(7500),
+                    pgmigrate_fail: Some(300),
+                    cma_alloc_success: Some(100),
+                    cma_alloc_fail: Some(2),
+                    nr_free_cma: Some(32_768),
+                    oom_kill: Some(0),
+                },
             }),
             vm_params: None,
             zones: None,
@@ -1698,6 +1822,16 @@ Node 0, zone    Normal
         assert!(output.contains("TOTAL"));
         assert!(output.contains("CMA Total"));
         assert!(output.contains("Compaction"));
+        // New metric sections
+        assert!(output.contains("Swap Total"));
+        assert!(output.contains("AnonPages"));
+        assert!(output.contains("SReclaimable"));
+        assert!(output.contains("Reclaim"));
+        assert!(output.contains("direct"));
+        assert!(output.contains("kswapd"));
+        assert!(output.contains("Migration"));
+        assert!(output.contains("isolated:"));
+        assert!(output.contains("migrate_scan:"));
     }
 
     #[test]
