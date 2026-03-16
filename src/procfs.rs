@@ -185,19 +185,56 @@ pub struct MemInfo {
     pub inactive_kb: Option<u64>,
     pub shmem_kb: Option<u64>,
     pub slab_kb: Option<u64>,
+    pub s_reclaimable_kb: Option<u64>,
+    pub s_unreclaim_kb: Option<u64>,
+    pub swap_total_kb: Option<u64>,
+    pub swap_free_kb: Option<u64>,
+    pub dirty_kb: Option<u64>,
+    pub writeback_kb: Option<u64>,
+    pub anon_pages_kb: Option<u64>,
+    pub mapped_kb: Option<u64>,
 }
 
 /// Selected fields from `/proc/vmstat`.
+///
+/// Counters are grouped by subsystem. All counters available since kernel 4.8+;
+/// `kcompactd_wake` since 4.6, `oom_kill` since 4.13.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct VmStat {
+    // -- Compaction --
     pub compact_stall: Option<u64>,
     pub compact_success: Option<u64>,
     pub compact_fail: Option<u64>,
+    pub compact_isolated: Option<u64>,
+    pub compactmigrate_scanned: Option<u64>,
+    pub compactfree_scanned: Option<u64>,
+    pub kcompactd_wake: Option<u64>,
+
+    // -- Page allocation --
     pub pgalloc_normal: Option<u64>,
     pub pgfree: Option<u64>,
+
+    // -- Direct reclaim (allocation-blocking path) --
+    pub pgscan_direct: Option<u64>,
+    pub pgsteal_direct: Option<u64>,
+    pub allocstall_normal: Option<u64>,
+    pub allocstall_movable: Option<u64>,
+
+    // -- Background reclaim (kswapd) --
+    pub pgscan_kswapd: Option<u64>,
+    pub pgsteal_kswapd: Option<u64>,
+
+    // -- Page migration --
+    pub pgmigrate_success: Option<u64>,
+    pub pgmigrate_fail: Option<u64>,
+
+    // -- CMA --
     pub cma_alloc_success: Option<u64>,
     pub cma_alloc_fail: Option<u64>,
     pub nr_free_cma: Option<u64>,
+
+    // -- OOM --
+    pub oom_kill: Option<u64>,
 }
 
 /// Combined procfs snapshot.
@@ -225,6 +262,14 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
     let mut inactive_kb = None;
     let mut shmem_kb = None;
     let mut slab_kb = None;
+    let mut s_reclaimable_kb = None;
+    let mut s_unreclaim_kb = None;
+    let mut swap_total_kb = None;
+    let mut swap_free_kb = None;
+    let mut dirty_kb = None;
+    let mut writeback_kb = None;
+    let mut anon_pages_kb = None;
+    let mut mapped_kb = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -248,6 +293,14 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
                 "Inactive" => inactive_kb = val_kb.ok(),
                 "Shmem" => shmem_kb = val_kb.ok(),
                 "Slab" => slab_kb = val_kb.ok(),
+                "SReclaimable" => s_reclaimable_kb = val_kb.ok(),
+                "SUnreclaim" => s_unreclaim_kb = val_kb.ok(),
+                "SwapTotal" => swap_total_kb = val_kb.ok(),
+                "SwapFree" => swap_free_kb = val_kb.ok(),
+                "Dirty" => dirty_kb = val_kb.ok(),
+                "Writeback" => writeback_kb = val_kb.ok(),
+                "AnonPages" => anon_pages_kb = val_kb.ok(),
+                "Mapped" => mapped_kb = val_kb.ok(),
                 _ => {}
             }
         }
@@ -266,48 +319,61 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
         inactive_kb,
         shmem_kb,
         slab_kb,
+        s_reclaimable_kb,
+        s_unreclaim_kb,
+        swap_total_kb,
+        swap_free_kb,
+        dirty_kb,
+        writeback_kb,
+        anon_pages_kb,
+        mapped_kb,
     })
 }
 
-/// Parse `/proc/vmstat` content. Extracts selected compaction and allocation fields.
+/// Parse `/proc/vmstat` content. Extracts selected compaction, reclaim, migration,
+/// CMA and OOM fields relevant to DMA heap allocation diagnostics.
 pub fn parse_vmstat(content: &str) -> VmStat {
-    let mut compact_stall = None;
-    let mut compact_success = None;
-    let mut compact_fail = None;
-    let mut pgalloc_normal = None;
-    let mut pgfree = None;
-    let mut cma_alloc_success = None;
-    let mut cma_alloc_fail = None;
-    let mut nr_free_cma = None;
+    let mut vs = VmStat::default();
 
     for line in content.lines() {
         let mut parts = line.split_whitespace();
         if let (Some(key), Some(val_str)) = (parts.next(), parts.next()) {
             let val = val_str.parse::<u64>().ok();
             match key {
-                "compact_stall" => compact_stall = val,
-                "compact_success" => compact_success = val,
-                "compact_fail" => compact_fail = val,
-                "pgalloc_normal" => pgalloc_normal = val,
-                "pgfree" => pgfree = val,
-                "cma_alloc_success" => cma_alloc_success = val,
-                "cma_alloc_fail" => cma_alloc_fail = val,
-                "nr_free_cma" => nr_free_cma = val,
+                // Compaction
+                "compact_stall" => vs.compact_stall = val,
+                "compact_success" => vs.compact_success = val,
+                "compact_fail" => vs.compact_fail = val,
+                "compact_isolated" => vs.compact_isolated = val,
+                "compactmigrate_scanned" => vs.compactmigrate_scanned = val,
+                "compactfree_scanned" => vs.compactfree_scanned = val,
+                "kcompactd_wake" => vs.kcompactd_wake = val,
+                // Page allocation
+                "pgalloc_normal" => vs.pgalloc_normal = val,
+                "pgfree" => vs.pgfree = val,
+                // Direct reclaim
+                "pgscan_direct" => vs.pgscan_direct = val,
+                "pgsteal_direct" => vs.pgsteal_direct = val,
+                "allocstall_normal" => vs.allocstall_normal = val,
+                "allocstall_movable" => vs.allocstall_movable = val,
+                // Background reclaim
+                "pgscan_kswapd" => vs.pgscan_kswapd = val,
+                "pgsteal_kswapd" => vs.pgsteal_kswapd = val,
+                // Migration
+                "pgmigrate_success" => vs.pgmigrate_success = val,
+                "pgmigrate_fail" => vs.pgmigrate_fail = val,
+                // CMA
+                "cma_alloc_success" => vs.cma_alloc_success = val,
+                "cma_alloc_fail" => vs.cma_alloc_fail = val,
+                "nr_free_cma" => vs.nr_free_cma = val,
+                // OOM
+                "oom_kill" => vs.oom_kill = val,
                 _ => {}
             }
         }
     }
 
-    VmStat {
-        compact_stall,
-        compact_success,
-        compact_fail,
-        pgalloc_normal,
-        pgfree,
-        cma_alloc_success,
-        cma_alloc_fail,
-        nr_free_cma,
-    }
+    vs
 }
 
 /// Read and parse `/proc/meminfo`.
@@ -462,8 +528,16 @@ Cached:          1234567 kB
 SwapCached:            0 kB
 Active:          3355443 kB
 Inactive:        1572864 kB
+Dirty:             12288 kB
+Writeback:           256 kB
+AnonPages:       2097152 kB
+Mapped:           524288 kB
 Shmem:             65536 kB
 Slab:             262144 kB
+SReclaimable:     196608 kB
+SUnreclaim:        65536 kB
+SwapTotal:       2097152 kB
+SwapFree:        1835008 kB
 CmaTotal:         262144 kB
 CmaFree:          131072 kB
 ";
@@ -482,6 +556,14 @@ CmaFree:          131072 kB
         assert_eq!(info.inactive_kb, Some(1_572_864));
         assert_eq!(info.shmem_kb, Some(65_536));
         assert_eq!(info.slab_kb, Some(262_144));
+        assert_eq!(info.s_reclaimable_kb, Some(196_608));
+        assert_eq!(info.s_unreclaim_kb, Some(65_536));
+        assert_eq!(info.swap_total_kb, Some(2_097_152));
+        assert_eq!(info.swap_free_kb, Some(1_835_008));
+        assert_eq!(info.dirty_kb, Some(12_288));
+        assert_eq!(info.writeback_kb, Some(256));
+        assert_eq!(info.anon_pages_kb, Some(2_097_152));
+        assert_eq!(info.mapped_kb, Some(524_288));
     }
 
     #[test]
@@ -507,25 +589,58 @@ nr_free_pages 789012
 compact_stall 42
 compact_success 30
 compact_fail 12
+compact_isolated 500
+compactmigrate_scanned 8000
+compactfree_scanned 12000
+kcompactd_wake 15
 pgalloc_normal 123456
 pgfree 234567
+pgscan_direct 3000
+pgsteal_direct 2800
+allocstall_normal 5
+allocstall_movable 2
+pgscan_kswapd 50000
+pgsteal_kswapd 48000
+pgmigrate_success 7500
+pgmigrate_fail 300
 nr_dirty 100
 cma_alloc_success 100
 cma_alloc_fail 2
 nr_free_cma 32768
+oom_kill 0
 ";
 
     #[test]
     fn parse_vmstat_selected_keys() {
         let stat = parse_vmstat(VMSTAT_FIXTURE);
+        // Compaction
         assert_eq!(stat.compact_stall, Some(42));
         assert_eq!(stat.compact_success, Some(30));
         assert_eq!(stat.compact_fail, Some(12));
+        assert_eq!(stat.compact_isolated, Some(500));
+        assert_eq!(stat.compactmigrate_scanned, Some(8000));
+        assert_eq!(stat.compactfree_scanned, Some(12_000));
+        assert_eq!(stat.kcompactd_wake, Some(15));
+        // Page allocation
         assert_eq!(stat.pgalloc_normal, Some(123_456));
         assert_eq!(stat.pgfree, Some(234_567));
+        // Direct reclaim
+        assert_eq!(stat.pgscan_direct, Some(3000));
+        assert_eq!(stat.pgsteal_direct, Some(2800));
+        assert_eq!(stat.allocstall_normal, Some(5));
+        assert_eq!(stat.allocstall_movable, Some(2));
+        // Background reclaim
+        assert_eq!(stat.pgscan_kswapd, Some(50_000));
+        assert_eq!(stat.pgsteal_kswapd, Some(48_000));
+        // Migration
+        assert_eq!(stat.pgmigrate_success, Some(7500));
+        assert_eq!(stat.pgmigrate_fail, Some(300));
+        // CMA
         assert_eq!(stat.cma_alloc_success, Some(100));
         assert_eq!(stat.cma_alloc_fail, Some(2));
         assert_eq!(stat.nr_free_cma, Some(32_768));
+        // OOM
+        assert_eq!(stat.oom_kill, Some(0));
     }
 
     #[test]
@@ -534,6 +649,8 @@ nr_free_cma 32768
         let stat = parse_vmstat(input);
         assert_eq!(stat.compact_stall, None);
         assert_eq!(stat.compact_success, None);
+        assert_eq!(stat.pgscan_direct, None);
+        assert_eq!(stat.oom_kill, None);
         assert_eq!(stat.pgfree, Some(200));
     }
 
@@ -542,6 +659,7 @@ nr_free_cma 32768
         let stat = parse_vmstat("");
         assert_eq!(stat.compact_stall, None);
         assert_eq!(stat.pgalloc_normal, None);
+        assert_eq!(stat.pgscan_direct, None);
     }
 
     #[test]
