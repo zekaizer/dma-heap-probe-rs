@@ -94,7 +94,7 @@ fn container_defaults() {
 #[test]
 fn container_custom_heaps() {
     dhp()
-        .args(["container", "--heaps", "system,reserved"])
+        .args(["container", "--heaps", "system,restricted"])
         .assert()
         .success();
 }
@@ -160,7 +160,7 @@ fn output_custom_heaps_json() {
     dhp()
         .args([
             "--heaps",
-            "myheap",
+            "system-uncached",
             "--output",
             tmp.path().to_str().unwrap(),
             "basic",
@@ -173,7 +173,7 @@ fn output_custom_heaps_json() {
         .success();
 
     let json = read_json(tmp.path());
-    assert_eq!(json["heaps"][0], "myheap");
+    assert_eq!(json["heaps"][0], "system-uncached");
 }
 
 #[test]
@@ -269,7 +269,7 @@ fn global_all_flags_combined() {
 fn global_options_after_subcommand() {
     dhp()
         .args([
-            "basic", "--heaps", "myheap", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
+            "basic", "--heaps", "system", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
         ])
         .assert()
         .success();
