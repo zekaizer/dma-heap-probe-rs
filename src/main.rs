@@ -140,6 +140,8 @@ fn dispatch_command<
         validate_heaps(backend, heaps)?;
     }
 
+    tracing::info!(command = ?cli.command, ?heaps, "subcommand start");
+
     match &cli.command {
         Command::Basic {
             sizes,
