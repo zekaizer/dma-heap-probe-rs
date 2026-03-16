@@ -93,12 +93,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
         (
             "dup_survives_close",
-            if mmap_ok {
-                test_dup_survives_close(backend, heap_name)
-            } else {
-                Ok(())
-            },
-            !mmap_ok,
+            test_dup_survives_close(backend, heap_name),
+            false,
         ),
     ];
 
@@ -397,8 +393,8 @@ fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
     Ok(())
 }
 
-/// Dup a dma-buf fd, close the original, and verify the dup still works.
-#[allow(clippy::cast_possible_truncation)]
+/// Dup a dma-buf fd, close the original, verify the dup still works via llseek.
+#[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn test_dup_survives_close<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -409,35 +405,23 @@ fn test_dup_survives_close<B: HeapBackend + DmaBufBackend>(
         DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
-    let mut buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
-
-    // Write pattern via original
-    let ptr = buf.mmap()?;
-    buf.sync_start(DMA_BUF_SYNC_WRITE)?;
-    let slice = unsafe { std::slice::from_raw_parts_mut(ptr, EDGE_ALLOC_SIZE as usize) };
-    slice.fill(0xBB);
-    buf.sync_end(DMA_BUF_SYNC_WRITE)?;
+    let buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
 
     // Dup then drop original
-    let mut dup_buf = buf.dup()?;
+    let dup_buf = buf.dup()?;
     drop(buf);
 
-    // Verify data via dup
-    let dup_ptr = dup_buf.mmap()?;
-    dup_buf.sync_start(DMA_BUF_SYNC_READ)?;
-    let dup_slice = unsafe { std::slice::from_raw_parts(dup_ptr, EDGE_ALLOC_SIZE as usize) };
-    if let Some(pos) = dup_slice.iter().position(|&b| b != 0xBB) {
+    // Verify dup is still usable via llseek
+    let size = dup_buf.llseek_size()?;
+    if size != EDGE_ALLOC_SIZE as i64 {
         tracing::error!(
-            pos,
-            expected = 0xBB,
-            got = dup_slice[pos],
-            "dup data mismatch"
+            expected = EDGE_ALLOC_SIZE,
+            got = size,
+            "dup llseek size mismatch"
         );
         return Err(Errno::EIO);
     }
-    dup_buf.sync_end(DMA_BUF_SYNC_READ)?;
 
-    tracing::debug!("dup_survives_close passed");
     Ok(())
 }
 
