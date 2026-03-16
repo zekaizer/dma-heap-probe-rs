@@ -7,7 +7,7 @@ use anyhow::Context;
 
 use serde::{Deserialize, Serialize};
 
-use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, VmStat};
+use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, PsiIo, PsiMemory, VmStat};
 use crate::sysfs::{self, CmaAreaStats};
 use crate::{tee_print, tee_println};
 
@@ -99,6 +99,10 @@ pub struct InfoReport {
     /// DMA heap page pool size in kB (Android-specific).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dma_heap_pool_kb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psi_memory: Option<PsiMemory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psi_io: Option<PsiIo>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1030,6 +1034,27 @@ pub fn format_human(report: &InfoReport) -> String {
         out.push('\n');
     }
 
+    // --- Pressure (PSI) ---
+    if report.psi_memory.is_some() || report.psi_io.is_some() {
+        out.push_str("[Pressure]\n");
+        out.push_str("  /proc/pressure/{memory,io}\n\n");
+        let fmt_psi = |label: &str, line: &procfs::PsiLine| -> String {
+            format!(
+                "  {label:<8} avg10={:>6.2}%  avg60={:>6.2}%  avg300={:>6.2}%  total={} us",
+                line.avg10, line.avg60, line.avg300, line.total,
+            )
+        };
+        if let Some(ref psi) = report.psi_memory {
+            writeln!(out, "{}", fmt_psi("mem some", &psi.some)).unwrap();
+            writeln!(out, "{}", fmt_psi("mem full", &psi.full)).unwrap();
+        }
+        if let Some(ref psi) = report.psi_io {
+            writeln!(out, "{}", fmt_psi("io  some", &psi.some)).unwrap();
+            writeln!(out, "{}", fmt_psi("io  full", &psi.full)).unwrap();
+        }
+        out.push('\n');
+    }
+
     // --- Memory ---
     if let Some(ref mem) = report.memory {
         let mi = &mem.meminfo;
@@ -1534,6 +1559,10 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
     // 8. DMA heap page pool size (Android-specific)
     let dma_heap_pool_kb = sysfs::read_dma_heap_pool_kb();
 
+    // 9. PSI (Pressure Stall Information)
+    let psi_memory = procfs::read_psi_memory();
+    let psi_io = procfs::read_psi_io();
+
     let report = InfoReport {
         heaps,
         buffer_summary,
@@ -1549,6 +1578,8 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         heap_caps,
         cma_areas,
         dma_heap_pool_kb,
+        psi_memory,
+        psi_io,
     };
 
     // Output
@@ -2036,6 +2067,8 @@ Node 0, zone    Normal
             heap_caps: None,
             cma_areas: None,
             dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[DMA Heaps]"));
@@ -2116,6 +2149,21 @@ Node 0, zone    Normal
             heap_caps: None,
             cma_areas: None,
             dma_heap_pool_kb: None,
+            psi_memory: Some(PsiMemory {
+                some: procfs::PsiLine {
+                    avg10: 1.23,
+                    avg60: 4.56,
+                    avg300: 7.89,
+                    total: 123_456,
+                },
+                full: procfs::PsiLine {
+                    avg10: 0.10,
+                    avg60: 0.20,
+                    avg300: 0.30,
+                    total: 7890,
+                },
+            }),
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("system"));
@@ -2132,6 +2180,11 @@ Node 0, zone    Normal
         assert!(output.contains("direct"));
         assert!(output.contains("kswapd"));
         assert!(output.contains("Migration"));
+        // PSI
+        assert!(output.contains("[Pressure]"));
+        assert!(output.contains("mem some"));
+        assert!(output.contains("avg10="));
+        assert!(output.contains("1.23%"));
         assert!(output.contains("isolated:"));
         assert!(output.contains("migrate_scan:"));
     }
@@ -2162,6 +2215,8 @@ Node 0, zone    Normal
             heap_caps: None,
             cma_areas: None,
             dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[Buffer Details]"));
@@ -2192,6 +2247,8 @@ Node 0, zone    Normal
             heap_caps: None,
             cma_areas: None,
             dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: InfoReport = serde_json::from_str(&json).unwrap();

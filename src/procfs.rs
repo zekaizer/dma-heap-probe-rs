@@ -376,6 +376,120 @@ pub fn parse_vmstat(content: &str) -> VmStat {
     vs
 }
 
+// ---------------------------------------------------------------------------
+// /proc/pressure/ (PSI — Pressure Stall Information)
+// ---------------------------------------------------------------------------
+
+/// One PSI line (either "some" or "full").
+///
+/// Format: `some avg10=X.XX avg60=X.XX avg300=X.XX total=NNNN`
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PsiLine {
+    pub avg10: f64,
+    pub avg60: f64,
+    pub avg300: f64,
+    /// Cumulative stall time in microseconds.
+    pub total: u64,
+}
+
+/// Memory pressure from `/proc/pressure/memory`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PsiMemory {
+    /// At least one task stalled on memory.
+    pub some: PsiLine,
+    /// All non-idle tasks stalled on memory.
+    pub full: PsiLine,
+}
+
+/// I/O pressure from `/proc/pressure/io`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
+pub struct PsiIo {
+    pub some: PsiLine,
+    pub full: PsiLine,
+}
+
+/// Parse a single PSI line into key-value pairs.
+fn parse_psi_line(line: &str) -> Option<PsiLine> {
+    let mut avg10 = 0.0;
+    let mut avg60 = 0.0;
+    let mut avg300 = 0.0;
+    let mut total = 0u64;
+
+    // Skip the first token ("some" or "full")
+    for token in line.split_whitespace().skip(1) {
+        if let Some((key, val)) = token.split_once('=') {
+            match key {
+                "avg10" => avg10 = val.parse().ok()?,
+                "avg60" => avg60 = val.parse().ok()?,
+                "avg300" => avg300 = val.parse().ok()?,
+                "total" => total = val.parse().ok()?,
+                _ => {}
+            }
+        }
+    }
+
+    Some(PsiLine {
+        avg10,
+        avg60,
+        avg300,
+        total,
+    })
+}
+
+/// Parse `/proc/pressure/memory` content.
+pub fn parse_psi_memory(content: &str) -> PsiMemory {
+    let mut psi = PsiMemory::default();
+    for line in content.lines() {
+        if let Some(parsed) = line
+            .starts_with("some ")
+            .then(|| parse_psi_line(line))
+            .flatten()
+        {
+            psi.some = parsed;
+        } else if let Some(parsed) = line
+            .starts_with("full ")
+            .then(|| parse_psi_line(line))
+            .flatten()
+        {
+            psi.full = parsed;
+        }
+    }
+    psi
+}
+
+/// Parse `/proc/pressure/io` content.
+pub fn parse_psi_io(content: &str) -> PsiIo {
+    let mut psi = PsiIo::default();
+    for line in content.lines() {
+        if let Some(parsed) = line
+            .starts_with("some ")
+            .then(|| parse_psi_line(line))
+            .flatten()
+        {
+            psi.some = parsed;
+        } else if let Some(parsed) = line
+            .starts_with("full ")
+            .then(|| parse_psi_line(line))
+            .flatten()
+        {
+            psi.full = parsed;
+        }
+    }
+    psi
+}
+
+/// Read and parse `/proc/pressure/memory`.
+pub fn read_psi_memory() -> Option<PsiMemory> {
+    let content = std::fs::read_to_string("/proc/pressure/memory").ok()?;
+    Some(parse_psi_memory(&content))
+}
+
+/// Read and parse `/proc/pressure/io`.
+pub fn read_psi_io() -> Option<PsiIo> {
+    let content = std::fs::read_to_string("/proc/pressure/io").ok()?;
+    Some(parse_psi_io(&content))
+}
+
 /// Read and parse `/proc/meminfo`.
 pub fn read_meminfo() -> anyhow::Result<MemInfo> {
     let content =
@@ -676,5 +790,45 @@ oom_kill 0
         let json = serde_json::to_string(&entries).unwrap();
         let deserialized: Vec<BuddyInfoEntry> = serde_json::from_str(&json).unwrap();
         assert_eq!(entries, deserialized);
+    }
+
+    const PSI_MEMORY_FIXTURE: &str = "\
+some avg10=1.23 avg60=4.56 avg300=7.89 total=123456
+full avg10=0.10 avg60=0.20 avg300=0.30 total=7890
+";
+
+    #[test]
+    fn parse_psi_memory_basic() {
+        let psi = parse_psi_memory(PSI_MEMORY_FIXTURE);
+        assert!((psi.some.avg10 - 1.23).abs() < f64::EPSILON);
+        assert!((psi.some.avg60 - 4.56).abs() < f64::EPSILON);
+        assert!((psi.some.avg300 - 7.89).abs() < f64::EPSILON);
+        assert_eq!(psi.some.total, 123_456);
+        assert!((psi.full.avg10 - 0.10).abs() < f64::EPSILON);
+        assert_eq!(psi.full.total, 7890);
+    }
+
+    #[test]
+    fn parse_psi_memory_empty() {
+        let psi = parse_psi_memory("");
+        assert!((psi.some.avg10 - 0.0).abs() < f64::EPSILON);
+        assert_eq!(psi.some.total, 0);
+    }
+
+    #[test]
+    fn parse_psi_io_basic() {
+        let content = "some avg10=0.50 avg60=1.00 avg300=2.00 total=50000\n\
+                        full avg10=0.01 avg60=0.05 avg300=0.10 total=1000\n";
+        let psi = parse_psi_io(content);
+        assert!((psi.some.avg10 - 0.50).abs() < f64::EPSILON);
+        assert!((psi.full.avg300 - 0.10).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn psi_memory_serde_roundtrip() {
+        let psi = parse_psi_memory(PSI_MEMORY_FIXTURE);
+        let json = serde_json::to_string(&psi).unwrap();
+        let deserialized: PsiMemory = serde_json::from_str(&json).unwrap();
+        assert_eq!(psi, deserialized);
     }
 }
