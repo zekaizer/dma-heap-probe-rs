@@ -5,7 +5,7 @@ use nix::errno::Errno;
 use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::container::DmaBufContainer;
 use crate::heap::DmaHeap;
-use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_START};
+use crate::ioctl::dma_buf::{DMA_BUF_SYNC_END, DMA_BUF_SYNC_READ, DMA_BUF_SYNC_START};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::ioctl::dmabuf_container::MAX_BUFCON_SRC_BUFS;
 use crate::runner::{self, SubTestResult};
@@ -89,11 +89,11 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
         ),
     ];
 
-    // Cross-heap merge (only if 2+ non-restricted heaps available).
-    // Restricted heaps cannot be merged.
+    // Cross-heap merge (only if 2+ mergeable heaps available).
+    // Heaps without CPU access (e.g. restricted/secure) cannot be merged.
     let mergeable: Vec<&str> = heaps
         .iter()
-        .filter(|h| h.as_str() != "restricted")
+        .filter(|h| crate::probe::probe_heap(backend, h).can_mmap)
         .map(String::as_str)
         .collect();
     if mergeable.len() >= 2 {
@@ -109,20 +109,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
 
 // ── Helpers ──
 
-fn alloc_one<'a, B: HeapBackend + DmaBufBackend>(
-    backend: &'a B,
-    heap_name: &str,
-) -> nix::Result<(DmaHeap<'a, B>, i32)> {
-    let heap = DmaHeap::open(backend, heap_name)?;
-    let buf_fd = heap.alloc(
-        ALLOC_SIZE,
-        DMA_HEAP_ALLOC_FD_FLAGS,
-        DMA_HEAP_VALID_HEAP_FLAGS,
-    )?;
-    Ok((heap, buf_fd))
-}
-
-fn alloc_sized<'a, B: HeapBackend + DmaBufBackend>(
+fn alloc_buf<'a, B: HeapBackend + DmaBufBackend>(
     backend: &'a B,
     heap_name: &str,
     size: u64,
@@ -154,8 +141,8 @@ fn merge_two_bufs<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h2, fd2) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     let cfd = container.merge(&[fd1, fd2])?;
     assert!(cfd >= 0);
@@ -168,7 +155,7 @@ fn merge_single_buf<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     let cfd = container.merge(&[fd1])?;
     container.close(cfd)?;
@@ -180,7 +167,7 @@ fn merge_close_lifecycle<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     let cfd = container.merge(&[fd1])?;
     container.close(cfd)?;
@@ -204,9 +191,9 @@ fn merge_flatten_container<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
-    let (_h3, fd3) = alloc_one(backend, heap_name)?;
+    let (_h1, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h2, fd2) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h3, fd3) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     // Create inner container [fd1, fd2].
     let inner = container.merge(&[fd1, fd2])?;
@@ -234,8 +221,8 @@ fn merge_mmap_read_write<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
+    let (_h1, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h2, fd2) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     // Write distinct patterns to source buffers.
     #[allow(clippy::cast_possible_truncation)]
@@ -265,8 +252,8 @@ fn merge_llseek_combined_size<B: HeapBackend + DmaBufBackend + ContainerBackend>
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_sized(backend, heap_name, 8192)?;
+    let (_h1, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h2, fd2) = alloc_buf(backend, heap_name, 8192)?;
 
     let cfd = container.merge(&[fd1, fd2])?;
     let size = backend.llseek(cfd, 0, libc::SEEK_END)?;
@@ -284,14 +271,11 @@ fn merge_sync<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
     let cfd = container.merge(&[fd1])?;
 
     backend.sync(cfd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)?;
-    backend.sync(
-        cfd,
-        crate::ioctl::dma_buf::DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ,
-    )?;
+    backend.sync(cfd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)?;
 
     container.close(cfd)?;
     Ok(())
@@ -304,9 +288,9 @@ fn set_get_mask_roundtrip<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
-    let (_h3, fd3) = alloc_one(backend, heap_name)?;
+    let (_h1, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h2, fd2) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
+    let (_h3, fd3) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
 
     let cfd = container.merge(&[fd1, fd2, fd3])?;
 
@@ -329,8 +313,8 @@ fn cross_heap_merge<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_b: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_ha, fda) = alloc_one(backend, heap_a)?;
-    let (_hb, fdb) = alloc_one(backend, heap_b)?;
+    let (_ha, fda) = alloc_buf(backend, heap_a, ALLOC_SIZE)?;
+    let (_hb, fdb) = alloc_buf(backend, heap_b, ALLOC_SIZE)?;
 
     let cfd = container.merge(&[fda, fdb])?;
     let size = backend.llseek(cfd, 0, libc::SEEK_END)?;
@@ -380,7 +364,7 @@ fn neg_merge_closed_buf<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
     backend.close(fd1)?;
     expect_errno(container.merge(&[fd1]), Errno::EBADF, "merge closed buf")
 }
@@ -392,7 +376,7 @@ fn neg_ops_after_close<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     heap_name: &str,
 ) -> nix::Result<()> {
     let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let (_h, fd1) = alloc_buf(backend, heap_name, ALLOC_SIZE)?;
     let cfd = container.merge(&[fd1])?;
     container.close(cfd)?;
 

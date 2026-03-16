@@ -95,6 +95,15 @@ enum SyncState {
     Started { flags: u64 },
 }
 
+/// Merge metadata for buffers created by container merge.
+#[derive(Debug, Clone)]
+struct MergedInfo {
+    /// Source buffer fds that were merged (for re-flatten).
+    sources: Vec<RawFd>,
+    /// Container mask (deprecated, value only). 0 on creation.
+    mask: u64,
+}
+
 #[derive(Debug)]
 struct BufferState {
     /// Shared buffer data (allows zero-copy dup).
@@ -105,11 +114,8 @@ struct BufferState {
     heap_name: Option<String>,
     /// Heap flags from allocation (for merge compatibility check).
     heap_flags: u64,
-    /// Source buffer fds merged into this buffer (for re-flatten).
-    /// `None` for normally allocated buffers.
-    merged_from: Option<Vec<RawFd>>,
-    /// Container mask (deprecated, value only). 0 for normal buffers.
-    mask: u64,
+    /// Present only for buffers created by container merge.
+    merged: Option<MergedInfo>,
 }
 
 /// Simulation configuration for injecting faults into mock operations.
@@ -527,8 +533,7 @@ impl HeapBackend for MockBackend {
                     sync_state: Arc::new(Mutex::new(SyncState::None)),
                     heap_name: Some(heap_name.clone()),
                     heap_flags: data.heap_flags,
-                    merged_from: None,
-                    mask: 0,
+                    merged: None,
                 },
             );
 
@@ -720,8 +725,10 @@ impl DmaBufBackend for MockBackend {
             sync_state: Arc::clone(&original.sync_state),
             heap_name: original.heap_name.clone(),
             heap_flags: original.heap_flags,
-            merged_from: original.merged_from.clone(),
-            mask: 0,
+            merged: original.merged.as_ref().map(|m| MergedInfo {
+                sources: m.sources.clone(),
+                mask: 0,
+            }),
         };
 
         let new_fd = state.alloc_fd();
@@ -775,8 +782,8 @@ impl ContainerBackend for MockBackend {
         let mut resolved = Vec::new();
         for &fd in buf_fds {
             let buf = state.buffers.get(&fd).ok_or(Errno::EBADF)?;
-            if let Some(ref sources) = buf.merged_from {
-                resolved.extend_from_slice(sources);
+            if let Some(ref info) = buf.merged {
+                resolved.extend_from_slice(&info.sources);
             } else {
                 resolved.push(fd);
             }
@@ -837,8 +844,10 @@ impl ContainerBackend for MockBackend {
                 sync_state: Arc::new(Mutex::new(SyncState::None)),
                 heap_name,
                 heap_flags: first_flags,
-                merged_from: Some(resolved),
-                mask: 0,
+                merged: Some(MergedInfo {
+                    sources: resolved,
+                    mask: 0,
+                }),
             },
         );
 
@@ -853,10 +862,10 @@ impl ContainerBackend for MockBackend {
         }
 
         let buf = state.buffers.get(&container_fd).ok_or(Errno::EBADF)?;
-        let sources = buf.merged_from.as_ref().ok_or(Errno::EINVAL)?;
+        let info = buf.merged.as_ref().ok_or(Errno::EINVAL)?;
 
         // Validate mask: bits beyond count are invalid.
-        let count = sources.len();
+        let count = info.sources.len();
         if count < 64 && mask & !((1u64 << count) - 1) != 0 {
             return Err(Errno::EINVAL);
         }
@@ -865,6 +874,9 @@ impl ContainerBackend for MockBackend {
             .buffers
             .get_mut(&container_fd)
             .ok_or(Errno::EBADF)?
+            .merged
+            .as_mut()
+            .ok_or(Errno::EINVAL)?
             .mask = mask;
 
         Ok(())
@@ -878,10 +890,8 @@ impl ContainerBackend for MockBackend {
         }
 
         let buf = state.buffers.get(&container_fd).ok_or(Errno::EBADF)?;
-        if buf.merged_from.is_none() {
-            return Err(Errno::EINVAL);
-        }
-        Ok(buf.mask)
+        let info = buf.merged.as_ref().ok_or(Errno::EINVAL)?;
+        Ok(info.mask)
     }
 
     fn close_container(&self, fd: RawFd) -> nix::Result<()> {

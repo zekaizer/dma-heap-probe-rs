@@ -838,18 +838,20 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
                 }
             }
 
-            if let Ok(merged_fd) = backend.merge(dev_fd, &src_fds) {
+            let merge_result = backend.merge(dev_fd, &src_fds);
+
+            // Close source fds regardless of merge outcome.
+            for &sfd in &src_fds {
+                let _ = backend.close(sfd);
+            }
+            state.total_frees.fetch_add(src_fds.len() as u64, Relaxed);
+            hc.frees.fetch_add(src_fds.len() as u64, Relaxed);
+
+            if let Ok(merged_fd) = merge_result {
                 state.total_merges.fetch_add(1, Relaxed);
                 // Merged buf is a new buffer — count as alloc for balance.
                 state.total_allocs.fetch_add(1, Relaxed);
                 hc.allocs.fetch_add(1, Relaxed);
-
-                // Close source fds (container holds its own references).
-                for &sfd in &src_fds {
-                    let _ = backend.close(sfd);
-                }
-                state.total_frees.fetch_add(src_fds.len() as u64, Relaxed);
-                hc.frees.fetch_add(src_fds.len() as u64, Relaxed);
 
                 // Operate on merged dma-buf.
                 #[allow(clippy::cast_possible_truncation)]
@@ -876,12 +878,6 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
                 }
             } else {
                 state.total_merge_errors.fetch_add(1, Relaxed);
-                // Merge failed — close source bufs.
-                for &sfd in &src_fds {
-                    let _ = backend.close(sfd);
-                }
-                state.total_frees.fetch_add(src_fds.len() as u64, Relaxed);
-                hc.frees.fetch_add(src_fds.len() as u64, Relaxed);
             }
             false
         }
