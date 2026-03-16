@@ -1,10 +1,11 @@
-// Samsung dma-buf container tests: merge, mask, cross-heap, negative paths.
+// Samsung dma-buf container tests: merge, dma-buf ops, cross-heap, negative paths.
 
 use nix::errno::Errno;
 
 use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::container::DmaBufContainer;
 use crate::heap::DmaHeap;
+use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_START};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::ioctl::dmabuf_container::MAX_BUFCON_SRC_BUFS;
 use crate::runner::{self, SubTestResult};
@@ -20,8 +21,12 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     tracing::debug!(?heaps, "container test sequence");
 
-    // Use the first heap for single-heap tests, all heaps for cross-heap.
-    let primary_heap = heaps.first().map_or("system", String::as_str);
+    // Use "system" if available, else first heap. Restricted heaps can't merge.
+    let primary_heap = heaps
+        .iter()
+        .find(|h| h.as_str() == "system")
+        .or_else(|| heaps.first())
+        .map_or("system", String::as_str);
 
     let mut tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         // Positive: merge & lifecycle
@@ -45,17 +50,22 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
             merge_flatten_container(backend, primary_heap),
             false,
         ),
-        // Positive: mask operations
+        // Positive: merged fd as normal dma-buf
+        (
+            "merge_mmap_read_write",
+            merge_mmap_read_write(backend, primary_heap),
+            false,
+        ),
+        (
+            "merge_llseek_combined_size",
+            merge_llseek_combined_size(backend, primary_heap),
+            false,
+        ),
+        ("merge_sync", merge_sync(backend, primary_heap), false),
+        // Positive: mask (deprecated, basic roundtrip only)
         (
             "set_get_mask_roundtrip",
             set_get_mask_roundtrip(backend, primary_heap),
-            false,
-        ),
-        ("mask_zero", mask_zero(backend, primary_heap), false),
-        ("mask_all_bits", mask_all_bits(backend, primary_heap), false),
-        (
-            "mask_partial_bits",
-            mask_partial_bits(backend, primary_heap),
             false,
         ),
         // Negative: merge
@@ -71,38 +81,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
             neg_merge_closed_buf(backend, primary_heap),
             false,
         ),
-        // Negative: container fd ops
-        (
-            "neg_mmap_container_fd",
-            neg_mmap_container_fd(backend, primary_heap),
-            false,
-        ),
-        (
-            "neg_sync_container_fd",
-            neg_sync_container_fd(backend, primary_heap),
-            false,
-        ),
-        (
-            "neg_llseek_container_fd",
-            neg_llseek_container_fd(backend, primary_heap),
-            false,
-        ),
-        // Negative: mask
-        (
-            "neg_set_mask_overflow",
-            neg_set_mask_overflow(backend, primary_heap),
-            false,
-        ),
-        (
-            "neg_set_mask_bad_container",
-            neg_set_mask_bad_container(backend),
-            false,
-        ),
-        (
-            "neg_get_mask_bad_container",
-            neg_get_mask_bad_container(backend),
-            false,
-        ),
+        // Negative: ops after close
         (
             "neg_ops_after_close",
             neg_ops_after_close(backend, primary_heap),
@@ -110,11 +89,17 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
         ),
     ];
 
-    // Cross-heap merge (only if multiple heaps available).
-    if heaps.len() >= 2 {
+    // Cross-heap merge (only if 2+ non-restricted heaps available).
+    // Restricted heaps cannot be merged.
+    let mergeable: Vec<&str> = heaps
+        .iter()
+        .filter(|h| h.as_str() != "restricted")
+        .map(String::as_str)
+        .collect();
+    if mergeable.len() >= 2 {
         tests.push((
             "cross_heap_merge",
-            cross_heap_merge(backend, &heaps[0], &heaps[1]),
+            cross_heap_merge(backend, mergeable[0], mergeable[1]),
             false,
         ));
     }
@@ -134,6 +119,16 @@ fn alloc_one<'a, B: HeapBackend + DmaBufBackend>(
         DMA_HEAP_ALLOC_FD_FLAGS,
         DMA_HEAP_VALID_HEAP_FLAGS,
     )?;
+    Ok((heap, buf_fd))
+}
+
+fn alloc_sized<'a, B: HeapBackend + DmaBufBackend>(
+    backend: &'a B,
+    heap_name: &str,
+    size: u64,
+) -> nix::Result<(DmaHeap<'a, B>, i32)> {
+    let heap = DmaHeap::open(backend, heap_name)?;
+    let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
     Ok((heap, buf_fd))
 }
 
@@ -218,27 +213,91 @@ fn merge_flatten_container<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     // Merge inner + fd3 → should flatten to 3 buffers.
     let outer = container.merge(&[inner, fd3])?;
 
-    // Verify count=3 by testing mask bits.
-    container.set_mask(outer, 0b111)?;
-    let mask = container.get_mask(outer)?;
-    if mask != 0b111 {
-        tracing::error!(expected = 0b111, got = mask, "flatten mask mismatch");
+    // Verify combined size = 3 * ALLOC_SIZE via llseek.
+    let size = backend.llseek(outer, 0, libc::SEEK_END)?;
+    #[allow(clippy::cast_possible_wrap)]
+    let expected = (ALLOC_SIZE * 3) as i64;
+    if size != expected {
+        tracing::error!(expected, got = size, "flatten size mismatch");
         return Err(Errno::EIO);
     }
-
-    // Bit 3 should be invalid (only 3 buffers).
-    expect_errno(
-        container.set_mask(outer, 0b1000),
-        Errno::EINVAL,
-        "flatten overflow bit",
-    )?;
 
     container.close(outer)?;
     container.close(inner)?;
     Ok(())
 }
 
-// ── Positive: mask operations ──
+// ── Positive: merged fd as normal dma-buf ──
+
+fn merge_mmap_read_write<B: HeapBackend + DmaBufBackend + ContainerBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let container = DmaBufContainer::open(backend)?;
+    let (_h1, fd1) = alloc_one(backend, heap_name)?;
+    let (_h2, fd2) = alloc_one(backend, heap_name)?;
+
+    // Write distinct patterns to source buffers.
+    #[allow(clippy::cast_possible_truncation)]
+    let alloc_usize = ALLOC_SIZE as usize;
+    let ptr1 = backend.mmap(fd1, alloc_usize)?;
+    unsafe { std::ptr::write_bytes(ptr1, 0xAA, alloc_usize) };
+    let ptr2 = backend.mmap(fd2, alloc_usize)?;
+    unsafe { std::ptr::write_bytes(ptr2, 0xBB, alloc_usize) };
+
+    let cfd = container.merge(&[fd1, fd2])?;
+    let merged_ptr = backend.mmap(cfd, alloc_usize * 2)?;
+
+    // Verify concatenated data in sg_table order.
+    unsafe {
+        if *merged_ptr != 0xAA || *merged_ptr.add(alloc_usize) != 0xBB {
+            tracing::error!("merged data mismatch");
+            return Err(Errno::EIO);
+        }
+    }
+
+    container.close(cfd)?;
+    Ok(())
+}
+
+fn merge_llseek_combined_size<B: HeapBackend + DmaBufBackend + ContainerBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let container = DmaBufContainer::open(backend)?;
+    let (_h1, fd1) = alloc_one(backend, heap_name)?;
+    let (_h2, fd2) = alloc_sized(backend, heap_name, 8192)?;
+
+    let cfd = container.merge(&[fd1, fd2])?;
+    let size = backend.llseek(cfd, 0, libc::SEEK_END)?;
+    if size != 4096 + 8192 {
+        tracing::error!(expected = 4096 + 8192, got = size, "combined size mismatch");
+        return Err(Errno::EIO);
+    }
+
+    container.close(cfd)?;
+    Ok(())
+}
+
+fn merge_sync<B: HeapBackend + DmaBufBackend + ContainerBackend>(
+    backend: &B,
+    heap_name: &str,
+) -> nix::Result<()> {
+    let container = DmaBufContainer::open(backend)?;
+    let (_h, fd1) = alloc_one(backend, heap_name)?;
+    let cfd = container.merge(&[fd1])?;
+
+    backend.sync(cfd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ)?;
+    backend.sync(
+        cfd,
+        crate::ioctl::dma_buf::DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ,
+    )?;
+
+    container.close(cfd)?;
+    Ok(())
+}
+
+// ── Positive: mask (deprecated, basic roundtrip) ──
 
 fn set_get_mask_roundtrip<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     backend: &B,
@@ -251,75 +310,13 @@ fn set_get_mask_roundtrip<B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
     let cfd = container.merge(&[fd1, fd2, fd3])?;
 
-    for mask in [0b001, 0b010, 0b100, 0b011, 0b101, 0b110, 0b111] {
-        container.set_mask(cfd, mask)?;
-        let got = container.get_mask(cfd)?;
-        if got != mask {
-            tracing::error!(expected = mask, got, "mask roundtrip mismatch");
-            return Err(Errno::EIO);
-        }
-    }
-
-    container.close(cfd)?;
-    Ok(())
-}
-
-fn mask_zero<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
-    let cfd = container.merge(&[fd1])?;
-
-    container.set_mask(cfd, 0)?;
-    let mask = container.get_mask(cfd)?;
-    if mask != 0 {
-        return Err(Errno::EIO);
-    }
-    container.close(cfd)?;
-    Ok(())
-}
-
-fn mask_all_bits<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
-    let (_h3, fd3) = alloc_one(backend, heap_name)?;
-    let (_h4, fd4) = alloc_one(backend, heap_name)?;
-
-    let cfd = container.merge(&[fd1, fd2, fd3, fd4])?;
-    let all = (1u64 << 4) - 1; // 0b1111
-    container.set_mask(cfd, all)?;
+    container.set_mask(cfd, 0b101)?;
     let got = container.get_mask(cfd)?;
-    if got != all {
+    if got != 0b101 {
+        tracing::error!(expected = 0b101, got, "mask roundtrip mismatch");
         return Err(Errno::EIO);
     }
-    container.close(cfd)?;
-    Ok(())
-}
 
-fn mask_partial_bits<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
-    let (_h3, fd3) = alloc_one(backend, heap_name)?;
-    let (_h4, fd4) = alloc_one(backend, heap_name)?;
-
-    let cfd = container.merge(&[fd1, fd2, fd3, fd4])?;
-
-    // Set only odd-indexed buffers: bit 1 and bit 3 → 0b1010.
-    container.set_mask(cfd, 0b1010)?;
-    let got = container.get_mask(cfd)?;
-    if got != 0b1010 {
-        return Err(Errno::EIO);
-    }
     container.close(cfd)?;
     Ok(())
 }
@@ -336,9 +333,11 @@ fn cross_heap_merge<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     let (_hb, fdb) = alloc_one(backend, heap_b)?;
 
     let cfd = container.merge(&[fda, fdb])?;
-    container.set_mask(cfd, 0b11)?;
-    let mask = container.get_mask(cfd)?;
-    if mask != 0b11 {
+    let size = backend.llseek(cfd, 0, libc::SEEK_END)?;
+    #[allow(clippy::cast_possible_wrap)]
+    let expected = (ALLOC_SIZE * 2) as i64;
+    if size != expected {
+        tracing::error!(expected, got = size, "cross-heap size mismatch");
         return Err(Errno::EIO);
     }
     container.close(cfd)?;
@@ -386,83 +385,7 @@ fn neg_merge_closed_buf<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     expect_errno(container.merge(&[fd1]), Errno::EBADF, "merge closed buf")
 }
 
-// ── Negative: container fd ops ──
-
-fn neg_mmap_container_fd<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
-    let cfd = container.merge(&[fd1])?;
-
-    let result = backend.mmap(cfd, 4096);
-    container.close(cfd)?;
-    expect_errno(result, Errno::EACCES, "mmap container fd")
-}
-
-fn neg_sync_container_fd<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_START};
-
-    let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
-    let cfd = container.merge(&[fd1])?;
-
-    let result = backend.sync(cfd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
-    container.close(cfd)?;
-    expect_errno(result, Errno::EINVAL, "sync container fd")
-}
-
-fn neg_llseek_container_fd<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h, fd1) = alloc_one(backend, heap_name)?;
-    let cfd = container.merge(&[fd1])?;
-
-    let result = backend.llseek(cfd, 0, libc::SEEK_END);
-    container.close(cfd)?;
-    expect_errno(result, Errno::EINVAL, "llseek container fd")
-}
-
-// ── Negative: mask ──
-
-fn neg_set_mask_overflow<B: HeapBackend + DmaBufBackend + ContainerBackend>(
-    backend: &B,
-    heap_name: &str,
-) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    let (_h1, fd1) = alloc_one(backend, heap_name)?;
-    let (_h2, fd2) = alloc_one(backend, heap_name)?;
-    let cfd = container.merge(&[fd1, fd2])?;
-
-    // count=2, valid bits = 0b11, bit 2 (0b100) should fail.
-    let result = container.set_mask(cfd, 0b100);
-    container.close(cfd)?;
-    expect_errno(result, Errno::EINVAL, "set_mask overflow")
-}
-
-fn neg_set_mask_bad_container<B: ContainerBackend>(backend: &B) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    expect_errno(
-        container.set_mask(9999, 0),
-        Errno::EBADF,
-        "set_mask bad container",
-    )
-}
-
-fn neg_get_mask_bad_container<B: ContainerBackend>(backend: &B) -> nix::Result<()> {
-    let container = DmaBufContainer::open(backend)?;
-    expect_errno(
-        container.get_mask(9999),
-        Errno::EBADF,
-        "get_mask bad container",
-    )
-}
+// ── Negative: ops after close ──
 
 fn neg_ops_after_close<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     backend: &B,
@@ -474,14 +397,9 @@ fn neg_ops_after_close<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     container.close(cfd)?;
 
     expect_errno(
-        container.set_mask(cfd, 0),
+        backend.llseek(cfd, 0, libc::SEEK_END),
         Errno::EBADF,
-        "set_mask after close",
-    )?;
-    expect_errno(
-        container.get_mask(cfd),
-        Errno::EBADF,
-        "get_mask after close",
+        "llseek after close",
     )
 }
 
@@ -493,16 +411,16 @@ mod tests {
     #[test]
     fn run_all_container_tests() {
         let b = MockBackend::new();
-        let heaps = vec!["system".to_string(), "reserved".to_string()];
-        let (results, err) = run(&b, &heaps, 8);
+        let heaps = vec!["system".to_string(), "system-uncached".to_string()];
+        let (results, err) = run(&b, &heaps, 14);
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert!(
             results.iter().all(|r| r.passed),
             "failed tests: {:?}",
             results.iter().filter(|r| !r.passed).collect::<Vec<_>>()
         );
-        // 19 base + 1 cross-heap = 20 tests.
-        assert_eq!(results.len(), 20);
+        // 13 base + 1 cross-heap = 14 tests.
+        assert_eq!(results.len(), 14);
     }
 
     #[test]
@@ -511,8 +429,8 @@ mod tests {
         let heaps = vec!["system".to_string()];
         let (results, err) = run(&b, &heaps, 6);
         assert!(err.is_none());
-        // 19 tests (no cross-heap).
-        assert_eq!(results.len(), 19);
+        // 13 tests (no cross-heap).
+        assert_eq!(results.len(), 13);
         assert!(results.iter().all(|r| r.passed));
     }
 }
