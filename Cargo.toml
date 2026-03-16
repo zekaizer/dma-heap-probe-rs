@@ -27,5 +27,10 @@ predicates = "3"
 tempfile = "3"
 proptest = "1"
 
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }

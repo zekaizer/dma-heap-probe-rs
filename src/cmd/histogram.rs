@@ -59,10 +59,11 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 );
                 for &size in sizes {
                     let test_name = format!("{heap_name}@{size}");
-                    fmt::print_pass(heap_name, heap_w, &format!("histogram::{test_name} (skip)"));
+                    fmt::print_skip(heap_name, heap_w, &format!("histogram::{test_name}"));
                     results.push(SubTestResult {
                         name: test_name,
                         passed: true,
+                        skipped: true,
                         error: None,
                     });
                 }
@@ -76,6 +77,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 results.push(SubTestResult {
                     name: format!("{heap_name}@open"),
                     passed: false,
+                    skipped: false,
                     error: Some(e.to_string()),
                 });
                 return (results, Some(anyhow::Error::from(e)));
@@ -99,6 +101,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     results.push(SubTestResult {
                         name: test_name,
                         passed: true,
+                        skipped: false,
                         error: None,
                     });
                 }
@@ -113,6 +116,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     results.push(SubTestResult {
                         name: test_name,
                         passed: false,
+                        skipped: false,
                         error: Some(err_str.clone()),
                     });
                     return (results, Some(anyhow::anyhow!("{err_str}")));

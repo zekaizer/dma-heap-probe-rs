@@ -1,10 +1,20 @@
 // Heap discovery and capability probing.
 
+use nix::errno::Errno;
+
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::DMA_BUF_SYNC_WRITE;
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+
+/// Default allocation granularity (standard page size).
+pub(crate) const DEFAULT_GRANULARITY: u64 = 4096;
+
+/// Round `size` up to the nearest multiple of `granularity`.
+pub(crate) fn align_to(size: u64, granularity: u64) -> u64 {
+    size.next_multiple_of(granularity)
+}
 
 // ── Heap discovery ──────────────────────────────────────────────────────────
 
@@ -44,6 +54,9 @@ pub(crate) struct HeapCaps {
     pub can_llseek: bool,
     pub can_sync_file: bool,
     pub can_dup: bool,
+    /// Detected allocation granularity in bytes (from llseek on 1-byte alloc).
+    /// Falls back to 4096 if detection fails.
+    pub alloc_granularity: u64,
 }
 
 impl HeapCaps {
@@ -57,6 +70,7 @@ impl HeapCaps {
             can_llseek: false,
             can_sync_file: false,
             can_dup: false,
+            alloc_granularity: DEFAULT_GRANULARITY,
         }
     }
 }
@@ -70,40 +84,68 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
         tracing::trace!(heap = heap_name, "probe: open failed");
         return caps;
     };
-    let Ok(fd) = heap.alloc(4096, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) else {
+    let Ok(fd) = heap.alloc(1, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS) else {
         tracing::trace!(heap = heap_name, "probe: alloc failed");
         return caps;
     };
     caps.can_alloc = true;
 
-    let mut buf = DmaBuf::new(backend, fd, 4096);
-
-    // mmap
-    if let Ok(ptr) = buf.mmap() {
-        caps.can_mmap = true;
-        tracing::trace!(heap = heap_name, "probe: mmap ok");
-
-        // sync + write
-        if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
-            caps.can_sync = true;
-            let write_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // SAFETY: ptr is valid and mapped to 4096 bytes.
-                unsafe {
-                    std::ptr::write_bytes(ptr, 0xAA, 4096);
-                }
-            }));
-            caps.can_write = write_ok.is_ok();
-            tracing::trace!(heap = heap_name, ok = caps.can_write, "probe: write");
-            let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
-        } else {
-            tracing::trace!(heap = heap_name, "probe: sync failed");
+    // Detect allocation granularity via llseek (uses fd directly, no mmap).
+    if let Ok(reported) = backend.llseek(fd, 0, libc::SEEK_END) {
+        caps.can_llseek = true;
+        #[allow(clippy::cast_sign_loss)]
+        {
+            caps.alloc_granularity = reported as u64;
         }
+        let _ = backend.llseek(fd, 0, libc::SEEK_SET);
+        tracing::trace!(
+            heap = heap_name,
+            granularity = caps.alloc_granularity,
+            "probe: llseek granularity detected"
+        );
     } else {
-        tracing::trace!(heap = heap_name, "probe: mmap failed");
+        tracing::trace!(
+            heap = heap_name,
+            "probe: llseek failed, using default granularity 4096"
+        );
     }
 
-    caps.can_llseek = buf.llseek_size().is_ok();
-    tracing::trace!(heap = heap_name, ok = caps.can_llseek, "probe: llseek");
+    // Create DmaBuf with actual allocated size for correct mmap length.
+    #[allow(clippy::cast_possible_truncation)]
+    let actual_size = caps.alloc_granularity as usize;
+    let mut buf = DmaBuf::new(backend, fd, actual_size);
+    match buf.mmap() {
+        Ok(ptr) => {
+            caps.can_mmap = true;
+            tracing::trace!(heap = heap_name, "probe: mmap ok");
+
+            // sync + write
+            if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
+                caps.can_sync = true;
+                let write_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: ptr is valid and mapped to `actual_size` bytes.
+                    unsafe {
+                        std::ptr::write_bytes(ptr, 0xAA, actual_size);
+                    }
+                }));
+                caps.can_write = write_ok.is_ok();
+                tracing::trace!(heap = heap_name, ok = caps.can_write, "probe: write");
+                let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+            } else {
+                tracing::trace!(heap = heap_name, "probe: sync failed");
+            }
+        }
+        Err(Errno::EACCES) => {
+            // Restricted heap: mmap denied by permission.
+            tracing::trace!(heap = heap_name, "probe: mmap EACCES (restricted)");
+        }
+        Err(e) => {
+            // mmap failed for a non-permission reason; mark as supported so
+            // tests run and report the real failure.
+            caps.can_mmap = true;
+            tracing::trace!(heap = heap_name, err = %e, "probe: mmap failed (non-EACCES)");
+        }
+    }
 
     #[allow(clippy::cast_possible_truncation)]
     {
@@ -132,6 +174,7 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
         llseek = caps.can_llseek,
         sync_file = caps.can_sync_file,
         dup = caps.can_dup,
+        granularity = caps.alloc_granularity,
         "heap capabilities probed"
     );
 
@@ -193,6 +236,7 @@ mod tests {
         assert!(caps.can_llseek);
         assert!(caps.can_sync_file);
         assert!(caps.can_dup);
+        assert_eq!(caps.alloc_granularity, 4096);
     }
 
     #[test]
@@ -200,5 +244,26 @@ mod tests {
         let b = crate::backend::mock::MockBackend::new();
         let caps = probe_heap(&b, "");
         assert!(!caps.can_alloc);
+        assert_eq!(caps.alloc_granularity, 4096); // fallback
+    }
+
+    #[test]
+    fn probe_detects_64k_granularity() {
+        use crate::backend::mock::{HeapProfile, MockBackend};
+        use std::collections::HashMap;
+
+        let mut configs = HashMap::new();
+        configs.insert(
+            "vframe".to_string(),
+            HeapProfile {
+                alloc_granularity: 65536,
+                ..HeapProfile::default()
+            },
+        );
+        let b = MockBackend::with_heaps(configs);
+        let caps = probe_heap(&b, "vframe");
+        assert!(caps.can_alloc);
+        assert!(caps.can_llseek);
+        assert_eq!(caps.alloc_granularity, 65536);
     }
 }

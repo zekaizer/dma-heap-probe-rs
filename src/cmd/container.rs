@@ -23,69 +23,90 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     // Use the first heap for single-heap tests, all heaps for cross-heap.
     let primary_heap = heaps.first().map_or("system", String::as_str);
 
-    let mut tests: Vec<(&str, nix::Result<()>)> = vec![
+    let mut tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         // Positive: merge & lifecycle
-        ("merge_two_bufs", merge_two_bufs(backend, primary_heap)),
-        ("merge_single_buf", merge_single_buf(backend, primary_heap)),
+        (
+            "merge_two_bufs",
+            merge_two_bufs(backend, primary_heap),
+            false,
+        ),
+        (
+            "merge_single_buf",
+            merge_single_buf(backend, primary_heap),
+            false,
+        ),
         (
             "merge_close_lifecycle",
             merge_close_lifecycle(backend, primary_heap),
+            false,
         ),
         (
             "merge_flatten_container",
             merge_flatten_container(backend, primary_heap),
+            false,
         ),
         // Positive: mask operations
         (
             "set_get_mask_roundtrip",
             set_get_mask_roundtrip(backend, primary_heap),
+            false,
         ),
-        ("mask_zero", mask_zero(backend, primary_heap)),
-        ("mask_all_bits", mask_all_bits(backend, primary_heap)),
+        ("mask_zero", mask_zero(backend, primary_heap), false),
+        ("mask_all_bits", mask_all_bits(backend, primary_heap), false),
         (
             "mask_partial_bits",
             mask_partial_bits(backend, primary_heap),
+            false,
         ),
         // Negative: merge
-        ("neg_merge_zero_count", neg_merge_zero_count(backend)),
+        ("neg_merge_zero_count", neg_merge_zero_count(backend), false),
         (
             "neg_merge_over_max",
             neg_merge_over_max(backend, primary_heap),
+            false,
         ),
-        ("neg_merge_invalid_fd", neg_merge_invalid_fd(backend)),
+        ("neg_merge_invalid_fd", neg_merge_invalid_fd(backend), false),
         (
             "neg_merge_closed_buf",
             neg_merge_closed_buf(backend, primary_heap),
+            false,
         ),
         // Negative: container fd ops
         (
             "neg_mmap_container_fd",
             neg_mmap_container_fd(backend, primary_heap),
+            false,
         ),
         (
             "neg_sync_container_fd",
             neg_sync_container_fd(backend, primary_heap),
+            false,
         ),
         (
             "neg_llseek_container_fd",
             neg_llseek_container_fd(backend, primary_heap),
+            false,
         ),
         // Negative: mask
         (
             "neg_set_mask_overflow",
             neg_set_mask_overflow(backend, primary_heap),
+            false,
         ),
         (
             "neg_set_mask_bad_container",
             neg_set_mask_bad_container(backend),
+            false,
         ),
         (
             "neg_get_mask_bad_container",
             neg_get_mask_bad_container(backend),
+            false,
         ),
         (
             "neg_ops_after_close",
             neg_ops_after_close(backend, primary_heap),
+            false,
         ),
     ];
 
@@ -94,6 +115,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
         tests.push((
             "cross_heap_merge",
             cross_heap_merge(backend, &heaps[0], &heaps[1]),
+            false,
         ));
     }
 

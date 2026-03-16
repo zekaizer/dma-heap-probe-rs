@@ -1209,7 +1209,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     print_summary(&aging_result, fuzz_mode);
     let (sub_results, err) =
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()))]);
+        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()), false)]);
 
     (sub_results, err, Some(aging_result))
 }

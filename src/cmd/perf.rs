@@ -12,9 +12,6 @@ use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
 
-/// Page size for alignment calculations.
-const PAGE_SIZE: u64 = 4096;
-
 /// Default sizes for performance measurement.
 const DEFAULT_SIZES: &[u64] = &[4096, 65536, 1_048_576];
 
@@ -72,10 +69,7 @@ pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
-/// Round `size` up to the nearest page boundary.
-fn page_align(size: u64) -> u64 {
-    size.next_multiple_of(PAGE_SIZE)
-}
+use crate::probe::align_to;
 
 /// Run all stage 3 performance tests.
 /// Returns sub-test results (and the first error, if any).
@@ -100,10 +94,11 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
-    let tests: Vec<(&str, nix::Result<()>)> = vec![
+    let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         (
             "bench_alloc_only",
             bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_full_pipeline",
@@ -112,26 +107,32 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             } else {
                 Ok(())
             },
+            !caps.can_mmap,
         ),
         (
             "bench_close",
             bench_close(backend, heap_name, sizes, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_order_boundary",
             bench_order_boundary(backend, heap_name, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_internal_frag",
-            bench_internal_frag(backend, heap_name, heap_w),
+            bench_internal_frag(backend, heap_name, heap_w, caps.alloc_granularity),
+            false,
         ),
         (
             "bench_pool_warmup",
             bench_pool_warmup(backend, heap_name, heap_w),
+            false,
         ),
         (
             "bench_size_switch",
             bench_size_switch(backend, heap_name, heap_w),
+            false,
         ),
     ];
 
@@ -491,6 +492,7 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     heap_w: usize,
+    granularity: u64,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
@@ -501,13 +503,13 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
 
         let actual = buf.llseek_size()?;
         #[allow(clippy::cast_possible_wrap)]
-        let expected_aligned = page_align(size) as i64;
+        let expected_aligned = align_to(size, granularity) as i64;
         #[allow(clippy::cast_precision_loss)]
-        let frag_pct = if size >= PAGE_SIZE {
+        let frag_pct = if size >= granularity {
             let ratio = (actual as f64 - size as f64) / size as f64 * 100.0;
             format!("{ratio:.1}")
         } else {
-            // Sub-page requests: fragmentation is expected, mark as not meaningful.
+            // Sub-granularity requests: fragmentation is expected, mark as not meaningful.
             "*".to_string()
         };
 
@@ -622,7 +624,7 @@ mod tests {
     #[test]
     fn internal_frag_runs() {
         let b = MockBackend::new();
-        bench_internal_frag(&b, "system", 6).unwrap();
+        bench_internal_frag(&b, "system", 6, 4096).unwrap();
     }
 
     #[test]

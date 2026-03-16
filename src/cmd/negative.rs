@@ -28,40 +28,51 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
-    let tests: Vec<(&str, nix::Result<()>)> = vec![
+    let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         // Layer 1: Heap device access
-        ("neg_open_nonexistent", neg_open_nonexistent(backend)),
+        ("neg_open_nonexistent", neg_open_nonexistent(backend), false),
         // Layer 2: Alloc ioctl
         (
             "neg_alloc_zero_size",
             neg_alloc_zero_size(backend, heap_name),
+            false,
         ),
         (
             "neg_alloc_overflow_size",
             neg_alloc_overflow_size(backend, heap_name),
+            false,
         ),
         (
             "neg_alloc_invalid_fd_flags",
             neg_alloc_invalid_fd_flags(backend, heap_name),
+            false,
         ),
         (
             "neg_alloc_invalid_heap_flags",
             neg_alloc_invalid_heap_flags(backend, heap_name),
+            false,
         ),
         (
             "neg_alloc_on_closed_heap",
             neg_alloc_on_closed_heap(backend, heap_name),
+            false,
         ),
         // Layer 3: dma-buf fd ops
         (
             "neg_sync_invalid_flags",
             neg_sync_invalid_flags(backend, heap_name),
+            false,
         ),
         (
             "neg_sync_on_closed_fd",
             neg_sync_on_closed_fd(backend, heap_name),
+            false,
         ),
-        ("neg_llseek_invalid", neg_llseek_invalid(backend, heap_name)),
+        (
+            "neg_llseek_invalid",
+            neg_llseek_invalid(backend, heap_name),
+            false,
+        ),
         // Layer 4: mmap (skip if heap does not support mmap)
         (
             "neg_mmap_beyond_size",
@@ -70,25 +81,30 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !caps.can_mmap,
         ),
         // Layer 5: sync_file
         (
             "neg_export_sync_file_invalid_flags",
             neg_export_sync_file_invalid_flags(backend, heap_name),
+            false,
         ),
         (
             "neg_import_sync_file_bad_fd",
             neg_import_sync_file_bad_fd(backend, heap_name),
+            false,
         ),
         // Layer 6: Resource leaks
         (
             "neg_rapid_alloc_close_no_leak",
             neg_rapid_alloc_close_no_leak(backend, heap_name),
+            false,
         ),
         // Layer 7: Concurrency
         (
             "neg_concurrent_close_same_fd",
             neg_concurrent_close_same_fd(backend, heap_name),
+            false,
         ),
     ];
 
