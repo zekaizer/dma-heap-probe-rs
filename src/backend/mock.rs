@@ -404,10 +404,6 @@ fn is_cached(state: &MockState, heap_name: Option<&str>) -> bool {
         .is_none_or(|p| p.cached)
 }
 
-fn page_align(size: u64) -> Option<u64> {
-    size.checked_next_multiple_of(PAGE_SIZE)
-}
-
 fn align_to_granularity(size: u64, granularity: u64) -> Option<u64> {
     size.checked_next_multiple_of(granularity)
 }
@@ -478,12 +474,14 @@ impl HeapBackend for MockBackend {
                 return Err(Errno::EINVAL);
             }
 
-            // Resolve per-heap granularity (default PAGE_SIZE for permissive mode).
-            let granularity = state
-                .heap_configs
-                .as_ref()
-                .and_then(|c| c.get(&heap_name))
-                .map_or(PAGE_SIZE, |p| p.alloc_granularity);
+            // Resolve per-heap profile once for granularity, sim_override, and latency.
+            let (granularity, sim_override);
+            {
+                let profile = state.heap_configs.as_ref().and_then(|c| c.get(&heap_name));
+                granularity = profile.map_or(PAGE_SIZE, |p| p.alloc_granularity);
+                sim_override = profile.and_then(|p| p.sim_override.clone());
+                latency_mul = profile.map_or(1.0, |p| p.latency_multiplier);
+            }
 
             // Check for overflow in granularity alignment and size limit
             aligned_size = align_to_granularity(data.len, granularity).ok_or(Errno::EINVAL)?;
@@ -492,13 +490,7 @@ impl HeapBackend for MockBackend {
             }
 
             // Resolve effective SimConfig: per-heap override > global.
-            let effective_sim = state
-                .heap_configs
-                .as_ref()
-                .and_then(|c| c.get(&heap_name))
-                .and_then(|p| p.sim_override.as_ref())
-                .cloned()
-                .or_else(|| state.sim.clone());
+            let effective_sim = sim_override.or_else(|| state.sim.clone());
 
             // Fault injection with per-heap or global counters.
             if let Some(ref sim) = effective_sim {
@@ -551,11 +543,7 @@ impl HeapBackend for MockBackend {
                 .as_ref()
                 .or(state.sim.as_ref())
                 .map_or(0, |s| s.latency_ns_per_4k);
-            latency_mul = state
-                .heap_configs
-                .as_ref()
-                .and_then(|c| c.get(&heap_name))
-                .map_or(1.0, |p| p.latency_multiplier);
+            // latency_mul set above from profile lookup.
         }
         sim_delay_scaled(aligned_size, ns_per_4k, 1, 1, latency_mul); // alloc
         Ok(())

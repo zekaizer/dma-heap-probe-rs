@@ -8,6 +8,14 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::DMA_BUF_SYNC_WRITE;
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 
+/// Default allocation granularity (standard page size).
+pub(crate) const DEFAULT_GRANULARITY: u64 = 4096;
+
+/// Round `size` up to the nearest multiple of `granularity`.
+pub(crate) fn align_to(size: u64, granularity: u64) -> u64 {
+    size.next_multiple_of(granularity)
+}
+
 // ── Heap discovery ──────────────────────────────────────────────────────────
 
 /// Discover available heap names. Uses overrides if provided, else scans
@@ -62,7 +70,7 @@ impl HeapCaps {
             can_llseek: false,
             can_sync_file: false,
             can_dup: false,
-            alloc_granularity: 4096,
+            alloc_granularity: DEFAULT_GRANULARITY,
         }
     }
 }
@@ -82,15 +90,14 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
     };
     caps.can_alloc = true;
 
-    let mut buf = DmaBuf::new(backend, fd, 1);
-
-    // Detect allocation granularity via llseek before mmap.
-    if let Ok(actual_size) = buf.llseek_size() {
+    // Detect allocation granularity via llseek (uses fd directly, no mmap).
+    if let Ok(reported) = backend.llseek(fd, 0, libc::SEEK_END) {
         caps.can_llseek = true;
         #[allow(clippy::cast_sign_loss)]
         {
-            caps.alloc_granularity = actual_size as u64;
+            caps.alloc_granularity = reported as u64;
         }
+        let _ = backend.llseek(fd, 0, libc::SEEK_SET);
         tracing::trace!(
             heap = heap_name,
             granularity = caps.alloc_granularity,
@@ -103,9 +110,10 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
         );
     }
 
-    // mmap — use detected granularity as the actual buffer size.
+    // Create DmaBuf with actual allocated size for correct mmap length.
     #[allow(clippy::cast_possible_truncation)]
-    let mapped_size = caps.alloc_granularity as usize;
+    let actual_size = caps.alloc_granularity as usize;
+    let mut buf = DmaBuf::new(backend, fd, actual_size);
     match buf.mmap() {
         Ok(ptr) => {
             caps.can_mmap = true;
@@ -115,9 +123,9 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
             if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
                 caps.can_sync = true;
                 let write_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    // SAFETY: ptr is valid and mapped to `mapped_size` bytes.
+                    // SAFETY: ptr is valid and mapped to `actual_size` bytes.
                     unsafe {
-                        std::ptr::write_bytes(ptr, 0xAA, mapped_size);
+                        std::ptr::write_bytes(ptr, 0xAA, actual_size);
                     }
                 }));
                 caps.can_write = write_ok.is_ok();

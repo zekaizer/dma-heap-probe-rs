@@ -69,10 +69,7 @@ pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
-/// Round `size` up to the nearest multiple of `granularity`.
-fn align_to(size: u64, granularity: u64) -> u64 {
-    size.next_multiple_of(granularity)
-}
+use crate::probe::align_to;
 
 /// Run all stage 3 performance tests.
 /// Returns sub-test results (and the first error, if any).

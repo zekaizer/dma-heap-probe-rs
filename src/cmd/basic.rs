@@ -18,10 +18,7 @@ const ZEROED_TEST_COUNT: usize = 16;
 /// Default allocation size for edge tests (concurrent, dup).
 const EDGE_ALLOC_SIZE: u64 = 4096;
 
-/// Round `size` up to the nearest multiple of `granularity`.
-fn align_to(size: u64, granularity: u64) -> u64 {
-    size.next_multiple_of(granularity)
-}
+use crate::probe::align_to;
 
 /// Run all basic deterministic tests. Executes all tests even if some fail;
 /// returns sub-test results (and the first error, if any).
