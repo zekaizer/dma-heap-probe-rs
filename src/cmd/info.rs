@@ -642,6 +642,63 @@ fn format_row(widths: &[usize], aligns: &[Align], values: &[&str]) -> String {
     out
 }
 
+/// Per-zone fragmentation summary derived from buddyinfo.
+///
+/// Shows total free memory, largest contiguous block, and how many blocks
+/// can satisfy common DMA allocation sizes (>=64 KiB at order 4, >=2 MiB at
+/// order 9) without compaction.
+fn format_frag_summary(out: &mut String, buddy: &[BuddyInfoEntry]) {
+    const PAGE_SIZE: u64 = 4096;
+    // Thresholds: order 4 = 64 KiB, order 9 = 2 MiB
+    const ORDER_64K: usize = 4;
+    const ORDER_2M: usize = 9;
+
+    out.push_str("  Summary (page size: 4 KiB):\n");
+    let zone_w = buddy.iter().map(|b| b.zone.len()).max().unwrap_or(4).max(4);
+    writeln!(
+        out,
+        "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+        "NODE", "ZONE", "TOTAL FREE", "MAX BLOCK", "BLK>=64K", "BLK>=2M",
+    )
+    .unwrap();
+    for b in buddy {
+        // Total free pages = sum(count[i] * 2^i)
+        let total_pages: u64 = b
+            .free_counts
+            .iter()
+            .enumerate()
+            .map(|(i, &c)| c * (1u64 << i))
+            .sum();
+        let total_bytes = total_pages * PAGE_SIZE;
+
+        // Max contiguous block = highest order with count > 0
+        let max_order = b
+            .free_counts
+            .iter()
+            .enumerate()
+            .rev()
+            .find(|(_, c)| **c > 0)
+            .map_or(0, |(i, _)| i);
+        let max_bytes = (1u64 << max_order) * PAGE_SIZE;
+
+        // Blocks >= threshold order = sum(count[i] for i >= threshold)
+        let blocks_ge = |threshold: usize| -> u64 { b.free_counts.iter().skip(threshold).sum() };
+
+        writeln!(
+            out,
+            "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+            b.node,
+            b.zone,
+            format_size(total_bytes),
+            format_size(max_bytes),
+            blocks_ge(ORDER_64K),
+            blocks_ge(ORDER_2M),
+        )
+        .unwrap();
+    }
+    out.push('\n');
+}
+
 // ---------------------------------------------------------------------------
 // Human-readable formatting
 // ---------------------------------------------------------------------------
@@ -1271,6 +1328,9 @@ pub fn format_human(report: &InfoReport) -> String {
                 out.push('\n');
             }
             out.push('\n');
+
+            // Fragmentation summary: actionable per-zone metrics
+            format_frag_summary(&mut out, buddy);
         }
 
         if let Some(ref pti) = report.pagetypeinfo {
@@ -2006,5 +2066,44 @@ Node 0, zone    Normal
         assert_eq!(summaries[1].pid, 100);
         assert_eq!(summaries[1].total_size_bytes, 4096 + 8192);
         assert_eq!(summaries[1].fd_count, 2);
+    }
+
+    #[test]
+    fn format_frag_summary_basic() {
+        let buddy = vec![BuddyInfoEntry {
+            node: 0,
+            zone: "Normal".into(),
+            // order: 0   1   2   3   4   5   6   7   8   9   10
+            free_counts: vec![512, 320, 189, 100, 52, 28, 15, 7, 3, 1, 98],
+        }];
+        let mut out = String::new();
+        format_frag_summary(&mut out, &buddy);
+
+        assert!(out.contains("Summary"));
+        assert!(out.contains("TOTAL FREE"));
+        assert!(out.contains("MAX BLOCK"));
+        assert!(out.contains("BLK>=64K"));
+        assert!(out.contains("BLK>=2M"));
+        assert!(out.contains("Normal"));
+
+        // order 10 has 98 blocks, so max block = 4 MiB
+        assert!(out.contains("4.0 MiB"));
+        // blocks >= order 4 = 52 + 28 + 15 + 7 + 3 + 1 + 98 = 204
+        assert!(out.contains("204"));
+        // blocks >= order 9 = 1 + 98 = 99
+        assert!(out.contains("99"));
+    }
+
+    #[test]
+    fn format_frag_summary_empty_zone() {
+        let buddy = vec![BuddyInfoEntry {
+            node: 0,
+            zone: "DMA".into(),
+            free_counts: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        }];
+        let mut out = String::new();
+        format_frag_summary(&mut out, &buddy);
+        // Max block should be 4 KiB (order 0 default) since all counts are 0
+        assert!(out.contains("4.0 KiB"));
     }
 }
