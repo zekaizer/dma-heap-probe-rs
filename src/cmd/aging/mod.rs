@@ -1208,8 +1208,21 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
 
     let aging_result = build_result(&state, mode, threads, &initial_snap, &final_snap, elapsed);
     print_summary(&aging_result, fuzz_mode);
-    let (sub_results, err) =
-        runner::collect_test_results("aging", &heap_label, heap_w, &[("aging", Ok(()), false)]);
+
+    let total_errors = state
+        .total_errors
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let test_outcome: nix::Result<()> = if total_errors > 0 {
+        Err(nix::errno::Errno::EIO)
+    } else {
+        Ok(())
+    };
+    let (sub_results, err) = runner::collect_test_results(
+        "aging",
+        &heap_label,
+        heap_w,
+        &[("aging", test_outcome, false)],
+    );
 
     (sub_results, err, Some(aging_result))
 }

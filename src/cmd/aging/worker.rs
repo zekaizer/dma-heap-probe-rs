@@ -48,26 +48,26 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + Send + Sync>(
     }
 
     // Pre-open heaps for all workers to share.
-    let contexts: Vec<HeapContext<'_, B>> = heap_caps
-        .into_iter()
-        .filter_map(|caps| {
-            let heap = DmaHeap::open(backend, &caps.name).ok()?;
-            let counter_idx = state
-                .heap_counters
-                .iter()
-                .position(|hc| hc.name == caps.name)
-                .unwrap_or(0);
-            Some(HeapContext {
-                heap,
-                caps,
-                counter_idx,
-            })
-        })
-        .collect();
-
-    if contexts.is_empty() {
-        mark_init_error(state);
-        return;
+    let mut contexts: Vec<HeapContext<'_, B>> = Vec::with_capacity(heap_caps.len());
+    for caps in heap_caps {
+        let heap = match DmaHeap::open(backend, &caps.name) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::error!(heap = caps.name, err = %e, "heap open failed");
+                mark_init_error(state);
+                return;
+            }
+        };
+        let counter_idx = state
+            .heap_counters
+            .iter()
+            .position(|hc| hc.name == caps.name)
+            .unwrap_or(0);
+        contexts.push(HeapContext {
+            heap,
+            caps,
+            counter_idx,
+        });
     }
 
     tracing::debug!(
