@@ -100,10 +100,11 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
-    let tests: Vec<(&str, nix::Result<()>)> = vec![
+    let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         (
             "bench_alloc_only",
             bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_full_pipeline",
@@ -112,26 +113,32 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
             } else {
                 Ok(())
             },
+            !caps.can_mmap,
         ),
         (
             "bench_close",
             bench_close(backend, heap_name, sizes, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_order_boundary",
             bench_order_boundary(backend, heap_name, iterations, warmup, heap_w),
+            false,
         ),
         (
             "bench_internal_frag",
             bench_internal_frag(backend, heap_name, heap_w),
+            false,
         ),
         (
             "bench_pool_warmup",
             bench_pool_warmup(backend, heap_name, heap_w),
+            false,
         ),
         (
             "bench_size_switch",
             bench_size_switch(backend, heap_name, heap_w),
+            false,
         ),
     ];
 

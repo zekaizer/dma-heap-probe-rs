@@ -39,9 +39,20 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     tracing::debug!(heap = heap_name, ?sizes, repeat, threads, "basic sequence");
 
     let caps = crate::probe::probe_heap(backend, heap_name);
+
+    // Heap not available — no tests to run.
+    if !caps.can_alloc {
+        return (
+            vec![],
+            Some(anyhow::anyhow!(
+                "heap '{heap_name}' not available (open/alloc failed)"
+            )),
+        );
+    }
+
     let mmap_ok = caps.can_mmap;
 
-    let tests: [(&str, nix::Result<()>); 8] = [
+    let tests: [(&str, nix::Result<()>, bool); 8] = [
         (
             "alloc_and_map",
             if mmap_ok {
@@ -49,6 +60,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !mmap_ok,
         ),
         (
             "alloc_zeroed",
@@ -57,6 +69,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !mmap_ok,
         ),
         (
             "repeated_alloc",
@@ -65,15 +78,22 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !mmap_ok,
         ),
-        ("llseek_size", test_llseek_size(backend, heap_name, sizes)),
+        (
+            "llseek_size",
+            test_llseek_size(backend, heap_name, sizes),
+            false,
+        ),
         (
             "export_sync_file",
             test_export_sync_file(backend, heap_name),
+            false,
         ),
         (
             "import_sync_file",
             test_import_sync_file(backend, heap_name),
+            false,
         ),
         (
             "concurrent_alloc",
@@ -82,6 +102,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !mmap_ok,
         ),
         (
             "dup_fd",
@@ -90,6 +111,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
             } else {
                 Ok(())
             },
+            !mmap_ok,
         ),
     ];
 
@@ -551,6 +573,7 @@ mod tests {
         let (results, err) = run(&backend, "system", &[4096, 65536], 10, 10, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
+        assert!(results.iter().all(|t| !t.skipped));
         assert_eq!(results.len(), 8);
     }
 
@@ -559,6 +582,7 @@ mod tests {
         let backend = MockBackend::new();
         let (results, err) = run(&backend, "", &[4096], 10, 10, 6);
         assert!(err.is_some());
-        assert!(results.iter().any(|t| !t.passed));
+        // Heap not available → empty results (no fake PASS).
+        assert!(results.is_empty());
     }
 }

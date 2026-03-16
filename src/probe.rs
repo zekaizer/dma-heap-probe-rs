@@ -1,5 +1,7 @@
 // Heap discovery and capability probing.
 
+use nix::errno::Errno;
+
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -79,27 +81,37 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
     let mut buf = DmaBuf::new(backend, fd, 4096);
 
     // mmap
-    if let Ok(ptr) = buf.mmap() {
-        caps.can_mmap = true;
-        tracing::trace!(heap = heap_name, "probe: mmap ok");
+    match buf.mmap() {
+        Ok(ptr) => {
+            caps.can_mmap = true;
+            tracing::trace!(heap = heap_name, "probe: mmap ok");
 
-        // sync + write
-        if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
-            caps.can_sync = true;
-            let write_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                // SAFETY: ptr is valid and mapped to 4096 bytes.
-                unsafe {
-                    std::ptr::write_bytes(ptr, 0xAA, 4096);
-                }
-            }));
-            caps.can_write = write_ok.is_ok();
-            tracing::trace!(heap = heap_name, ok = caps.can_write, "probe: write");
-            let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
-        } else {
-            tracing::trace!(heap = heap_name, "probe: sync failed");
+            // sync + write
+            if buf.sync_start(DMA_BUF_SYNC_WRITE).is_ok() {
+                caps.can_sync = true;
+                let write_ok = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    // SAFETY: ptr is valid and mapped to 4096 bytes.
+                    unsafe {
+                        std::ptr::write_bytes(ptr, 0xAA, 4096);
+                    }
+                }));
+                caps.can_write = write_ok.is_ok();
+                tracing::trace!(heap = heap_name, ok = caps.can_write, "probe: write");
+                let _ = buf.sync_end(DMA_BUF_SYNC_WRITE);
+            } else {
+                tracing::trace!(heap = heap_name, "probe: sync failed");
+            }
         }
-    } else {
-        tracing::trace!(heap = heap_name, "probe: mmap failed");
+        Err(Errno::EACCES) => {
+            // Restricted heap: mmap denied by permission.
+            tracing::trace!(heap = heap_name, "probe: mmap EACCES (restricted)");
+        }
+        Err(e) => {
+            // mmap failed for a non-permission reason; mark as supported so
+            // tests run and report the real failure.
+            caps.can_mmap = true;
+            tracing::trace!(heap = heap_name, err = %e, "probe: mmap failed (non-EACCES)");
+        }
     }
 
     caps.can_llseek = buf.llseek_size().is_ok();

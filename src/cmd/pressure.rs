@@ -44,18 +44,21 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         "pressure sequence"
     );
 
-    let tests: Vec<(&str, nix::Result<()>)> = vec![
+    let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
         (
             "gradual_exhaust",
             test_gradual_exhaust(backend, heap_name, alloc_size, max_allocs, heap_w),
+            false,
         ),
         (
             "recovery",
             test_recovery(backend, heap_name, alloc_size, max_allocs, heap_w),
+            false,
         ),
         (
             "pressure_concurrent",
             test_pressure_concurrent(backend, heap_name, alloc_size, heap_w),
+            false,
         ),
     ];
 
@@ -118,6 +121,7 @@ pub fn run_subprocess(
                         vec![SubTestResult {
                             name: "pressure_subprocess".to_string(),
                             passed: false,
+                            skipped: false,
                             error: Some(format!("worker exit code {code}")),
                         }],
                         None,
@@ -134,6 +138,7 @@ pub fn run_subprocess(
                         vec![SubTestResult {
                             name: "pressure_subprocess".to_string(),
                             passed: false,
+                            skipped: false,
                             error: Some(format!(
                                 "worker OOM killed even at {ratio}% ({adjusted} allocs)"
                             )),
@@ -162,6 +167,7 @@ fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<
             results.push(SubTestResult {
                 name,
                 passed: true,
+                skipped: false,
                 error: if ratio < 100 {
                     Some(format!("at {ratio}% capacity"))
                 } else {
@@ -173,6 +179,7 @@ fn parse_worker_output(stdout: &str, ratio: u32) -> (Vec<SubTestResult>, Option<
             results.push(SubTestResult {
                 name,
                 passed: false,
+                skipped: false,
                 error: Some(trimmed.to_string()),
             });
         }

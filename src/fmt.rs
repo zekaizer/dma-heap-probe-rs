@@ -99,6 +99,12 @@ pub fn print_pass(heap: &str, heap_w: usize, label: &str) {
     tee_println!("{prefix}  PASS  {label}");
 }
 
+/// Print a SKIP result: `[heap]  SKIP  label`
+pub fn print_skip(heap: &str, heap_w: usize, label: &str) {
+    let prefix = heap_prefix(heap, heap_w);
+    tee_println!("{prefix}  SKIP  {label}");
+}
+
 /// Print a FAIL result: `[heap]  FAIL  label — error`
 pub fn print_fail(heap: &str, heap_w: usize, label: &str, error: &str) {
     let prefix = heap_prefix(heap, heap_w);

@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 pub struct SubTestResult {
     pub name: String,
     pub passed: bool,
+    #[serde(default)]
+    pub skipped: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -132,24 +134,36 @@ pub fn sub_tests_to_details(tests: &[SubTestResult]) -> serde_json::Value {
 }
 
 /// Collect nix test results into `SubTestResult` entries with unified output.
-/// Prints `[heap]  PASS/FAIL  stage::test_name` for each result.
+/// Prints `[heap]  PASS/SKIP/FAIL  stage::test_name` for each result.
+/// The third tuple element indicates whether the test was skipped.
 /// Returns the collected results and the first error (if any).
 pub fn collect_test_results(
     stage: &str,
     heap: &str,
     heap_w: usize,
-    tests: &[(&str, nix::Result<()>)],
+    tests: &[(&str, nix::Result<()>, bool)],
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let mut results = Vec::with_capacity(tests.len());
     let mut first_error: Option<anyhow::Error> = None;
 
-    for (name, result) in tests {
+    for (name, result, skipped) in tests {
+        if *skipped {
+            crate::fmt::print_skip(heap, heap_w, &format!("{stage}::{name}"));
+            results.push(SubTestResult {
+                name: (*name).to_string(),
+                passed: true,
+                skipped: true,
+                error: None,
+            });
+            continue;
+        }
         match result {
             Ok(()) => {
                 crate::fmt::print_pass(heap, heap_w, &format!("{stage}::{name}"));
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: true,
+                    skipped: false,
                     error: None,
                 });
             }
@@ -158,6 +172,7 @@ pub fn collect_test_results(
                 results.push(SubTestResult {
                     name: (*name).to_string(),
                     passed: false,
+                    skipped: false,
                     error: Some(format!("{e}")),
                 });
                 if first_error.is_none() {
@@ -270,11 +285,13 @@ mod tests {
             SubTestResult {
                 name: "t1".into(),
                 passed: true,
+                skipped: false,
                 error: None,
             },
             SubTestResult {
                 name: "t2".into(),
                 passed: false,
+                skipped: false,
                 error: Some("fail".into()),
             },
         ];
