@@ -18,12 +18,9 @@ const ZEROED_TEST_COUNT: usize = 16;
 /// Default allocation size for edge tests (concurrent, dup).
 const EDGE_ALLOC_SIZE: u64 = 4096;
 
-/// Page size for alignment calculations.
-const PAGE_SIZE: u64 = 4096;
-
-/// Round `size` up to the nearest page boundary.
-fn page_align(size: u64) -> u64 {
-    size.next_multiple_of(PAGE_SIZE)
+/// Round `size` up to the nearest multiple of `granularity`.
+fn align_to(size: u64, granularity: u64) -> u64 {
+    size.next_multiple_of(granularity)
 }
 
 /// Run all basic deterministic tests. Executes all tests even if some fail;
@@ -51,6 +48,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     }
 
     let mmap_ok = caps.can_mmap;
+    let granularity = caps.alloc_granularity;
 
     let tests: [(&str, nix::Result<()>, bool); 8] = [
         (
@@ -82,7 +80,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
         ),
         (
             "llseek_size",
-            test_llseek_size(backend, heap_name, sizes),
+            test_llseek_size(backend, heap_name, sizes, granularity),
             false,
         ),
         (
@@ -252,25 +250,32 @@ fn test_repeated_alloc<B: HeapBackend + DmaBufBackend>(
     Ok(())
 }
 
-/// Verify that `llseek(SEEK_END)` returns the page-aligned buffer size.
+/// Verify that `llseek(SEEK_END)` returns the granularity-aligned buffer size.
 #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
 fn test_llseek_size<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     sizes: &[u64],
+    granularity: u64,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
 
     for &size in sizes {
-        tracing::debug!(size, "llseek_size");
+        tracing::debug!(size, granularity, "llseek_size");
         let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let buf = DmaBuf::new(backend, fd, size as usize);
 
         let reported = buf.llseek_size()?;
-        let expected = page_align(size) as i64;
+        let expected = align_to(size, granularity) as i64;
 
         if reported != expected {
-            tracing::error!(size, reported, expected, "llseek size mismatch");
+            tracing::error!(
+                size,
+                reported,
+                expected,
+                granularity,
+                "llseek size mismatch"
+            );
             return Err(Errno::EIO);
         }
     }
@@ -432,24 +437,31 @@ mod tests {
     use super::*;
     use crate::backend::mock::MockBackend;
 
-    // ── page_align helper ──
+    // ── align_to helper ──
 
     #[test]
-    fn page_align_zero() {
-        assert_eq!(page_align(0), 0);
+    fn align_to_zero() {
+        assert_eq!(align_to(0, 4096), 0);
     }
 
     #[test]
-    fn page_align_exact() {
-        assert_eq!(page_align(4096), 4096);
-        assert_eq!(page_align(8192), 8192);
+    fn align_to_exact() {
+        assert_eq!(align_to(4096, 4096), 4096);
+        assert_eq!(align_to(8192, 4096), 8192);
     }
 
     #[test]
-    fn page_align_rounds_up() {
-        assert_eq!(page_align(1), 4096);
-        assert_eq!(page_align(4097), 8192);
-        assert_eq!(page_align(4095), 4096);
+    fn align_to_rounds_up() {
+        assert_eq!(align_to(1, 4096), 4096);
+        assert_eq!(align_to(4097, 4096), 8192);
+        assert_eq!(align_to(4095, 4096), 4096);
+    }
+
+    #[test]
+    fn align_to_large_granularity() {
+        assert_eq!(align_to(1, 65536), 65536);
+        assert_eq!(align_to(65536, 65536), 65536);
+        assert_eq!(align_to(65537, 65536), 131_072);
     }
 
     // ── test_alloc_and_map ──
@@ -501,14 +513,14 @@ mod tests {
     #[test]
     fn llseek_aligned() {
         let backend = MockBackend::new();
-        test_llseek_size(&backend, "system", &[4096]).unwrap();
+        test_llseek_size(&backend, "system", &[4096], 4096).unwrap();
     }
 
     #[test]
     fn llseek_unaligned() {
         let backend = MockBackend::new();
         // 1 byte → 4096, 4097 → 8192
-        test_llseek_size(&backend, "system", &[1, 4097]).unwrap();
+        test_llseek_size(&backend, "system", &[1, 4097], 4096).unwrap();
     }
 
     // ── test_export_sync_file ──

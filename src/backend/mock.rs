@@ -141,6 +141,9 @@ pub struct HeapProfile {
     pub cpu_access: bool,
     /// Per-heap fault injection config (overrides global `SimConfig`).
     pub sim_override: Option<SimConfig>,
+    /// Allocation granularity in bytes (default 4096).
+    /// Custom heaps may use larger granularity (e.g. 64 KiB, 1 MiB).
+    pub alloc_granularity: u64,
 }
 
 impl Default for HeapProfile {
@@ -150,6 +153,7 @@ impl Default for HeapProfile {
             cached: true,
             cpu_access: true,
             sim_override: None,
+            alloc_granularity: PAGE_SIZE,
         }
     }
 }
@@ -170,6 +174,7 @@ impl HeapProfile {
             cached: false,
             cpu_access: true,
             sim_override: None,
+            alloc_granularity: PAGE_SIZE,
         }
     }
 
@@ -183,6 +188,7 @@ impl HeapProfile {
             cached: false,
             cpu_access: false,
             sim_override: None,
+            alloc_granularity: PAGE_SIZE,
         }
     }
 }
@@ -402,6 +408,10 @@ fn page_align(size: u64) -> Option<u64> {
     size.checked_next_multiple_of(PAGE_SIZE)
 }
 
+fn align_to_granularity(size: u64, granularity: u64) -> Option<u64> {
+    size.checked_next_multiple_of(granularity)
+}
+
 /// Simulate size-proportional latency with +/-30% jitter and optional multiplier.
 fn sim_delay(size: u64, ns_per_4k: u64, ratio_num: u64, ratio_den: u64) {
     sim_delay_scaled(size, ns_per_4k, ratio_num, ratio_den, 1.0);
@@ -468,8 +478,15 @@ impl HeapBackend for MockBackend {
                 return Err(Errno::EINVAL);
             }
 
-            // Check for overflow in page alignment and size limit
-            aligned_size = page_align(data.len).ok_or(Errno::EINVAL)?;
+            // Resolve per-heap granularity (default PAGE_SIZE for permissive mode).
+            let granularity = state
+                .heap_configs
+                .as_ref()
+                .and_then(|c| c.get(&heap_name))
+                .map_or(PAGE_SIZE, |p| p.alloc_granularity);
+
+            // Check for overflow in granularity alignment and size limit
+            aligned_size = align_to_granularity(data.len, granularity).ok_or(Errno::EINVAL)?;
             if aligned_size > MAX_ALLOC_SIZE {
                 return Err(Errno::ENOMEM);
             }
@@ -962,6 +979,42 @@ mod tests {
         let (_heap_fd, buf_fd) = open_and_alloc(&b, 1); // 1 byte -> aligned to 4096
         let size = b.llseek(buf_fd, 0, libc::SEEK_END).unwrap();
         assert_eq!(size, 4096);
+    }
+
+    #[test]
+    fn alloc_custom_granularity_64k() {
+        let mut configs = HashMap::new();
+        configs.insert(
+            "vframe".to_string(),
+            HeapProfile {
+                alloc_granularity: 65536,
+                ..HeapProfile::default()
+            },
+        );
+        let b = MockBackend::with_heaps(configs);
+        let heap_fd = b.open("vframe").unwrap();
+        let mut data = DmaHeapAllocationData {
+            len: 1,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd = data.fd as RawFd;
+        let size = b.llseek(buf_fd, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size, 65536, "1-byte alloc on 64K granularity heap");
+
+        // Exact granularity boundary should not round up.
+        let mut data2 = DmaHeapAllocationData {
+            len: 65536,
+            fd_flags: DMA_HEAP_ALLOC_FD_FLAGS,
+            ..Default::default()
+        };
+        b.alloc(heap_fd, &mut data2).unwrap();
+        #[allow(clippy::cast_possible_wrap)]
+        let buf_fd2 = data2.fd as RawFd;
+        let size2 = b.llseek(buf_fd2, 0, libc::SEEK_END).unwrap();
+        assert_eq!(size2, 65536, "exact 64K alloc stays at 64K");
     }
 
     #[test]
