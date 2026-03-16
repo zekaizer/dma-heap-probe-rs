@@ -8,7 +8,7 @@ use anyhow::Context;
 use serde::{Deserialize, Serialize};
 
 use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, VmStat};
-use crate::sysfs;
+use crate::sysfs::{self, CmaAreaStats};
 use crate::{tee_print, tee_println};
 
 // ---------------------------------------------------------------------------
@@ -94,6 +94,8 @@ pub struct InfoReport {
     pub pagetypeinfo: Option<Vec<PageTypeInfoEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heap_caps: Option<Vec<crate::probe::HeapCaps>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cma_areas: Option<Vec<CmaAreaStats>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1188,6 +1190,64 @@ pub fn format_human(report: &InfoReport) -> String {
         out.push('\n');
     }
 
+    // --- CMA Areas (--procfs) ---
+    if let Some(ref areas) = report.cma_areas {
+        out.push_str("[CMA Areas]\n");
+        out.push_str("  /sys/kernel/mm/cma/\n\n");
+        if areas.is_empty() {
+            out.push_str("  (not available - CONFIG_CMA_SYSFS not enabled)\n");
+        } else {
+            let name_w = areas.iter().map(|a| a.name.len()).max().unwrap_or(4).max(4);
+            let widths = [name_w, 14, 14, 14, 14, 10];
+            let aligns = [
+                Align::Left,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+            ];
+            out.push_str(&format_row(
+                &widths,
+                &aligns,
+                &[
+                    "AREA",
+                    "ALLOC_OK",
+                    "ALLOC_FAIL",
+                    "RELEASED",
+                    "ACTIVE",
+                    "FAIL%",
+                ],
+            ));
+            out.push('\n');
+            for a in areas {
+                let active = a
+                    .alloc_pages_success
+                    .saturating_sub(a.release_pages_success);
+                let total_allocs = a.alloc_pages_success + a.alloc_pages_fail;
+                let fail_rate = if total_allocs > 0 {
+                    pct(a.alloc_pages_fail, total_allocs)
+                } else {
+                    "N/A".to_string()
+                };
+                out.push_str(&format_row(
+                    &widths,
+                    &aligns,
+                    &[
+                        &a.name,
+                        &a.alloc_pages_success.to_string(),
+                        &a.alloc_pages_fail.to_string(),
+                        &a.release_pages_success.to_string(),
+                        &active.to_string(),
+                        &fail_rate,
+                    ],
+                ));
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
     // --- Fragmentation (--procfs) ---
     if report.buddyinfo.is_some() || report.pagetypeinfo.is_some() {
         out.push_str("[Fragmentation]\n");
@@ -1326,6 +1386,14 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         None
     };
 
+    // 7. CMA per-area stats
+    let cma_areas = if show_procfs {
+        let areas = sysfs::read_cma_areas();
+        if areas.is_empty() { None } else { Some(areas) }
+    } else {
+        None
+    };
+
     let report = InfoReport {
         heaps,
         buffer_summary,
@@ -1339,6 +1407,7 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         buddyinfo,
         pagetypeinfo,
         heap_caps,
+        cma_areas,
     };
 
     // Output
@@ -1736,6 +1805,7 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[DMA Heaps]"));
@@ -1814,6 +1884,7 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
         };
         let output = format_human(&report);
         assert!(output.contains("system"));
@@ -1858,6 +1929,7 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[Buffer Details]"));
@@ -1886,6 +1958,7 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: InfoReport = serde_json::from_str(&json).unwrap();
