@@ -144,6 +144,27 @@ fn read_cma_areas_from(base_path: &str) -> Vec<CmaAreaStats> {
     areas
 }
 
+// ---------------------------------------------------------------------------
+// DMA heap page pool size — /sys/kernel/dma_heap/total_pools_kb
+// ---------------------------------------------------------------------------
+
+const DMA_HEAP_POOLS_PATH: &str = "/sys/kernel/dma_heap/total_pools_kb";
+
+/// Read the total DMA heap page pool size in kB.
+///
+/// This is an Android-specific sysfs entry exposing the amount of memory held
+/// in DMA-BUF system heap page pools (pre-allocated pages for fast allocation).
+/// Returns `None` if the file does not exist (non-Android or older kernel).
+pub fn read_dma_heap_pool_kb() -> Option<u64> {
+    read_dma_heap_pool_kb_from(DMA_HEAP_POOLS_PATH)
+}
+
+fn read_dma_heap_pool_kb_from(path: &str) -> Option<u64> {
+    std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+}
+
 /// Count total active buffers in a snapshot.
 pub fn buffer_count(snap: &SysfsSnapshot) -> usize {
     snap.buffers.len()
@@ -284,6 +305,33 @@ mod tests {
         assert_eq!(areas[0].alloc_pages_success, 42);
         assert_eq!(areas[0].alloc_pages_fail, 0);
         assert_eq!(areas[0].release_pages_success, 0);
+    }
+
+    #[test]
+    fn read_dma_heap_pool_kb_valid() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("total_pools_kb");
+        std::fs::write(&path, "8192\n").unwrap();
+        assert_eq!(
+            read_dma_heap_pool_kb_from(path.to_str().unwrap()),
+            Some(8192)
+        );
+    }
+
+    #[test]
+    fn read_dma_heap_pool_kb_missing() {
+        assert_eq!(
+            read_dma_heap_pool_kb_from("/nonexistent/total_pools_kb"),
+            None
+        );
+    }
+
+    #[test]
+    fn read_dma_heap_pool_kb_zero() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("total_pools_kb");
+        std::fs::write(&path, "0\n").unwrap();
+        assert_eq!(read_dma_heap_pool_kb_from(path.to_str().unwrap()), Some(0));
     }
 
     #[test]

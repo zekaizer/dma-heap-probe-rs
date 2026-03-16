@@ -96,6 +96,9 @@ pub struct InfoReport {
     pub heap_caps: Option<Vec<crate::probe::HeapCaps>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cma_areas: Option<Vec<CmaAreaStats>>,
+    /// DMA heap page pool size in kB (Android-specific).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dma_heap_pool_kb: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -785,6 +788,14 @@ pub fn format_human(report: &InfoReport) -> String {
         out.push('\n');
     }
 
+    // --- DMA Heap Page Pool (Android-specific) ---
+    if let Some(pool_kb) = report.dma_heap_pool_kb {
+        out.push_str("[DMA Heap Page Pool]\n");
+        out.push_str("  /sys/kernel/dma_heap/total_pools_kb\n\n");
+        writeln!(out, "  Pool size: {}", format_size_kb(pool_kb)).unwrap();
+        out.push('\n');
+    }
+
     // --- DMA Buffers ---
     out.push_str("[DMA Buffers]\n");
     if report.buffer_summary.is_empty() && report.total_buffers == 0 {
@@ -1454,6 +1465,9 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         None
     };
 
+    // 8. DMA heap page pool size (Android-specific)
+    let dma_heap_pool_kb = sysfs::read_dma_heap_pool_kb();
+
     let report = InfoReport {
         heaps,
         buffer_summary,
@@ -1468,6 +1482,7 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         pagetypeinfo,
         heap_caps,
         cma_areas,
+        dma_heap_pool_kb,
     };
 
     // Output
@@ -1954,6 +1969,7 @@ Node 0, zone    Normal
             pagetypeinfo: None,
             heap_caps: None,
             cma_areas: None,
+            dma_heap_pool_kb: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[DMA Heaps]"));
@@ -2033,6 +2049,7 @@ Node 0, zone    Normal
             pagetypeinfo: None,
             heap_caps: None,
             cma_areas: None,
+            dma_heap_pool_kb: None,
         };
         let output = format_human(&report);
         assert!(output.contains("system"));
@@ -2078,6 +2095,7 @@ Node 0, zone    Normal
             pagetypeinfo: None,
             heap_caps: None,
             cma_areas: None,
+            dma_heap_pool_kb: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[Buffer Details]"));
@@ -2107,6 +2125,7 @@ Node 0, zone    Normal
             pagetypeinfo: None,
             heap_caps: None,
             cma_areas: None,
+            dma_heap_pool_kb: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: InfoReport = serde_json::from_str(&json).unwrap();
