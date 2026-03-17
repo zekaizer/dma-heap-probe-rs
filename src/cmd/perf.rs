@@ -31,14 +31,27 @@ pub struct LatencyStats {
     pub min_us: u64,
     pub max_us: u64,
     pub avg_us: u64,
+    pub stddev_us: u64,
     pub p50_us: u64,
     pub p95_us: u64,
     pub p99_us: u64,
+    pub p99_9_us: u64,
+    /// Coefficient of variation (stddev / mean * 100). Lower is more stable.
+    pub cv_pct: f64,
 }
 
 /// Compute latency statistics from a slice of microsecond measurements.
 ///
+/// Uses exact floating-point mean for variance calculation, then rounds for
+/// integer fields. Population stddev (divide by N) is used since benchmark
+/// iterations represent the full measurement, not a sample from a larger population.
+///
 /// Returns `None` if the slice is empty.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
 pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
     if samples.is_empty() {
         return None;
@@ -49,15 +62,35 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
 
     let count = sorted.len();
     let sum: u64 = sorted.iter().sum();
+    let mean_f = sum as f64 / count as f64;
+
+    // Population variance via two-pass algorithm (numerically stable for integer data).
+    let variance = sorted
+        .iter()
+        .map(|&x| {
+            let diff = x as f64 - mean_f;
+            diff * diff
+        })
+        .sum::<f64>()
+        / count as f64;
+    let stddev = variance.sqrt();
+    let cv = if mean_f > 0.0 {
+        stddev / mean_f * 100.0
+    } else {
+        0.0
+    };
 
     Some(LatencyStats {
         count,
         min_us: sorted[0],
         max_us: sorted[count - 1],
-        avg_us: sum / count as u64,
+        avg_us: mean_f.round() as u64,
+        stddev_us: stddev.round() as u64,
         p50_us: percentile(&sorted, 50),
         p95_us: percentile(&sorted, 95),
         p99_us: percentile(&sorted, 99),
+        p99_9_us: percentile_frac(&sorted, 999, 1000),
+        cv_pct: (cv * 10.0).round() / 10.0,
     })
 }
 
@@ -69,7 +102,28 @@ pub(crate) fn percentile(sorted: &[u64], p: u32) -> u64 {
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
+/// Compute the fractional percentile (e.g., 999/1000 = p99.9) from a sorted slice.
+pub(crate) fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
+    let n = sorted.len() as u64;
+    #[allow(clippy::cast_possible_truncation)]
+    let rank = (numer * n).div_ceil(denom) as usize;
+    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
 use crate::probe::align_to;
+
+/// Format a byte size as a human-readable string (e.g., 4096 → "4K", 1048576 → "1M").
+///
+/// Falls back to raw bytes for non-aligned sizes.
+fn human_size(bytes: u64) -> String {
+    if bytes >= 1_048_576 && bytes.is_multiple_of(1_048_576) {
+        format!("{}M", bytes / 1_048_576)
+    } else if bytes >= 1024 && bytes.is_multiple_of(1024) {
+        format!("{}K", bytes / 1024)
+    } else {
+        bytes.to_string()
+    }
+}
 
 /// Run all stage 3 performance tests.
 /// Returns sub-test results (and the first error, if any).
@@ -173,12 +227,14 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             rows.push(vec![
-                size.to_string(),
+                human_size(size),
                 stats.min_us.to_string(),
                 stats.avg_us.to_string(),
+                stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
                 stats.p99_us.to_string(),
+                stats.p99_9_us.to_string(),
                 stats.max_us.to_string(),
             ]);
         }
@@ -189,7 +245,9 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         heap_w,
         "perf::alloc_only",
         Some("(us)"),
-        &["size", "min", "avg", "p50", "p95", "p99", "max"],
+        &[
+            "size", "min", "avg", "sd", "p50", "p95", "p99", "p99.9", "max",
+        ],
         &rows,
     );
     Ok(())
@@ -239,11 +297,13 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             rows.push(vec![
-                size.to_string(),
+                human_size(size),
                 stats.avg_us.to_string(),
+                stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
                 stats.p99_us.to_string(),
+                stats.p99_9_us.to_string(),
             ]);
         }
     }
@@ -253,7 +313,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         heap_w,
         "perf::full_pipeline",
         Some("(us)"),
-        &["size", "avg", "p50", "p95", "p99"],
+        &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
         &rows,
     );
     Ok(())
@@ -293,11 +353,13 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             rows.push(vec![
-                size.to_string(),
+                human_size(size),
                 stats.avg_us.to_string(),
+                stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
                 stats.p99_us.to_string(),
+                stats.p99_9_us.to_string(),
             ]);
         }
     }
@@ -307,7 +369,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         heap_w,
         "perf::close",
         Some("(us)"),
-        &["size", "avg", "p50", "p95", "p99"],
+        &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
         &rows,
     );
     Ok(())
@@ -346,11 +408,13 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             rows.push(vec![
-                size.to_string(),
+                human_size(size),
                 stats.avg_us.to_string(),
+                stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
                 stats.p99_us.to_string(),
+                stats.p99_9_us.to_string(),
             ]);
         }
     }
@@ -360,7 +424,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         heap_w,
         "perf::order_boundary",
         Some("(us)"),
-        &["size", "avg", "p50", "p95", "p99"],
+        &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
         &rows,
     );
     Ok(())
@@ -475,7 +539,7 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
         if let (Some(first), Some(last)) = (first_10(samples), last_10(samples)) {
             rows.push(vec![
                 ph.to_string(),
-                size.to_string(),
+                human_size(*size),
                 first.p50_us.to_string(),
                 last.p50_us.to_string(),
             ]);
@@ -551,9 +615,12 @@ mod tests {
         assert_eq!(stats.min_us, 42);
         assert_eq!(stats.max_us, 42);
         assert_eq!(stats.avg_us, 42);
+        assert_eq!(stats.stddev_us, 0);
         assert_eq!(stats.p50_us, 42);
         assert_eq!(stats.p95_us, 42);
         assert_eq!(stats.p99_us, 42);
+        assert_eq!(stats.p99_9_us, 42);
+        assert!((stats.cv_pct - 0.0).abs() < f64::EPSILON);
     }
 
     #[test]
@@ -563,10 +630,15 @@ mod tests {
         assert_eq!(stats.count, 100);
         assert_eq!(stats.min_us, 1);
         assert_eq!(stats.max_us, 100);
-        assert_eq!(stats.avg_us, 50); // (1+100)*100/2/100 = 50.5 → 50
+        assert_eq!(stats.avg_us, 51); // (1+100)*100/2/100 = 50.5 → rounds to 51
         assert_eq!(stats.p50_us, 50);
         assert_eq!(stats.p95_us, 95);
         assert_eq!(stats.p99_us, 99);
+        assert_eq!(stats.p99_9_us, 100);
+        // stddev of 1..=100: sqrt((100^2-1)/12) ≈ 28.87 → rounds to 29
+        assert_eq!(stats.stddev_us, 29);
+        // cv = 28.87/50.5*100 ≈ 57.2
+        assert!((stats.cv_pct - 57.2).abs() < 0.1);
     }
 
     #[test]
@@ -593,6 +665,61 @@ mod tests {
         let sorted = vec![10, 20];
         assert_eq!(percentile(&sorted, 50), 10);
         assert_eq!(percentile(&sorted, 99), 20);
+    }
+
+    #[test]
+    fn percentile_frac_p999() {
+        let sorted: Vec<u64> = (1..=1000).collect();
+        assert_eq!(percentile_frac(&sorted, 999, 1000), 999);
+    }
+
+    #[test]
+    fn percentile_frac_small_sample() {
+        let sorted = vec![5, 10, 15];
+        // 999/1000 of 3 elements → rank = ceil(2997/1000) = 3 → index 2
+        assert_eq!(percentile_frac(&sorted, 999, 1000), 15);
+    }
+
+    // ── stddev / cv tests ──
+
+    #[test]
+    fn stats_uniform_zero_stddev() {
+        let samples = vec![100; 50];
+        let stats = compute_stats(&samples).unwrap();
+        assert_eq!(stats.avg_us, 100);
+        assert_eq!(stats.stddev_us, 0);
+        assert!((stats.cv_pct - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn stats_two_values_stddev() {
+        // [10, 20]: mean=15, variance=(25+25)/2=25, stddev=5
+        let stats = compute_stats(&[10, 20]).unwrap();
+        assert_eq!(stats.avg_us, 15);
+        assert_eq!(stats.stddev_us, 5);
+        // cv = 5/15*100 = 33.3
+        assert!((stats.cv_pct - 33.3).abs() < 0.1);
+    }
+
+    // ── human_size tests ──
+
+    #[test]
+    fn human_size_kilobytes() {
+        assert_eq!(human_size(4096), "4K");
+        assert_eq!(human_size(65536), "64K");
+    }
+
+    #[test]
+    fn human_size_megabytes() {
+        assert_eq!(human_size(1_048_576), "1M");
+        assert_eq!(human_size(8_388_608), "8M");
+    }
+
+    #[test]
+    fn human_size_unaligned() {
+        assert_eq!(human_size(4095), "4095");
+        assert_eq!(human_size(49152), "48K");
+        assert_eq!(human_size(1), "1");
     }
 
     // ── bench function tests ──

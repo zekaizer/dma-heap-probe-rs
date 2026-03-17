@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cli::HistMode;
-use crate::cmd::perf::{self, percentile};
+use crate::cmd::perf::{self, percentile, percentile_frac};
 use crate::dmabuf::DmaBuf;
 use crate::fmt;
 use crate::heap::DmaHeap;
@@ -377,14 +377,6 @@ fn build_buckets(sorted: &[u64], min: u64, max: u64, bucket_count: usize) -> Vec
     }
 
     buckets
-}
-
-/// Compute the p-th fractional percentile (e.g., 999/1000 = p99.9).
-fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
-    let n = sorted.len() as u64;
-    #[allow(clippy::cast_possible_truncation)]
-    let rank = (numer * n).div_ceil(denom) as usize;
-    sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
 /// Auto-determine bucket count via Sturges' rule: ceil(1 + log2(n)).
