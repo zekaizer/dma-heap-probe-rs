@@ -241,17 +241,58 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 
 ---
 
-## 6. 벤치마크별 상세
+## 6. Size-Latency 선형 회귀 분석
 
-### 6.1 `bench_alloc_only`
+### 6.1 알고리즘: Ordinary Least Squares (OLS)
+
+`alloc_only` 벤치마크 종료 후, (size, avg_us) 쌍에 대해 선형 모델을 적합:
+
+```
+latency_us = base_us + slope_us_per_byte × size_bytes
+```
+
+**최소제곱법:**
+
+```
+slope = Σ(xi - x̄)(yi - ȳ) / Σ(xi - x̄)²
+intercept = ȳ - slope × x̄
+R² = 1 - SS_res / SS_tot
+```
+
+### 6.2 출력 필드
+
+| 필드 | 의미 |
+|------|------|
+| `base_us` | 사이즈 무관 고정 비용 (y절편) — ioctl 오버헤드, 잠금 경합 등 |
+| `us/KB` | KB당 추가 비용 (slope × 1024) — 페이지 할당, zeroing 비용 |
+| `R²` | 결정계수 (0~1). 1에 가까울수록 사이즈-지연 관계가 선형적 |
+
+### 6.3 해석 가이드
+
+```
+[system]  perf::alloc_model  base_us: 5.2  us/KB: 0.045  R²: 0.987
+```
+
+- **R² > 0.95**: 강한 선형 관계 — 지연은 사이즈에 비례
+- **R² < 0.5**: 비선형 — buddy allocator order 경계, pool hit/miss 등의 영향
+- **base_us 높음**: 고정 오버헤드가 큼 (잠금 경합, slab 경로)
+- **us/KB ≈ 0**: 사이즈 무관 할당자 (pool 기반, 사전 할당)
+- 최소 2개 사이즈 필요. 3개 이상에서 R²가 의미 있음
+
+---
+
+## 7. 벤치마크별 상세
+
+### 7.1 `bench_alloc_only`
 
 커널 `DMA_HEAP_IOCTL_ALLOC` 호출의 순수 지연시간.
 
 - **측정 대상**: ioctl 시스콜만 (mmap, sync 제외)
 - **사이즈**: `--sizes` (기본 4K, 64K, 1M)
 - **용도**: 힙 할당자 성능의 기준선
+- **회귀 분석**: 테이블 후 `perf::alloc_model` 라인으로 size-latency 모델 출력
 
-### 6.2 `bench_full_pipeline`
+### 7.2 `bench_full_pipeline`
 
 실제 사용 시나리오: 할당 → 매핑 → 쓰기 → 읽기 → 해제.
 
@@ -259,7 +300,7 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 - **memwrite**: `write_bytes(ptr, 0xAA, size)` — 전체 버퍼 쓰기
 - **용도**: 캐시 유지보수 비용 포함한 end-to-end 지연
 
-### 6.3 `bench_close`
+### 7.3 `bench_close`
 
 버퍼 해제 경로 지연시간.
 
@@ -267,7 +308,7 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 - **사전 조건**: 타이밍 전에 alloc 완료
 - **용도**: deferred free pool로의 반환 지연, CMA 반환 비용
 
-### 6.4 `bench_order_boundary`
+### 7.4 `bench_order_boundary`
 
 커널 buddy allocator의 order 경계에서 할당 비용 변화 측정.
 
@@ -275,7 +316,7 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 - **관찰 포인트**: `49152 (48K)` vs `65536 (64K)` — order 4 경계
 - **용도**: buddy allocator의 order 승격/분할 비용 시각화
 
-### 6.5 `bench_internal_frag`
+### 7.5 `bench_internal_frag`
 
 비정렬 요청 시 내부 단편화 비율.
 
@@ -284,7 +325,7 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 - **출력**: `frag% = (actual - requested) / requested × 100`
 - **용도**: 힙의 할당 그래뉼래리티(보통 4K) 확인
 
-### 6.6 `bench_pool_warmup`
+### 7.6 `bench_pool_warmup`
 
 cold start vs warm state 할당 비용 비교.
 
@@ -293,7 +334,7 @@ cold start vs warm state 할당 비용 비교.
 - **출력**: `cold_p50, cold_p95, warm_p50, warm_p95`
 - **용도**: 커널 deferred free pool의 효과 정량화
 
-### 6.7 `bench_size_switch`
+### 7.7 `bench_size_switch`
 
 사이즈 전환이 할당 지연에 미치는 영향.
 
@@ -303,7 +344,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 7. JSON 출력 형식
+## 8. JSON 출력 형식
 
 `LatencyStats` 구조체가 그대로 직렬화된다:
 
@@ -328,7 +369,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 8. 정밀도 한계 및 주의사항
+## 9. 정밀도 한계 및 주의사항
 
 | 한계 | 영향 | 완화 방법 |
 |------|------|-----------|
@@ -340,7 +381,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 9. 알고리즘 복잡도
+## 10. 알고리즘 복잡도
 
 | 단계 | 시간 복잡도 | 공간 복잡도 |
 |------|-------------|-------------|

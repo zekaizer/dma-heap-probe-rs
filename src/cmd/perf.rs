@@ -189,6 +189,75 @@ fn format_throughput(ops: u64) -> String {
     }
 }
 
+/// Result of ordinary least-squares linear regression: `y = intercept + slope * x`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LinearFit {
+    /// Fixed base cost (y-intercept), in microseconds.
+    pub intercept_us: f64,
+    /// Marginal cost per byte (slope), in microseconds/byte.
+    pub slope_us_per_byte: f64,
+    /// Coefficient of determination (0.0–1.0). Values near 1.0 indicate
+    /// strong linear relationship between size and latency.
+    pub r_squared: f64,
+}
+
+/// Fit a simple linear model `latency_us = a + b * size_bytes` via OLS.
+///
+/// Requires at least 2 data points. Returns `None` if fewer or if all x values
+/// are identical (zero variance in predictor).
+#[allow(clippy::cast_precision_loss)]
+fn linear_regression(points: &[(u64, u64)]) -> Option<LinearFit> {
+    let n = points.len();
+    if n < 2 {
+        return None;
+    }
+
+    let n_f = n as f64;
+    let sum_x: f64 = points.iter().map(|&(x, _)| x as f64).sum();
+    let sum_y: f64 = points.iter().map(|&(_, y)| y as f64).sum();
+    let mean_x = sum_x / n_f;
+    let mean_y = sum_y / n_f;
+
+    let mut ss_xx = 0.0_f64;
+    let mut ss_cross = 0.0_f64;
+    let mut ss_tot = 0.0_f64;
+    for &(x, y) in points {
+        let dx = x as f64 - mean_x;
+        let dy = y as f64 - mean_y;
+        ss_xx += dx * dx;
+        ss_cross += dx * dy;
+        ss_tot += dy * dy;
+    }
+
+    if ss_xx == 0.0 {
+        return None; // all sizes identical
+    }
+
+    let slope = ss_cross / ss_xx;
+    let intercept = mean_y - slope * mean_x;
+
+    // R² = 1 - SS_res / SS_tot
+    let ss_res: f64 = points
+        .iter()
+        .map(|&(x, y)| {
+            let predicted = intercept + slope * x as f64;
+            let residual = y as f64 - predicted;
+            residual * residual
+        })
+        .sum();
+    let r_squared = if ss_tot > 0.0 {
+        1.0 - ss_res / ss_tot
+    } else {
+        1.0 // all y identical → perfect fit
+    };
+
+    Some(LinearFit {
+        intercept_us: (intercept * 100.0).round() / 100.0,
+        slope_us_per_byte: (slope * 1e9).round() / 1e9, // 9 decimal places
+        r_squared: (r_squared * 1000.0).round() / 1000.0,
+    })
+}
+
 /// Format a byte size as a human-readable string (e.g., 4096 → "4K", 1048576 → "1M").
 ///
 /// Falls back to raw bytes for non-aligned sizes.
@@ -282,6 +351,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut regression_points: Vec<(u64, u64)> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -303,6 +373,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
+            regression_points.push((size, stats.avg_us));
             rows.push(vec![
                 human_size(size),
                 stats.min_us.to_string(),
@@ -341,6 +412,21 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         ],
         &rows,
     );
+
+    // Size-latency regression: latency_us = base + slope * size_bytes
+    if let Some(fit) = linear_regression(&regression_points) {
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::alloc_model",
+            &[
+                ("base_us", &format!("{:.1}", fit.intercept_us)),
+                ("us/KB", &format!("{:.3}", fit.slope_us_per_byte * 1024.0)),
+                ("R²", &format!("{:.3}", fit.r_squared)),
+            ],
+        );
+    }
+
     Ok(())
 }
 
@@ -895,6 +981,39 @@ mod tests {
         assert_eq!(format_throughput(100_000), "100");
         assert_eq!(format_throughput(23810), "23");
         assert_eq!(format_throughput(500), "0.5");
+    }
+
+    // ── linear regression tests ──
+
+    #[test]
+    fn regression_too_few_points() {
+        assert!(linear_regression(&[(4096, 10)]).is_none());
+        assert!(linear_regression(&[]).is_none());
+    }
+
+    #[test]
+    fn regression_perfect_linear() {
+        // y = 5 + 0.001 * x → exactly linear
+        let points = vec![(0, 5), (1000, 6), (2000, 7), (3000, 8)];
+        let fit = linear_regression(&points).unwrap();
+        assert!((fit.intercept_us - 5.0).abs() < 0.01);
+        assert!((fit.slope_us_per_byte * 1024.0 - 1.024).abs() < 0.01);
+        assert!((fit.r_squared - 1.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn regression_constant_latency() {
+        // No size dependence: flat latency.
+        let points = vec![(4096, 10), (65536, 10), (1_048_576, 10)];
+        let fit = linear_regression(&points).unwrap();
+        assert!(fit.slope_us_per_byte.abs() < 1e-9);
+        assert!((fit.intercept_us - 10.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn regression_identical_x() {
+        // All same size → undefined slope.
+        assert!(linear_regression(&[(4096, 5), (4096, 10)]).is_none());
     }
 
     // ── bench function tests ──
