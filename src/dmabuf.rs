@@ -303,7 +303,9 @@ mod tests {
         let buf = DmaBuf::new(&backend, fd, 4096);
         let dup_buf = buf.dup().unwrap();
         let actual_size = dup_buf.llseek_size().unwrap();
-        assert_eq!(dup_buf.len() as i64, actual_size);
+        #[allow(clippy::cast_possible_wrap)]
+        let expected = dup_buf.len() as i64;
+        assert_eq!(expected, actual_size);
     }
 
     #[test]
