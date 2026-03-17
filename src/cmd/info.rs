@@ -1150,6 +1150,24 @@ pub fn format_human(report: &InfoReport) -> String {
             .unwrap();
         }
 
+        // Zswap (kernel 6.8+, CONFIG_ZSWAP)
+        if let (Some(pool), Some(orig)) = (mi.zswap_kb, mi.zswapped_kb) {
+            let ratio = if pool > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                let r = orig as f64 / pool as f64;
+                format!("{r:.1}x")
+            } else {
+                "N/A".to_string()
+            };
+            writeln!(
+                out,
+                "  Zswap Pool {:>10}    Zswapped   {:>10}   ({ratio} ratio)",
+                format_size_kb(pool),
+                format_size_kb(orig),
+            )
+            .unwrap();
+        }
+
         // CMA
         if let (Some(total), Some(free)) = (mi.cma_total_kb, mi.cma_free_kb) {
             let used = total.saturating_sub(free);
@@ -2130,6 +2148,8 @@ Node 0, zone    Normal
                     writeback_kb: Some(256),
                     anon_pages_kb: Some(2_097_152),
                     mapped_kb: Some(524_288),
+                    zswap_kb: Some(16_384),
+                    zswapped_kb: Some(65_536),
                 },
                 vmstat: VmStat {
                     compact_stall: Some(42),
@@ -2200,6 +2220,10 @@ Node 0, zone    Normal
         assert!(output.contains("1.23%"));
         assert!(output.contains("isolated:"));
         assert!(output.contains("migrate_scan:"));
+        // Zswap
+        assert!(output.contains("Zswap Pool"));
+        assert!(output.contains("Zswapped"));
+        assert!(output.contains("4.0x ratio"));
     }
 
     #[test]

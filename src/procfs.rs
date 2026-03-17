@@ -193,6 +193,10 @@ pub struct MemInfo {
     pub writeback_kb: Option<u64>,
     pub anon_pages_kb: Option<u64>,
     pub mapped_kb: Option<u64>,
+    /// Compressed pool size in RAM (kernel 6.8+, requires `CONFIG_ZSWAP`).
+    pub zswap_kb: Option<u64>,
+    /// Uncompressed size of data stored in zswap.
+    pub zswapped_kb: Option<u64>,
 }
 
 /// Selected fields from `/proc/vmstat`.
@@ -270,6 +274,8 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
     let mut writeback_kb = None;
     let mut anon_pages_kb = None;
     let mut mapped_kb = None;
+    let mut zswap_kb = None;
+    let mut zswapped_kb = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -301,6 +307,8 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
                 "Writeback" => writeback_kb = val_kb.ok(),
                 "AnonPages" => anon_pages_kb = val_kb.ok(),
                 "Mapped" => mapped_kb = val_kb.ok(),
+                "Zswap" => zswap_kb = val_kb.ok(),
+                "Zswapped" => zswapped_kb = val_kb.ok(),
                 _ => {}
             }
         }
@@ -327,6 +335,8 @@ pub fn parse_meminfo(content: &str) -> anyhow::Result<MemInfo> {
         writeback_kb,
         anon_pages_kb,
         mapped_kb,
+        zswap_kb,
+        zswapped_kb,
     })
 }
 
@@ -652,6 +662,8 @@ SReclaimable:     196608 kB
 SUnreclaim:        65536 kB
 SwapTotal:       2097152 kB
 SwapFree:        1835008 kB
+Zswap:             16384 kB
+Zswapped:          65536 kB
 CmaTotal:         262144 kB
 CmaFree:          131072 kB
 ";
@@ -678,6 +690,8 @@ CmaFree:          131072 kB
         assert_eq!(info.writeback_kb, Some(256));
         assert_eq!(info.anon_pages_kb, Some(2_097_152));
         assert_eq!(info.mapped_kb, Some(524_288));
+        assert_eq!(info.zswap_kb, Some(16_384));
+        assert_eq!(info.zswapped_kb, Some(65_536));
     }
 
     #[test]
