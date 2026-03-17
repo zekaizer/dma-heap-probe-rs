@@ -444,6 +444,26 @@ fn run_sysfs_dump() {
         }
         Err(e) => tracing::warn!(error = %e, "vmstat unavailable"),
     }
+
+    if let Some(Ok(json)) = procfs::read_psi_memory().map(|p| serde_json::to_string_pretty(&p)) {
+        tee_println!("{json}");
+    }
+
+    if let Some(Ok(json)) = procfs::read_psi_io().map(|p| serde_json::to_string_pretty(&p)) {
+        tee_println!("{json}");
+    }
+
+    let cma_areas = sysfs::read_cma_areas();
+    if let (false, Ok(json)) = (
+        cma_areas.is_empty(),
+        serde_json::to_string_pretty(&cma_areas),
+    ) {
+        tee_println!("{json}");
+    }
+
+    if let Some(pool_kb) = sysfs::read_dma_heap_pool_kb() {
+        tee_println!("{{\"dma_heap_pool_kb\": {pool_kb}}}");
+    }
 }
 
 #[cfg(test)]
