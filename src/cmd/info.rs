@@ -2055,6 +2055,7 @@ Node 0, zone    Normal
     }
 
     #[test]
+    #[allow(clippy::too_many_lines)]
     fn format_human_with_heaps_and_memory() {
         let report = InfoReport {
             heaps: vec![HeapEntry {
@@ -2329,7 +2330,7 @@ Node 0, zone    Normal
         assert!(out.contains("CMA migrate type"));
         assert!(out.contains("Normal"));
         // blocks >= order 4 = 2 + 1 + 0 + 0 + 0 + 0 + 0 = 3
-        assert!(out.contains("3"));
+        assert!(out.contains('3'));
     }
 
     #[test]
