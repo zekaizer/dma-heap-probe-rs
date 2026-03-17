@@ -153,6 +153,8 @@ fn pattern_byte(pat: WritePattern) -> u8 {
 
 /// Minimum hold pool size — below this, hold tests lose meaning.
 pub(super) const MIN_HOLD_SIZE: usize = 2;
+/// Minimum byte limit floor to prevent shrinking to zero.
+const MIN_HOLD_BYTES: u64 = 4096;
 /// Consecutive ENOMEM count before shrinking `max_size`.
 pub(super) const ENOMEM_SHRINK_THRESHOLD: u32 = 3;
 /// Successful allocs after a shrink before attempting grow-back.
@@ -166,6 +168,7 @@ pub(super) struct HoldPool<'a, B: DmaBufBackend> {
     initial_max_size: usize,
     /// Per-thread byte limit (0 = use `max_size` count-based limit).
     max_bytes: u64,
+    initial_max_bytes: u64,
     local_bytes: u64,
     consecutive_enomem: u32,
     success_since_shrink: u32,
@@ -180,6 +183,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             max_size,
             initial_max_size: max_size,
             max_bytes,
+            initial_max_bytes: max_bytes,
             local_bytes: 0,
             consecutive_enomem: 0,
             success_since_shrink: 0,
@@ -211,7 +215,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.state.held_bufs.fetch_sub(actual as u64, Relaxed);
             self.state.held_bytes.fetch_sub(freed_bytes, Relaxed);
             if crate::trace::enabled() {
-                crate::trace::instant(&format!("drain_{actual}"));
+                crate::trace::instant("drain");
             }
         }
     }
@@ -255,7 +259,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         self.state.held_bufs.fetch_add(1, Relaxed);
     }
 
-    /// Handle `ENOMEM`: drain half the pool and shrink `max_size` if repeated.
+    /// Handle `ENOMEM`: drain half the pool and shrink limits if repeated.
     pub(super) fn notify_enomem(&mut self, worker_id: u32) {
         let to_drain = (self.bufs.len() / 2 + 1).min(self.bufs.len());
         self.drain_n(to_drain);
@@ -266,15 +270,28 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         if self.consecutive_enomem >= ENOMEM_SHRINK_THRESHOLD {
             let old_max = self.max_size;
             self.max_size = (self.max_size / 2).max(MIN_HOLD_SIZE);
-            // Trim pool to new max_size.
+            // Also shrink byte limit if active.
+            if self.max_bytes > 0 {
+                self.max_bytes = (self.max_bytes / 2).max(MIN_HOLD_BYTES);
+            }
+            // Trim pool to new count limit.
             if self.bufs.len() > self.max_size {
                 self.drain_n(self.bufs.len() - self.max_size);
+            }
+            // Trim pool to new byte limit.
+            #[allow(clippy::cast_possible_truncation)]
+            if self.max_bytes > 0 && self.local_bytes > self.max_bytes && !self.bufs.is_empty() {
+                let avg = self.local_bytes / self.bufs.len() as u64;
+                let excess = self.local_bytes - self.max_bytes;
+                let to_drain = (excess / avg.max(1) + 1) as usize;
+                self.drain_n(to_drain.min(self.bufs.len()));
             }
             self.consecutive_enomem = 0;
             tracing::info!(
                 worker_id,
                 old_max,
                 new_max = self.max_size,
+                max_bytes = self.max_bytes,
                 pool_len = self.bufs.len(),
                 "adaptive hold pool shrink"
             );
@@ -289,19 +306,40 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         }
     }
 
+    /// Handle memory pressure (pipeline or alloc error): drain 1/4 of pool.
+    pub(super) fn notify_pressure(&mut self, worker_id: u32) {
+        if self.bufs.is_empty() {
+            return;
+        }
+        let to_drain = (self.bufs.len() / 4).max(1);
+        self.drain_n(to_drain);
+        tracing::debug!(
+            worker_id,
+            drained = to_drain,
+            remaining = self.bufs.len(),
+            "pressure drain"
+        );
+    }
+
     /// Handle successful alloc: reset ENOMEM counter, attempt grow-back.
     pub(super) fn notify_success(&mut self, worker_id: u32) {
         self.consecutive_enomem = 0;
-        if self.max_size < self.initial_max_size {
+        if self.max_size < self.initial_max_size
+            || (self.initial_max_bytes > 0 && self.max_bytes < self.initial_max_bytes)
+        {
             self.success_since_shrink += 1;
             if self.success_since_shrink >= RECOVERY_THRESHOLD {
                 let old_max = self.max_size;
                 self.max_size = (self.max_size * 2).min(self.initial_max_size);
+                if self.initial_max_bytes > 0 {
+                    self.max_bytes = (self.max_bytes * 2).min(self.initial_max_bytes);
+                }
                 self.success_since_shrink = 0;
                 tracing::debug!(
                     worker_id,
                     old_max,
                     new_max = self.max_size,
+                    max_bytes = self.max_bytes,
                     "adaptive hold pool recovery"
                 );
             }
@@ -338,6 +376,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     per_thread_max: usize,
     per_thread_max_bytes: u64,
     seed: Option<u64>,
+    max_size: Option<u64>,
 ) {
     #[allow(clippy::cast_possible_truncation)]
     let base_seed = seed.unwrap_or_else(|| {
@@ -345,7 +384,14 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64)
     });
-    tracing::info!(seed = base_seed, "fuzz seed");
+    tracing::info!(seed = base_seed, max_size = ?max_size, "fuzz seed");
+
+    // Validate that at least one FUZZ_SIZES entry is within the cap.
+    if max_size.is_some_and(|cap| !FUZZ_SIZES.iter().any(|&s| s <= cap)) {
+        tracing::error!(max_size = ?max_size, "no FUZZ_SIZES entries within --size cap");
+        mark_init_error(state);
+        return;
+    }
 
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -405,6 +451,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
                     worker_seed,
                     worker_id,
                     container_device_fd,
+                    max_size,
                 );
             });
         }
@@ -429,11 +476,18 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     seed: u64,
     worker_id: u32,
     container_device_fd: Option<RawFd>,
+    max_size: Option<u64>,
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut hold_pool: HoldPool<'_, B> =
         HoldPool::new(per_thread_max, per_thread_max_bytes, state, seed);
     tracing::debug!(worker_id, seed, "fuzz worker started");
+
+    // Filter sizes by max_size cap (if provided).
+    let eligible_sizes: Vec<u64> = match max_size {
+        Some(cap) => FUZZ_SIZES.iter().copied().filter(|&s| s <= cap).collect(),
+        None => FUZZ_SIZES.to_vec(),
+    };
 
     // Weighted size selection: 4K-aligned common + inverse-size bias, edge cases rare.
     #[allow(
@@ -441,7 +495,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    let cum_weights: Vec<u64> = FUZZ_SIZES
+    let cum_weights: Vec<u64> = eligible_sizes
         .iter()
         .scan(0u64, |acc, &s| {
             let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
@@ -463,7 +517,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
         // Byte-fair random size (inverse-weighted).
         let r = rng.random_range(0..total_weight);
-        let size = FUZZ_SIZES[cum_weights.partition_point(|&c| c <= r)];
+        let size = eligible_sizes[cum_weights.partition_point(|&c| c <= r)];
 
         // Random pipeline
         let pipeline = select_pipeline(&ctx.weighted_table, &mut rng);
@@ -489,10 +543,11 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
-            Err(_) => {
-                tracing::debug!(worker_id, "alloc error");
+            Err(e) => {
+                tracing::info!(worker_id, errno = %e, "alloc error");
                 state.total_errors.fetch_add(1, Relaxed);
                 hc.errors.fetch_add(1, Relaxed);
+                hold_pool.notify_pressure(worker_id);
                 continue;
             }
         };
@@ -515,10 +570,12 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
             state,
             container_device_fd,
             &ctx.heap,
+            max_size,
         );
 
         if error_occurred {
             state.total_errors.fetch_add(1, Relaxed);
+            hold_pool.notify_pressure(worker_id);
         }
         if !matches!(pipeline, Pipeline::AllocHold | Pipeline::MergeAndOperate) {
             hc.frees.fetch_add(1, Relaxed);
@@ -561,6 +618,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
     state: &AgingState,
     container_device_fd: Option<RawFd>,
     heap: &DmaHeap<'a, B>,
+    max_size: Option<u64>,
 ) -> bool {
     let size_usize = size as usize;
 
@@ -823,7 +881,8 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
             let mut src_fds = vec![fd];
             let mut merged_len = size;
             for _ in 0..extra_count {
-                let extra_size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())].min(1_048_576);
+                let extra_size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())]
+                    .min(max_size.unwrap_or(1_048_576));
                 if let Ok(extra_fd) = heap.alloc(
                     extra_size,
                     DMA_HEAP_ALLOC_FD_FLAGS,
@@ -1049,7 +1108,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
         assert_eq!(
             state.held_bufs.load(Relaxed),
             0,
@@ -1137,7 +1196,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
@@ -1150,12 +1209,12 @@ mod tests {
         let heaps = vec!["system".to_string()];
         let b1 = MockBackend::new();
         let s1 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b1, &heaps, 1, &s1, None, Some(20), 8, 0, Some(42));
+        super::run_workers(&b1, &heaps, 1, &s1, None, Some(20), 8, 0, Some(42), None);
         let iters1 = s1.total_iters.load(Relaxed);
 
         let b2 = MockBackend::new();
         let s2 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b2, &heaps, 1, &s2, None, Some(20), 8, 0, Some(42));
+        super::run_workers(&b2, &heaps, 1, &s2, None, Some(20), 8, 0, Some(42), None);
         let iters2 = s2.total_iters.load(Relaxed);
 
         assert_eq!(iters1, iters2, "same seed should produce same iterations");
@@ -1166,7 +1225,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(20), 4, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(20), 4, 0, Some(42), None);
         assert_eq!(
             b.buffer_count(),
             0,
@@ -1184,12 +1243,95 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, 0, Some(42), None);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         assert_eq!(
             state.total_allocs.load(Relaxed),
             state.total_frees.load(Relaxed),
             "allocs must equal frees after drain"
+        );
+    }
+
+    #[test]
+    fn fuzz_with_size_cap() {
+        let b = MockBackend::new();
+        let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(50),
+            8,
+            0,
+            Some(42),
+            Some(65536),
+        );
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+        assert_eq!(
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+            "allocs must equal frees after drain"
+        );
+    }
+
+    #[test]
+    fn notify_pressure_empty_pool_is_noop() {
+        let heaps = test_heaps();
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        pool.notify_pressure(0);
+        assert_eq!(state.held_bufs.load(Relaxed), 0);
+        assert_eq!(state.held_bytes.load(Relaxed), 0);
+    }
+
+    #[test]
+    fn notify_pressure_drains_quarter() {
+        let heaps = test_heaps();
+        let b = MockBackend::new();
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        for _ in 0..8 {
+            pool.push(make_buf(&b));
+        }
+        assert_eq!(state.held_bufs.load(Relaxed), 8);
+        pool.notify_pressure(0);
+        assert_eq!(state.held_bufs.load(Relaxed), 6);
+        assert_eq!(state.held_bytes.load(Relaxed), 6 * 4096);
+    }
+
+    #[test]
+    fn notify_enomem_shrinks_max_bytes() {
+        let heaps = test_heaps();
+        let b = MockBackend::new();
+        let state = AgingState::new(HoldLimit::Bytes(65536), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(usize::MAX, 65536, &state, 42);
+        for _ in 0..4 {
+            pool.push(make_buf(&b));
+        }
+        // Trigger shrink threshold (3 consecutive ENOMEMs).
+        for _ in 0..super::ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_bytes, 65536 / 2);
+    }
+
+    #[test]
+    fn max_bytes_does_not_shrink_below_floor() {
+        let heaps = test_heaps();
+        let state = AgingState::new(HoldLimit::Bytes(8192), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(usize::MAX, 8192, &state, 42);
+        // Shrink many times: 8192 → 4096 → 4096 (floor).
+        for _ in 0..20 {
+            pool.notify_enomem(0);
+        }
+        assert!(
+            pool.max_bytes >= super::MIN_HOLD_BYTES,
+            "max_bytes={} should not go below floor={}",
+            pool.max_bytes,
+            super::MIN_HOLD_BYTES
         );
     }
 }

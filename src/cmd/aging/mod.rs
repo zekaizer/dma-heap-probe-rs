@@ -1159,7 +1159,7 @@ fn print_summary(result: &AgingResult, fuzz_mode: bool) {
 pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     backend: &B,
     heaps: &[String],
-    size: u64,
+    size: Option<u64>,
     threads: u32,
     duration: Option<Duration>,
     iterations: Option<u64>,
@@ -1174,31 +1174,21 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     Option<AgingResult>,
 ) {
     let mode = if fuzz_mode { "fuzz" } else { "normal" };
+    let normal_size = size.unwrap_or(4096);
     tracing::debug!(
         mode,
         threads,
         heaps = heaps.len(),
-        size,
+        size = ?size,
         ?duration,
         ?iterations,
         report_interval_s = report_interval.as_secs(),
         "aging start"
     );
 
-    if fuzz_mode && size != 4096 {
-        tracing::warn!(size, "fuzz mode ignores --size, using built-in FUZZ_SIZES");
+    if let (true, Some(max)) = (fuzz_mode, size) {
+        tracing::info!(max_size = max, "fuzz mode: capping sizes at --size");
     }
-
-    let mode_desc = if fuzz_mode { "fuzz" } else { "normal" };
-    tracing::debug!(
-        mode = mode_desc,
-        threads,
-        heaps = heaps.len(),
-        size,
-        ?duration,
-        ?iterations,
-        "aging sequence"
-    );
 
     let (pt_max_count, pt_max_bytes) = per_thread_pool_limits(hold_limit, threads);
     let state = AgingState::new(hold_limit, heaps);
@@ -1222,12 +1212,13 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
                     pt_max_count,
                     pt_max_bytes,
                     seed,
+                    size,
                 );
             } else {
                 worker::run_workers(
                     backend,
                     heaps,
-                    size,
+                    normal_size,
                     threads,
                     &state,
                     duration,
@@ -1287,7 +1278,7 @@ mod tests {
         let (results, err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             1,
             None,
             Some(10),
@@ -1313,7 +1304,7 @@ mod tests {
         let (results, err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             1,
             None,
             Some(10),
@@ -1328,6 +1319,30 @@ mod tests {
         let ar = aging_result.unwrap();
         assert_eq!(ar.mode, "fuzz");
         assert!(ar.total_iters >= 10);
+    }
+
+    #[test]
+    fn run_fuzz_with_size_cap() {
+        let b = crate::backend::mock::MockBackend::new();
+        let heaps = vec!["system".to_string()];
+        let (results, err, aging_result) = run(
+            &b,
+            &heaps,
+            Some(65536),
+            1,
+            None,
+            Some(20),
+            Duration::from_secs(60),
+            true,
+            HoldLimit::Count(8),
+            Some(42),
+            6,
+        );
+        assert!(err.is_none(), "unexpected error: {err:?}");
+        assert!(results.iter().all(|t| t.passed));
+        let ar = aging_result.unwrap();
+        assert_eq!(ar.mode, "fuzz");
+        assert!(ar.total_iters >= 20);
     }
 
     #[test]
@@ -1388,7 +1403,7 @@ mod tests {
         let (results, err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             1,
             None,
             Some(30),
@@ -1417,7 +1432,7 @@ mod tests {
         let (_results, _err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             1,
             None,
             Some(50),
@@ -1444,7 +1459,7 @@ mod tests {
         let (results, err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             1,
             None,
             Some(100),
@@ -1507,7 +1522,7 @@ mod tests {
         let (results, err, aging_result) = run(
             &b,
             &heaps,
-            4096,
+            None,
             2,
             None,
             Some(30),

@@ -160,15 +160,17 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
-            Err(_) => {
-                tracing::debug!(
+            Err(e) => {
+                tracing::info!(
                     worker_id,
                     heap = ctx.caps.name.as_str(),
                     size,
+                    errno = %e,
                     "alloc error"
                 );
                 state.total_errors.fetch_add(1, Relaxed);
                 hc.errors.fetch_add(1, Relaxed);
+                hold_pool.notify_pressure(worker_id);
                 continue;
             }
         };

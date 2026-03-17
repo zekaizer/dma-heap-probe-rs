@@ -74,6 +74,30 @@ fn info_json_output() {
     let json = read_json(tmp.path());
     assert!(json["heaps"].is_array());
     assert!(json["total_buffers"].is_number());
+    // Memory context uses embedded meminfo + vmstat structure (absent on non-Linux)
+    if json.get("memory").is_some_and(|v| !v.is_null()) {
+        let mem = &json["memory"];
+        assert!(mem["meminfo"]["mem_total_kb"].is_number());
+        assert!(mem["meminfo"]["mem_free_kb"].is_number());
+        assert!(mem["vmstat"].is_object());
+    }
+}
+
+#[test]
+fn info_json_output_has_psi_fields() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    dhp()
+        .args(["info", "--output", tmp.path().to_str().unwrap()])
+        .assert()
+        .success();
+    let json = read_json(tmp.path());
+    // PSI fields are optional (absent on non-Linux or when /proc/pressure not mounted)
+    if json.get("psi_memory").is_some_and(|v| !v.is_null()) {
+        let psi = &json["psi_memory"];
+        assert!(psi["some"]["avg10"].is_f64());
+        assert!(psi["some"]["total"].is_u64());
+        assert!(psi["full"]["avg10"].is_f64());
+    }
 }
 
 #[test]
@@ -111,6 +135,23 @@ fn aging_defaults() {
 fn aging_fuzz() {
     dhp()
         .args(["aging", "--fuzz", "--iterations", "10", "--seed", "42"])
+        .assert()
+        .success();
+}
+
+#[test]
+fn aging_fuzz_with_size_cap() {
+    dhp()
+        .args([
+            "aging",
+            "--fuzz",
+            "--size",
+            "64K",
+            "--iterations",
+            "10",
+            "--seed",
+            "42",
+        ])
         .assert()
         .success();
 }

@@ -7,8 +7,8 @@ use anyhow::Context;
 
 use serde::{Deserialize, Serialize};
 
-use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, VmStat};
-use crate::sysfs;
+use crate::procfs::{self, BuddyInfoEntry, MemInfo, PageTypeInfoEntry, PsiIo, PsiMemory, VmStat};
+use crate::sysfs::{self, CmaAreaStats};
 use crate::{tee_print, tee_println};
 
 // ---------------------------------------------------------------------------
@@ -56,23 +56,8 @@ pub struct BufferSummary {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemoryContext {
-    pub mem_total_kb: u64,
-    pub mem_free_kb: u64,
-    pub mem_available_kb: u64,
-    pub cma_total_kb: Option<u64>,
-    pub cma_free_kb: Option<u64>,
-    pub buffers_kb: Option<u64>,
-    pub cached_kb: Option<u64>,
-    pub active_kb: Option<u64>,
-    pub inactive_kb: Option<u64>,
-    pub shmem_kb: Option<u64>,
-    pub slab_kb: Option<u64>,
-    pub compact_stall: Option<u64>,
-    pub compact_success: Option<u64>,
-    pub compact_fail: Option<u64>,
-    pub cma_alloc_success: Option<u64>,
-    pub cma_alloc_fail: Option<u64>,
-    pub nr_free_cma: Option<u64>,
+    pub meminfo: MemInfo,
+    pub vmstat: VmStat,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -109,6 +94,15 @@ pub struct InfoReport {
     pub pagetypeinfo: Option<Vec<PageTypeInfoEntry>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub heap_caps: Option<Vec<crate::probe::HeapCaps>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cma_areas: Option<Vec<CmaAreaStats>>,
+    /// DMA heap page pool size in kB (Android-specific).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dma_heap_pool_kb: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psi_memory: Option<PsiMemory>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub psi_io: Option<PsiIo>,
 }
 
 // ---------------------------------------------------------------------------
@@ -592,32 +586,6 @@ pub fn aggregate_process_usage(entries: &[ProcessBufEntry]) -> Vec<ProcessSummar
 }
 
 // ---------------------------------------------------------------------------
-// Memory context builder
-// ---------------------------------------------------------------------------
-
-fn build_memory_context(meminfo: &MemInfo, vmstat: &VmStat) -> MemoryContext {
-    MemoryContext {
-        mem_total_kb: meminfo.mem_total_kb,
-        mem_free_kb: meminfo.mem_free_kb,
-        mem_available_kb: meminfo.mem_available_kb,
-        cma_total_kb: meminfo.cma_total_kb,
-        cma_free_kb: meminfo.cma_free_kb,
-        buffers_kb: meminfo.buffers_kb,
-        cached_kb: meminfo.cached_kb,
-        active_kb: meminfo.active_kb,
-        inactive_kb: meminfo.inactive_kb,
-        shmem_kb: meminfo.shmem_kb,
-        slab_kb: meminfo.slab_kb,
-        compact_stall: vmstat.compact_stall,
-        compact_success: vmstat.compact_success,
-        compact_fail: vmstat.compact_fail,
-        cma_alloc_success: vmstat.cma_alloc_success,
-        cma_alloc_fail: vmstat.cma_alloc_fail,
-        nr_free_cma: vmstat.nr_free_cma,
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -671,6 +639,76 @@ fn format_row(widths: &[usize], aligns: &[Align], values: &[&str]) -> String {
         }
     }
     out
+}
+
+/// Per-zone fragmentation summary derived from buddyinfo.
+///
+/// Shows total free memory, largest contiguous block, and how many blocks
+/// can satisfy common DMA allocation sizes (>=64 KiB at order 4, >=2 MiB at
+/// order 9) without compaction.
+/// Write a per-zone order summary table: total free, max block, blocks >= 64K / 2M.
+///
+/// `rows` yields `(node, zone_name, free_counts)` tuples — works for both
+/// `BuddyInfoEntry` and filtered `PageTypeInfoEntry` (CMA rows).
+fn format_order_summary(out: &mut String, title: &str, rows: &[(u32, &str, &[u64])]) {
+    const PAGE_SIZE: u64 = 4096;
+    const ORDER_64K: usize = 4;
+    const ORDER_2M: usize = 9;
+
+    if rows.is_empty() {
+        return;
+    }
+
+    writeln!(out, "  {title}").unwrap();
+    let zone_w = rows
+        .iter()
+        .map(|(_, z, _)| z.len())
+        .max()
+        .unwrap_or(4)
+        .max(4);
+    writeln!(
+        out,
+        "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+        "NODE", "ZONE", "TOTAL FREE", "MAX BLOCK", "BLK>=64K", "BLK>=2M",
+    )
+    .unwrap();
+
+    for &(node, zone, free_counts) in rows {
+        let total_bytes = procfs::total_free_pages(free_counts) * PAGE_SIZE;
+        let max_bytes = (1u64 << procfs::max_contiguous_order(free_counts)) * PAGE_SIZE;
+
+        writeln!(
+            out,
+            "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
+            node,
+            zone,
+            format_size(total_bytes),
+            format_size(max_bytes),
+            procfs::blocks_above_order(free_counts, ORDER_64K),
+            procfs::blocks_above_order(free_counts, ORDER_2M),
+        )
+        .unwrap();
+    }
+    out.push('\n');
+}
+
+/// Per-zone fragmentation summary derived from buddyinfo.
+fn format_frag_summary(out: &mut String, buddy: &[BuddyInfoEntry]) {
+    let rows: Vec<_> = buddy
+        .iter()
+        .map(|b| (b.node, b.zone.as_str(), b.free_counts.as_slice()))
+        .collect();
+    format_order_summary(out, "Summary (page size: 4 KiB):", &rows);
+}
+
+/// CMA migrate type summary from pagetypeinfo.
+fn format_cma_migrate_summary(out: &mut String, pti: &[PageTypeInfoEntry]) {
+    let rows: Vec<_> = pti
+        .iter()
+        .filter(|p| p.page_type == "CMA")
+        .map(|p| (p.node, p.zone.as_str(), p.free_counts.as_slice()))
+        .collect();
+    format_order_summary(out, "CMA migrate type summary (page size: 4 KiB):", &rows);
 }
 
 // ---------------------------------------------------------------------------
@@ -756,6 +794,14 @@ pub fn format_human(report: &InfoReport) -> String {
                 out.push('\n');
             }
         }
+        out.push('\n');
+    }
+
+    // --- DMA Heap Page Pool (Android-specific) ---
+    if let Some(pool_kb) = report.dma_heap_pool_kb {
+        out.push_str("[DMA Heap Page Pool]\n");
+        out.push_str("  /sys/kernel/dma_heap/total_pools_kb\n\n");
+        writeln!(out, "  Pool size: {}", format_size_kb(pool_kb)).unwrap();
         out.push('\n');
     }
 
@@ -930,8 +976,32 @@ pub fn format_human(report: &InfoReport) -> String {
         out.push('\n');
     }
 
+    // --- Pressure (PSI) ---
+    if report.psi_memory.is_some() || report.psi_io.is_some() {
+        out.push_str("[Pressure]\n");
+        out.push_str("  /proc/pressure/{memory,io}\n\n");
+        let fmt_psi = |label: &str, line: &procfs::PsiLine| -> String {
+            format!(
+                "  {label:<8} avg10={:>6.2}%  avg60={:>6.2}%  avg300={:>6.2}%  total={} us",
+                line.avg10, line.avg60, line.avg300, line.total,
+            )
+        };
+        if let Some(ref psi) = report.psi_memory {
+            writeln!(out, "{}", fmt_psi("mem some", &psi.some)).unwrap();
+            writeln!(out, "{}", fmt_psi("mem full", &psi.full)).unwrap();
+        }
+        if let Some(ref psi) = report.psi_io {
+            writeln!(out, "{}", fmt_psi("io  some", &psi.some)).unwrap();
+            writeln!(out, "{}", fmt_psi("io  full", &psi.full)).unwrap();
+        }
+        out.push('\n');
+    }
+
     // --- Memory ---
     if let Some(ref mem) = report.memory {
+        let mi = &mem.meminfo;
+        let vs = &mem.vmstat;
+
         out.push_str("[Memory]\n");
         out.push_str("  /proc/meminfo + /proc/vmstat\n\n");
 
@@ -940,47 +1010,108 @@ pub fn format_human(report: &InfoReport) -> String {
             out,
             "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
             "Total",
-            format_size_kb(mem.mem_total_kb),
+            format_size_kb(mi.mem_total_kb),
             "Free",
-            format_size_kb(mem.mem_free_kb),
+            format_size_kb(mi.mem_free_kb),
             "Available",
-            format_size_kb(mem.mem_available_kb),
+            format_size_kb(mi.mem_available_kb),
         )
         .unwrap();
 
         // Row 2: Buffers, Cached, Shmem
-        if mem.buffers_kb.is_some() || mem.cached_kb.is_some() || mem.shmem_kb.is_some() {
+        if mi.buffers_kb.is_some() || mi.cached_kb.is_some() || mi.shmem_kb.is_some() {
             writeln!(
                 out,
                 "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
                 "Buffers",
-                mem.buffers_kb.map_or("-".into(), format_size_kb),
+                mi.buffers_kb.map_or("-".into(), format_size_kb),
                 "Cached",
-                mem.cached_kb.map_or("-".into(), format_size_kb),
+                mi.cached_kb.map_or("-".into(), format_size_kb),
                 "Shmem",
-                mem.shmem_kb.map_or("-".into(), format_size_kb),
+                mi.shmem_kb.map_or("-".into(), format_size_kb),
             )
             .unwrap();
         }
 
         // Row 3: Active, Inactive, Slab
-        if mem.active_kb.is_some() || mem.inactive_kb.is_some() || mem.slab_kb.is_some() {
+        if mi.active_kb.is_some() || mi.inactive_kb.is_some() || mi.slab_kb.is_some() {
             writeln!(
                 out,
                 "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
                 "Active",
-                mem.active_kb.map_or("-".into(), format_size_kb),
+                mi.active_kb.map_or("-".into(), format_size_kb),
                 "Inactive",
-                mem.inactive_kb.map_or("-".into(), format_size_kb),
+                mi.inactive_kb.map_or("-".into(), format_size_kb),
                 "Slab",
-                mem.slab_kb.map_or("-".into(), format_size_kb),
+                mi.slab_kb.map_or("-".into(), format_size_kb),
+            )
+            .unwrap();
+        }
+
+        // Row 4: AnonPages, Mapped, Dirty/Writeback
+        if mi.anon_pages_kb.is_some() || mi.mapped_kb.is_some() || mi.dirty_kb.is_some() {
+            writeln!(
+                out,
+                "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
+                "AnonPages",
+                mi.anon_pages_kb.map_or("-".into(), format_size_kb),
+                "Mapped",
+                mi.mapped_kb.map_or("-".into(), format_size_kb),
+                "Dirty",
+                mi.dirty_kb.map_or("-".into(), format_size_kb),
+            )
+            .unwrap();
+        }
+
+        // Row 5: Slab breakdown + Writeback
+        if mi.s_reclaimable_kb.is_some() || mi.s_unreclaim_kb.is_some() {
+            writeln!(
+                out,
+                "  {:<14} {:>10}    {:<14} {:>10}    {:<14} {:>10}",
+                "SReclaimable",
+                mi.s_reclaimable_kb.map_or("-".into(), format_size_kb),
+                "SUnreclaim",
+                mi.s_unreclaim_kb.map_or("-".into(), format_size_kb),
+                "Writeback",
+                mi.writeback_kb.map_or("-".into(), format_size_kb),
             )
             .unwrap();
         }
         out.push('\n');
 
+        // Swap
+        if let (Some(total), Some(free)) = (mi.swap_total_kb, mi.swap_free_kb) {
+            let used = total.saturating_sub(free);
+            writeln!(
+                out,
+                "  Swap Total {:>10}    Swap Free  {:>10}   ({} used)",
+                format_size_kb(total),
+                format_size_kb(free),
+                pct(used, total),
+            )
+            .unwrap();
+        }
+
+        // Zswap (kernel 6.8+, CONFIG_ZSWAP)
+        if let (Some(pool), Some(orig)) = (mi.zswap_kb, mi.zswapped_kb) {
+            let ratio = if pool > 0 {
+                #[allow(clippy::cast_precision_loss)]
+                let r = orig as f64 / pool as f64;
+                format!("{r:.1}x")
+            } else {
+                "N/A".to_string()
+            };
+            writeln!(
+                out,
+                "  Zswap Pool {:>10}    Zswapped   {:>10}   ({ratio} ratio)",
+                format_size_kb(pool),
+                format_size_kb(orig),
+            )
+            .unwrap();
+        }
+
         // CMA
-        if let (Some(total), Some(free)) = (mem.cma_total_kb, mem.cma_free_kb) {
+        if let (Some(total), Some(free)) = (mi.cma_total_kb, mi.cma_free_kb) {
             let used = total.saturating_sub(free);
             writeln!(
                 out,
@@ -990,23 +1121,23 @@ pub fn format_human(report: &InfoReport) -> String {
                 pct(used, total),
             )
             .unwrap();
-            if mem.cma_alloc_success.is_some() || mem.cma_alloc_fail.is_some() {
+            if vs.cma_alloc_success.is_some() || vs.cma_alloc_fail.is_some() {
                 writeln!(
                     out,
                     "  CMA Alloc   ok: {}    fail: {}",
-                    mem.cma_alloc_success.map_or("-".into(), |v| v.to_string()),
-                    mem.cma_alloc_fail.map_or("-".into(), |v| v.to_string()),
+                    vs.cma_alloc_success.map_or("-".into(), |v| v.to_string()),
+                    vs.cma_alloc_fail.map_or("-".into(), |v| v.to_string()),
                 )
                 .unwrap();
             }
-            out.push('\n');
         }
+        out.push('\n');
 
         // Compaction
-        if mem.compact_stall.is_some() {
-            let stall = mem.compact_stall.unwrap_or(0);
-            let success = mem.compact_success.unwrap_or(0);
-            let fail = mem.compact_fail.unwrap_or(0);
+        if vs.compact_stall.is_some() {
+            let stall = vs.compact_stall.unwrap_or(0);
+            let success = vs.compact_success.unwrap_or(0);
+            let fail = vs.compact_fail.unwrap_or(0);
             let rate = if stall > 0 {
                 pct(success, stall)
             } else {
@@ -1015,6 +1146,90 @@ pub fn format_human(report: &InfoReport) -> String {
             writeln!(
                 out,
                 "  Compaction  stall: {stall}  success: {success}  fail: {fail}  ({rate} success rate)"
+            )
+            .unwrap();
+
+            // Extended compaction detail
+            if vs.compact_isolated.is_some() || vs.compactmigrate_scanned.is_some() {
+                write!(out, "              ").unwrap();
+                if let Some(v) = vs.compact_isolated {
+                    write!(out, "isolated: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.compactmigrate_scanned {
+                    write!(out, "migrate_scan: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.compactfree_scanned {
+                    write!(out, "free_scan: {v}  ").unwrap();
+                }
+                if let Some(v) = vs.kcompactd_wake {
+                    write!(out, "kcompactd: {v}").unwrap();
+                }
+                out.push('\n');
+            }
+            out.push('\n');
+        }
+
+        // Reclaim activity
+        let has_reclaim = vs.pgscan_direct.is_some() || vs.pgscan_kswapd.is_some();
+        if has_reclaim {
+            out.push_str("  Reclaim\n");
+
+            if let (Some(scan), Some(steal)) = (vs.pgscan_direct, vs.pgsteal_direct) {
+                let eff = if scan > 0 {
+                    pct(steal, scan)
+                } else {
+                    "N/A".to_string()
+                };
+                writeln!(
+                    out,
+                    "    direct    scan: {scan:<10} steal: {steal:<10} ({eff} efficiency)"
+                )
+                .unwrap();
+            }
+
+            if let (Some(scan), Some(steal)) = (vs.pgscan_kswapd, vs.pgsteal_kswapd) {
+                let eff = if scan > 0 {
+                    pct(steal, scan)
+                } else {
+                    "N/A".to_string()
+                };
+                writeln!(
+                    out,
+                    "    kswapd    scan: {scan:<10} steal: {steal:<10} ({eff} efficiency)"
+                )
+                .unwrap();
+            }
+
+            // Allocation stalls
+            if vs.allocstall_normal.is_some() || vs.allocstall_movable.is_some() {
+                writeln!(
+                    out,
+                    "    stalls    normal: {}  movable: {}",
+                    vs.allocstall_normal.unwrap_or(0),
+                    vs.allocstall_movable.unwrap_or(0),
+                )
+                .unwrap();
+            }
+
+            if let Some(oom) = vs.oom_kill {
+                writeln!(out, "    oom_kill: {oom}").unwrap();
+            }
+            out.push('\n');
+        }
+
+        // Migration
+        if vs.pgmigrate_success.is_some() || vs.pgmigrate_fail.is_some() {
+            let ok = vs.pgmigrate_success.unwrap_or(0);
+            let fail = vs.pgmigrate_fail.unwrap_or(0);
+            let total = ok + fail;
+            let rate = if total > 0 {
+                pct(ok, total)
+            } else {
+                "N/A".to_string()
+            };
+            writeln!(
+                out,
+                "  Migration   ok: {ok}  fail: {fail}  ({rate} success rate)"
             )
             .unwrap();
             out.push('\n');
@@ -1091,6 +1306,64 @@ pub fn format_human(report: &InfoReport) -> String {
         out.push('\n');
     }
 
+    // --- CMA Areas (--procfs) ---
+    if let Some(ref areas) = report.cma_areas {
+        out.push_str("[CMA Areas]\n");
+        out.push_str("  /sys/kernel/mm/cma/\n\n");
+        if areas.is_empty() {
+            out.push_str("  (not available - CONFIG_CMA_SYSFS not enabled)\n");
+        } else {
+            let name_w = areas.iter().map(|a| a.name.len()).max().unwrap_or(4).max(4);
+            let widths = [name_w, 14, 14, 14, 14, 10];
+            let aligns = [
+                Align::Left,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+                Align::Right,
+            ];
+            out.push_str(&format_row(
+                &widths,
+                &aligns,
+                &[
+                    "AREA",
+                    "ALLOC_OK",
+                    "ALLOC_FAIL",
+                    "RELEASED",
+                    "ACTIVE",
+                    "FAIL%",
+                ],
+            ));
+            out.push('\n');
+            for a in areas {
+                let active = a
+                    .alloc_pages_success
+                    .saturating_sub(a.release_pages_success);
+                let total_allocs = a.alloc_pages_success + a.alloc_pages_fail;
+                let fail_rate = if total_allocs > 0 {
+                    pct(a.alloc_pages_fail, total_allocs)
+                } else {
+                    "N/A".to_string()
+                };
+                out.push_str(&format_row(
+                    &widths,
+                    &aligns,
+                    &[
+                        &a.name,
+                        &a.alloc_pages_success.to_string(),
+                        &a.alloc_pages_fail.to_string(),
+                        &a.release_pages_success.to_string(),
+                        &active.to_string(),
+                        &fail_rate,
+                    ],
+                ));
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+
     // --- Fragmentation (--procfs) ---
     if report.buddyinfo.is_some() || report.pagetypeinfo.is_some() {
         out.push_str("[Fragmentation]\n");
@@ -1114,6 +1387,9 @@ pub fn format_human(report: &InfoReport) -> String {
                 out.push('\n');
             }
             out.push('\n');
+
+            // Fragmentation summary: actionable per-zone metrics
+            format_frag_summary(&mut out, buddy);
         }
 
         if let Some(ref pti) = report.pagetypeinfo {
@@ -1135,6 +1411,9 @@ pub fn format_human(report: &InfoReport) -> String {
                 out.push('\n');
             }
             out.push('\n');
+
+            // CMA migrate type summary
+            format_cma_migrate_summary(&mut out, pti);
         }
     }
 
@@ -1209,8 +1488,11 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
 
     // 4. Memory context
     let memory = match (procfs::read_meminfo(), procfs::read_vmstat()) {
-        (Ok(meminfo), Ok(vmstat)) => Some(build_memory_context(&meminfo, &vmstat)),
-        (Ok(meminfo), Err(_)) => Some(build_memory_context(&meminfo, &VmStat::default())),
+        (Ok(meminfo), Ok(vmstat)) => Some(MemoryContext { meminfo, vmstat }),
+        (Ok(meminfo), Err(_)) => Some(MemoryContext {
+            meminfo,
+            vmstat: VmStat::default(),
+        }),
         _ => None,
     };
 
@@ -1229,6 +1511,21 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         None
     };
 
+    // 7. CMA per-area stats
+    let cma_areas = if show_procfs {
+        let areas = sysfs::read_cma_areas();
+        if areas.is_empty() { None } else { Some(areas) }
+    } else {
+        None
+    };
+
+    // 8. DMA heap page pool size (Android-specific)
+    let dma_heap_pool_kb = sysfs::read_dma_heap_pool_kb();
+
+    // 9. PSI (Pressure Stall Information)
+    let psi_memory = procfs::read_psi_memory();
+    let psi_io = procfs::read_psi_io();
+
     let report = InfoReport {
         heaps,
         buffer_summary,
@@ -1242,6 +1539,10 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
         buddyinfo,
         pagetypeinfo,
         heap_caps,
+        cma_areas,
+        dma_heap_pool_kb,
+        psi_memory,
+        psi_io,
     };
 
     // Output
@@ -1263,20 +1564,75 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
     Ok(())
 }
 
-/// Compact snapshot for follow mode: buffer count + total size + available memory.
+/// Compact snapshot for follow mode: buffer count + total size + memory state.
 struct FollowSnapshot {
-    heap_count: usize,
     total_buffers: usize,
     total_size: u64,
     mem_available_kb: Option<u64>,
+    vmstat: Option<VmStat>,
+    psi_mem_avg10: Option<f64>,
+    pool_kb: Option<u64>,
+    /// Retained debugfs entries for detail mode (avoids double read).
+    debugfs_entries: Option<Vec<DebugfsBufEntry>>,
+}
+
+/// Selected vmstat counters for follow-mode delta display.
+struct VmStatDelta {
+    pgscan_direct: u64,
+    pgsteal_direct: u64,
+    pgscan_kswapd: u64,
+    compact_stall: u64,
+    allocstall_normal: u64,
+    oom_kill: u64,
+}
+
+impl VmStatDelta {
+    /// Compute delta between two vmstat snapshots. Returns None if either is absent.
+    fn compute(prev: Option<&VmStat>, curr: Option<&VmStat>) -> Option<Self> {
+        let (p, c) = (prev?, curr?);
+        Some(Self {
+            pgscan_direct: c
+                .pgscan_direct
+                .unwrap_or(0)
+                .saturating_sub(p.pgscan_direct.unwrap_or(0)),
+            pgsteal_direct: c
+                .pgsteal_direct
+                .unwrap_or(0)
+                .saturating_sub(p.pgsteal_direct.unwrap_or(0)),
+            pgscan_kswapd: c
+                .pgscan_kswapd
+                .unwrap_or(0)
+                .saturating_sub(p.pgscan_kswapd.unwrap_or(0)),
+            compact_stall: c
+                .compact_stall
+                .unwrap_or(0)
+                .saturating_sub(p.compact_stall.unwrap_or(0)),
+            allocstall_normal: c
+                .allocstall_normal
+                .unwrap_or(0)
+                .saturating_sub(p.allocstall_normal.unwrap_or(0)),
+            oom_kill: c
+                .oom_kill
+                .unwrap_or(0)
+                .saturating_sub(p.oom_kill.unwrap_or(0)),
+        })
+    }
+
+    /// True if any counter changed since last sample.
+    fn has_activity(&self) -> bool {
+        self.pgscan_direct > 0
+            || self.pgscan_kswapd > 0
+            || self.compact_stall > 0
+            || self.allocstall_normal > 0
+            || self.oom_kill > 0
+    }
 }
 
 /// Collect a lightweight snapshot for follow mode.
 fn collect_follow_snapshot() -> FollowSnapshot {
-    let heaps = enumerate_heaps(DMA_HEAP_BASE);
-    let heap_count = heaps.len();
+    let debugfs_entries = read_debugfs_bufinfo().ok();
 
-    let (total_buffers, total_size) = if let Ok(entries) = read_debugfs_bufinfo() {
+    let (total_buffers, total_size) = if let Some(ref entries) = debugfs_entries {
         let total = entries.len();
         let size: u64 = entries.iter().map(|e| e.size).sum();
         (total, size)
@@ -1289,17 +1645,28 @@ fn collect_follow_snapshot() -> FollowSnapshot {
     };
 
     let mem_available_kb = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
+    let vmstat = procfs::read_vmstat().ok();
+    let psi_mem_avg10 = procfs::read_psi_memory().map(|p| p.some.avg10);
+    let pool_kb = sysfs::read_dma_heap_pool_kb();
 
     FollowSnapshot {
-        heap_count,
         total_buffers,
         total_size,
         mem_available_kb,
+        vmstat,
+        psi_mem_avg10,
+        pool_kb,
+        debugfs_entries,
     }
 }
 
 /// Run info in follow mode: periodically print a compact status line.
+///
+/// When reclaim/compaction activity is detected between samples, a second
+/// line shows vmstat counter deltas so memory pressure is immediately visible.
 pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String]) {
+    // Heap count is static — enumerate once outside the loop.
+    let heap_count = enumerate_heaps(DMA_HEAP_BASE).len();
     let mut prev: Option<FollowSnapshot> = None;
 
     loop {
@@ -1322,19 +1689,55 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
             String::new()
         };
 
+        let psi_str = snap
+            .psi_mem_avg10
+            .map_or(String::new(), |v| format!(" psi={v:.1}%"));
+        let pool_str = snap
+            .pool_kb
+            .map_or(String::new(), |kb| format!(" pool={}", format_size_kb(kb)));
+
         tee_println!(
-            "[{}] heaps={} bufs={} size={} mem_avail={}{}",
+            "[{}] heaps={} bufs={} size={} mem_avail={}{psi_str}{pool_str}{}",
             ts,
-            snap.heap_count,
+            heap_count,
             snap.total_buffers,
             format_size(snap.total_size),
             mem_str,
             delta,
         );
 
+        // Show vmstat delta when reclaim/compaction activity detected
+        if let Some(vd) = VmStatDelta::compute(
+            prev.as_ref().and_then(|p| p.vmstat.as_ref()),
+            snap.vmstat.as_ref(),
+        )
+        .filter(VmStatDelta::has_activity)
+        {
+            let mut parts = Vec::new();
+            if vd.pgscan_direct > 0 {
+                parts.push(format!(
+                    "direct_reclaim: +{}/+{}",
+                    vd.pgscan_direct, vd.pgsteal_direct
+                ));
+            }
+            if vd.pgscan_kswapd > 0 {
+                parts.push(format!("kswapd: +{}", vd.pgscan_kswapd));
+            }
+            if vd.compact_stall > 0 {
+                parts.push(format!("compact: +{}", vd.compact_stall));
+            }
+            if vd.allocstall_normal > 0 {
+                parts.push(format!("alloc_stall: +{}", vd.allocstall_normal));
+            }
+            if vd.oom_kill > 0 {
+                parts.push(format!("oom_kill: +{}", vd.oom_kill));
+            }
+            tee_println!("           {}", parts.join("  "));
+        }
+
         if detail && !heaps.is_empty() {
-            // Per-heap summary from debugfs
-            if let Ok(entries) = read_debugfs_bufinfo() {
+            // Reuse debugfs entries from snapshot (avoids double read)
+            if let Some(ref entries) = snap.debugfs_entries {
                 for heap in heaps {
                     let matching: Vec<_> = entries.iter().filter(|e| e.exp_name == *heap).collect();
                     let count = matching.len();
@@ -1639,6 +2042,10 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
+            dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[DMA Heaps]"));
@@ -1667,29 +2074,75 @@ Node 0, zone    Normal
             buffers: None,
             process_usage: None,
             memory: Some(MemoryContext {
-                mem_total_kb: 8_052_444,
-                mem_free_kb: 3_145_728,
-                mem_available_kb: 5_242_880,
-                cma_total_kb: Some(262_144),
-                cma_free_kb: Some(131_072),
-                buffers_kb: Some(123_456),
-                cached_kb: Some(1_234_567),
-                active_kb: Some(3_355_443),
-                inactive_kb: Some(1_572_864),
-                shmem_kb: Some(65_536),
-                slab_kb: Some(262_144),
-                compact_stall: Some(42),
-                compact_success: Some(30),
-                compact_fail: Some(12),
-                cma_alloc_success: Some(100),
-                cma_alloc_fail: Some(2),
-                nr_free_cma: Some(32_768),
+                meminfo: MemInfo {
+                    mem_total_kb: 8_052_444,
+                    mem_free_kb: 3_145_728,
+                    mem_available_kb: 5_242_880,
+                    cma_total_kb: Some(262_144),
+                    cma_free_kb: Some(131_072),
+                    buffers_kb: Some(123_456),
+                    cached_kb: Some(1_234_567),
+                    active_kb: Some(3_355_443),
+                    inactive_kb: Some(1_572_864),
+                    shmem_kb: Some(65_536),
+                    slab_kb: Some(262_144),
+                    s_reclaimable_kb: Some(196_608),
+                    s_unreclaim_kb: Some(65_536),
+                    swap_total_kb: Some(2_097_152),
+                    swap_free_kb: Some(1_835_008),
+                    dirty_kb: Some(12_288),
+                    writeback_kb: Some(256),
+                    anon_pages_kb: Some(2_097_152),
+                    mapped_kb: Some(524_288),
+                    zswap_kb: Some(16_384),
+                    zswapped_kb: Some(65_536),
+                },
+                vmstat: VmStat {
+                    compact_stall: Some(42),
+                    compact_success: Some(30),
+                    compact_fail: Some(12),
+                    compact_isolated: Some(500),
+                    compactmigrate_scanned: Some(8000),
+                    compactfree_scanned: Some(12_000),
+                    kcompactd_wake: Some(15),
+                    pgalloc_normal: Some(123_456),
+                    pgfree: Some(234_567),
+                    pgscan_direct: Some(3000),
+                    pgsteal_direct: Some(2800),
+                    allocstall_normal: Some(5),
+                    allocstall_movable: Some(2),
+                    pgscan_kswapd: Some(50_000),
+                    pgsteal_kswapd: Some(48_000),
+                    pgmigrate_success: Some(7500),
+                    pgmigrate_fail: Some(300),
+                    cma_alloc_success: Some(100),
+                    cma_alloc_fail: Some(2),
+                    nr_free_cma: Some(32_768),
+                    oom_kill: Some(0),
+                },
             }),
             vm_params: None,
             zones: None,
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
+            dma_heap_pool_kb: None,
+            psi_memory: Some(PsiMemory {
+                some: procfs::PsiLine {
+                    avg10: 1.23,
+                    avg60: 4.56,
+                    avg300: 7.89,
+                    total: 123_456,
+                },
+                full: procfs::PsiLine {
+                    avg10: 0.10,
+                    avg60: 0.20,
+                    avg300: 0.30,
+                    total: 7890,
+                },
+            }),
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("system"));
@@ -1698,6 +2151,25 @@ Node 0, zone    Normal
         assert!(output.contains("TOTAL"));
         assert!(output.contains("CMA Total"));
         assert!(output.contains("Compaction"));
+        // New metric sections
+        assert!(output.contains("Swap Total"));
+        assert!(output.contains("AnonPages"));
+        assert!(output.contains("SReclaimable"));
+        assert!(output.contains("Reclaim"));
+        assert!(output.contains("direct"));
+        assert!(output.contains("kswapd"));
+        assert!(output.contains("Migration"));
+        // PSI
+        assert!(output.contains("[Pressure]"));
+        assert!(output.contains("mem some"));
+        assert!(output.contains("avg10="));
+        assert!(output.contains("1.23%"));
+        assert!(output.contains("isolated:"));
+        assert!(output.contains("migrate_scan:"));
+        // Zswap
+        assert!(output.contains("Zswap Pool"));
+        assert!(output.contains("Zswapped"));
+        assert!(output.contains("4.0x ratio"));
     }
 
     #[test]
@@ -1724,6 +2196,10 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
+            dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let output = format_human(&report);
         assert!(output.contains("[Buffer Details]"));
@@ -1752,6 +2228,10 @@ Node 0, zone    Normal
             buddyinfo: None,
             pagetypeinfo: None,
             heap_caps: None,
+            cma_areas: None,
+            dma_heap_pool_kb: None,
+            psi_memory: None,
+            psi_io: None,
         };
         let json = serde_json::to_string(&report).unwrap();
         let deserialized: InfoReport = serde_json::from_str(&json).unwrap();
@@ -1799,5 +2279,83 @@ Node 0, zone    Normal
         assert_eq!(summaries[1].pid, 100);
         assert_eq!(summaries[1].total_size_bytes, 4096 + 8192);
         assert_eq!(summaries[1].fd_count, 2);
+    }
+
+    #[test]
+    fn format_frag_summary_basic() {
+        let buddy = vec![BuddyInfoEntry {
+            node: 0,
+            zone: "Normal".into(),
+            // order: 0   1   2   3   4   5   6   7   8   9   10
+            free_counts: vec![512, 320, 189, 100, 52, 28, 15, 7, 3, 1, 98],
+        }];
+        let mut out = String::new();
+        format_frag_summary(&mut out, &buddy);
+
+        assert!(out.contains("Summary"));
+        assert!(out.contains("TOTAL FREE"));
+        assert!(out.contains("MAX BLOCK"));
+        assert!(out.contains("BLK>=64K"));
+        assert!(out.contains("BLK>=2M"));
+        assert!(out.contains("Normal"));
+
+        // order 10 has 98 blocks, so max block = 4 MiB
+        assert!(out.contains("4.0 MiB"));
+        // blocks >= order 4 = 52 + 28 + 15 + 7 + 3 + 1 + 98 = 204
+        assert!(out.contains("204"));
+        // blocks >= order 9 = 1 + 98 = 99
+        assert!(out.contains("99"));
+    }
+
+    #[test]
+    fn format_cma_migrate_summary_basic() {
+        let pti = vec![
+            PageTypeInfoEntry {
+                node: 0,
+                zone: "Normal".into(),
+                page_type: "Movable".into(),
+                free_counts: vec![400, 260, 150, 85, 45, 25, 14, 7, 3, 1, 98],
+            },
+            PageTypeInfoEntry {
+                node: 0,
+                zone: "Normal".into(),
+                page_type: "CMA".into(),
+                free_counts: vec![12, 10, 9, 5, 2, 1, 0, 0, 0, 0, 0],
+            },
+        ];
+        let mut out = String::new();
+        format_cma_migrate_summary(&mut out, &pti);
+
+        assert!(out.contains("CMA migrate type"));
+        assert!(out.contains("Normal"));
+        // blocks >= order 4 = 2 + 1 + 0 + 0 + 0 + 0 + 0 = 3
+        assert!(out.contains("3"));
+    }
+
+    #[test]
+    fn format_cma_migrate_summary_no_cma_rows() {
+        let pti = vec![PageTypeInfoEntry {
+            node: 0,
+            zone: "Normal".into(),
+            page_type: "Movable".into(),
+            free_counts: vec![100, 50],
+        }];
+        let mut out = String::new();
+        format_cma_migrate_summary(&mut out, &pti);
+        // No CMA rows → no output
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn format_frag_summary_empty_zone() {
+        let buddy = vec![BuddyInfoEntry {
+            node: 0,
+            zone: "DMA".into(),
+            free_counts: vec![0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+        }];
+        let mut out = String::new();
+        format_frag_summary(&mut out, &buddy);
+        // Max block should be 4 KiB (order 0 default) since all counts are 0
+        assert!(out.contains("4.0 KiB"));
     }
 }

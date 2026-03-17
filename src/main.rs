@@ -257,7 +257,11 @@ fn dispatch_command<
         } => {
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(*report_interval);
-            let alloc_size = cmd::aging::parse_size(size).map_err(|e| anyhow::anyhow!(e))?;
+            let alloc_size = size
+                .as_ref()
+                .map(|s| cmd::aging::parse_size(s))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?;
             let hold_limit =
                 cmd::aging::parse_hold_limit(max_hold).map_err(|e| anyhow::anyhow!(e))?;
             let start = Instant::now();
@@ -439,6 +443,26 @@ fn run_sysfs_dump() {
             }
         }
         Err(e) => tracing::warn!(error = %e, "vmstat unavailable"),
+    }
+
+    if let Some(Ok(json)) = procfs::read_psi_memory().map(|p| serde_json::to_string_pretty(&p)) {
+        tee_println!("{json}");
+    }
+
+    if let Some(Ok(json)) = procfs::read_psi_io().map(|p| serde_json::to_string_pretty(&p)) {
+        tee_println!("{json}");
+    }
+
+    let cma_areas = sysfs::read_cma_areas();
+    if let (false, Ok(json)) = (
+        cma_areas.is_empty(),
+        serde_json::to_string_pretty(&cma_areas),
+    ) {
+        tee_println!("{json}");
+    }
+
+    if let Some(pool_kb) = sysfs::read_dma_heap_pool_kb() {
+        tee_println!("{{\"dma_heap_pool_kb\": {pool_kb}}}");
     }
 }
 

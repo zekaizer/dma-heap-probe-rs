@@ -1649,7 +1649,7 @@ mod tests {
             ..Default::default()
         };
         b.alloc(heap_fd, &mut data).unwrap();
-        let rfd = data.fd as RawFd;
+        let rfd = data.fd.cast_signed();
 
         assert_eq!(b.merge(dev_fd, &[rfd]), Err(Errno::EINVAL));
     }
