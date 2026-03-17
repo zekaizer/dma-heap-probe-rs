@@ -434,6 +434,8 @@ impl AgingState {
             p99_us: peak_p99,
             p99_9_us: peak_p99, // approximation
             cv_pct: 0.0,        // not tracked in running stats
+            trimmed_avg_us: avg,
+            outlier_count: 0,
         })
     }
 
@@ -1373,6 +1375,8 @@ mod tests {
                 p99_us: 400,
                 p99_9_us: 400,
                 cv_pct: 0.0,
+                trimmed_avg_us: 50,
+                outlier_count: 0,
             }),
             baseline_avg_us: Some(40),
             final_interval_avg_us: Some(55),
@@ -1563,6 +1567,8 @@ mod tests {
             p99_us: 95,
             p99_9_us: 95,
             cv_pct: 0.0,
+            trimmed_avg_us: 50,
+            outlier_count: 0,
         };
         let stats2 = LatencyStats {
             count: 20,
@@ -1575,6 +1581,8 @@ mod tests {
             p99_us: 190,
             p99_9_us: 190,
             cv_pct: 0.0,
+            trimmed_avg_us: 60,
+            outlier_count: 0,
         };
         state.update_cumulative(&stats1);
         state.update_cumulative(&stats2);
