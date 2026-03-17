@@ -257,7 +257,11 @@ fn dispatch_command<
         } => {
             let dur = duration.map(std::time::Duration::from_secs);
             let interval = std::time::Duration::from_secs(*report_interval);
-            let alloc_size = cmd::aging::parse_size(size).map_err(|e| anyhow::anyhow!(e))?;
+            let alloc_size = size
+                .as_ref()
+                .map(|s| cmd::aging::parse_size(s))
+                .transpose()
+                .map_err(|e| anyhow::anyhow!(e))?;
             let hold_limit =
                 cmd::aging::parse_hold_limit(max_hold).map_err(|e| anyhow::anyhow!(e))?;
             let start = Instant::now();

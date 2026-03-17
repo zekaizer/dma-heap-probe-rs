@@ -116,6 +116,23 @@ fn aging_fuzz() {
 }
 
 #[test]
+fn aging_fuzz_with_size_cap() {
+    dhp()
+        .args([
+            "aging",
+            "--fuzz",
+            "--size",
+            "64K",
+            "--iterations",
+            "10",
+            "--seed",
+            "42",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn aging_with_duration() {
     dhp()
         .args(["aging", "--duration", "2", "--report-interval", "1"])

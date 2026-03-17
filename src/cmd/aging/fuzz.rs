@@ -338,6 +338,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     per_thread_max: usize,
     per_thread_max_bytes: u64,
     seed: Option<u64>,
+    max_size: Option<u64>,
 ) {
     #[allow(clippy::cast_possible_truncation)]
     let base_seed = seed.unwrap_or_else(|| {
@@ -345,7 +346,14 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos() as u64)
     });
-    tracing::info!(seed = base_seed, "fuzz seed");
+    tracing::info!(seed = base_seed, max_size = ?max_size, "fuzz seed");
+
+    // Validate that at least one FUZZ_SIZES entry is within the cap.
+    if max_size.is_some_and(|cap| !FUZZ_SIZES.iter().any(|&s| s <= cap)) {
+        tracing::error!(max_size = ?max_size, "no FUZZ_SIZES entries within --size cap");
+        mark_init_error(state);
+        return;
+    }
 
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -405,6 +413,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
                     worker_seed,
                     worker_id,
                     container_device_fd,
+                    max_size,
                 );
             });
         }
@@ -429,11 +438,18 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     seed: u64,
     worker_id: u32,
     container_device_fd: Option<RawFd>,
+    max_size: Option<u64>,
 ) {
     let mut rng = SmallRng::seed_from_u64(seed);
     let mut hold_pool: HoldPool<'_, B> =
         HoldPool::new(per_thread_max, per_thread_max_bytes, state, seed);
     tracing::debug!(worker_id, seed, "fuzz worker started");
+
+    // Filter sizes by max_size cap (if provided).
+    let eligible_sizes: Vec<u64> = match max_size {
+        Some(cap) => FUZZ_SIZES.iter().copied().filter(|&s| s <= cap).collect(),
+        None => FUZZ_SIZES.to_vec(),
+    };
 
     // Weighted size selection: 4K-aligned common + inverse-size bias, edge cases rare.
     #[allow(
@@ -441,7 +457,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
         clippy::cast_possible_truncation,
         clippy::cast_sign_loss
     )]
-    let cum_weights: Vec<u64> = FUZZ_SIZES
+    let cum_weights: Vec<u64> = eligible_sizes
         .iter()
         .scan(0u64, |acc, &s| {
             let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
@@ -463,7 +479,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
         // Byte-fair random size (inverse-weighted).
         let r = rng.random_range(0..total_weight);
-        let size = FUZZ_SIZES[cum_weights.partition_point(|&c| c <= r)];
+        let size = eligible_sizes[cum_weights.partition_point(|&c| c <= r)];
 
         // Random pipeline
         let pipeline = select_pipeline(&ctx.weighted_table, &mut rng);
@@ -515,6 +531,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
             state,
             container_device_fd,
             &ctx.heap,
+            max_size,
         );
 
         if error_occurred {
@@ -561,6 +578,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
     state: &AgingState,
     container_device_fd: Option<RawFd>,
     heap: &DmaHeap<'a, B>,
+    max_size: Option<u64>,
 ) -> bool {
     let size_usize = size as usize;
 
@@ -823,7 +841,8 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
             let mut src_fds = vec![fd];
             let mut merged_len = size;
             for _ in 0..extra_count {
-                let extra_size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())].min(1_048_576);
+                let extra_size = FUZZ_SIZES[rng.random_range(0..FUZZ_SIZES.len())]
+                    .min(max_size.unwrap_or(1_048_576));
                 if let Ok(extra_fd) = heap.alloc(
                     extra_size,
                     DMA_HEAP_ALLOC_FD_FLAGS,
@@ -1049,7 +1068,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
         assert_eq!(
             state.held_bufs.load(Relaxed),
             0,
@@ -1137,7 +1156,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
@@ -1150,12 +1169,12 @@ mod tests {
         let heaps = vec!["system".to_string()];
         let b1 = MockBackend::new();
         let s1 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b1, &heaps, 1, &s1, None, Some(20), 8, 0, Some(42));
+        super::run_workers(&b1, &heaps, 1, &s1, None, Some(20), 8, 0, Some(42), None);
         let iters1 = s1.total_iters.load(Relaxed);
 
         let b2 = MockBackend::new();
         let s2 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b2, &heaps, 1, &s2, None, Some(20), 8, 0, Some(42));
+        super::run_workers(&b2, &heaps, 1, &s2, None, Some(20), 8, 0, Some(42), None);
         let iters2 = s2.total_iters.load(Relaxed);
 
         assert_eq!(iters1, iters2, "same seed should produce same iterations");
@@ -1166,7 +1185,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(20), 4, 0, Some(42));
+        super::run_workers(&b, &heaps, 1, &state, None, Some(20), 4, 0, Some(42), None);
         assert_eq!(
             b.buffer_count(),
             0,
@@ -1184,7 +1203,32 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, 0, Some(42));
+        super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, 0, Some(42), None);
+        assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
+        assert_eq!(
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+            "allocs must equal frees after drain"
+        );
+    }
+
+    #[test]
+    fn fuzz_with_size_cap() {
+        let b = MockBackend::new();
+        let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(50),
+            8,
+            0,
+            Some(42),
+            Some(65536),
+        );
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         assert_eq!(
             state.total_allocs.load(Relaxed),
