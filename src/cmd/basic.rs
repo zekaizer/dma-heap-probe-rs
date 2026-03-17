@@ -407,16 +407,19 @@ fn test_dup_survives_close<B: HeapBackend + DmaBufBackend>(
     )?;
     let buf = DmaBuf::new(backend, fd, EDGE_ALLOC_SIZE as usize);
 
+    // Query actual kernel-allocated size before dup
+    let orig_size = buf.llseek_size()?;
+
     // Dup then drop original
     let dup_buf = buf.dup()?;
     drop(buf);
 
-    // Verify dup is still usable via llseek
-    let size = dup_buf.llseek_size()?;
-    if size != EDGE_ALLOC_SIZE as i64 {
+    // Verify dup is still usable via llseek and matches the original size
+    let dup_size = dup_buf.llseek_size()?;
+    if dup_size != orig_size {
         tracing::error!(
-            expected = EDGE_ALLOC_SIZE,
-            got = size,
+            expected = orig_size,
+            got = dup_size,
             "dup llseek size mismatch"
         );
         return Err(Errno::EIO);

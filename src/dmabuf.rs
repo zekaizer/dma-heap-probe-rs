@@ -123,20 +123,27 @@ impl<'a, D: DmaBufBackend> DmaBuf<'a, D> {
 
     /// Duplicate this `dma-buf`, returning a new wrapper sharing the same backend.
     ///
+    /// The new `DmaBuf` uses the actual kernel buffer size (via `llseek`) rather
+    /// than the originally requested size, since the kernel may page-align or
+    /// round up allocations. Falls back to `self.len` if `llseek` fails.
+    ///
     /// The new `DmaBuf` is unmapped regardless of the original's state.
     ///
     /// # Errors
     /// - `EBADF` if fd is invalid
+    #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
     pub fn dup(&self) -> nix::Result<DmaBuf<'a, D>> {
         let new_fd = self.backend.dup(self.fd)?;
+        // Use actual kernel size if available, fall back to requested size
+        let actual_len = self.llseek_size().map_or(self.len, |s| s as usize);
         if trace::enabled() {
             trace::instant(&format!("dup_{}_{}", self.fd, new_fd));
         }
-        tracing::debug!(old_fd = self.fd, new_fd, "buffer duped");
+        tracing::debug!(old_fd = self.fd, new_fd, len = actual_len, "buffer duped");
         Ok(DmaBuf {
             backend: self.backend,
             fd: new_fd,
-            len: self.len,
+            len: actual_len,
             mapped: None,
         })
     }
@@ -287,6 +294,16 @@ mod tests {
         let dup_buf = buf.dup().unwrap();
         assert_ne!(buf.fd(), dup_buf.fd());
         assert_eq!(buf.len(), dup_buf.len());
+    }
+
+    #[test]
+    fn dup_len_matches_llseek_size() {
+        let backend = MockBackend::new();
+        let fd = alloc_buf(&backend, 4096);
+        let buf = DmaBuf::new(&backend, fd, 4096);
+        let dup_buf = buf.dup().unwrap();
+        let actual_size = dup_buf.llseek_size().unwrap();
+        assert_eq!(dup_buf.len() as i64, actual_size);
     }
 
     #[test]
