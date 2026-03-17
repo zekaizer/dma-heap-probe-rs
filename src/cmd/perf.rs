@@ -43,6 +43,11 @@ pub struct LatencyStats {
     pub trimmed_avg_us: u64,
     /// Number of samples identified as outliers by IQR method.
     pub outlier_count: usize,
+    /// Throughput in operations per second (`1e6 / mean_us`). 0 if mean is 0.
+    pub throughput_ops: u64,
+    /// 95% confidence interval half-width: 1.96 * stddev / sqrt(n).
+    /// True mean lies within [avg - ci95, avg + ci95] with 95% probability.
+    pub ci95_us: u64,
 }
 
 /// Compute latency statistics from a slice of microsecond measurements.
@@ -88,6 +93,16 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
     // IQR outlier detection: fence = [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
     let (trimmed_avg, outlier_count) = iqr_trimmed_mean(&sorted, mean_f);
 
+    // Throughput: ops/sec = 1e6 / mean_us
+    let throughput = if mean_f > 0.0 {
+        (1_000_000.0 / mean_f).round() as u64
+    } else {
+        0
+    };
+
+    // 95% CI half-width: 1.96 * stddev / sqrt(n)
+    let ci95 = (1.96 * stddev / (count as f64).sqrt()).ceil() as u64;
+
     Some(LatencyStats {
         count,
         min_us: sorted[0],
@@ -101,6 +116,8 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
         cv_pct: (cv * 10.0).round() / 10.0,
         trimmed_avg_us: trimmed_avg,
         outlier_count,
+        throughput_ops: throughput,
+        ci95_us: ci95,
     })
 }
 
@@ -162,6 +179,15 @@ fn iqr_trimmed_mean(sorted: &[u64], raw_mean: f64) -> (u64, usize) {
 }
 
 use crate::probe::align_to;
+
+/// Format throughput as Kops/s (thousands of operations per second).
+fn format_throughput(ops: u64) -> String {
+    if ops >= 1000 {
+        format!("{}", ops / 1000)
+    } else {
+        format!("0.{}", ops / 100)
+    }
+}
 
 /// Format a byte size as a human-readable string (e.g., 4096 → "4K", 1048576 → "1M").
 ///
@@ -280,7 +306,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             rows.push(vec![
                 human_size(size),
                 stats.min_us.to_string(),
-                stats.avg_us.to_string(),
+                format!("{}±{}", stats.avg_us, stats.ci95_us),
                 stats.trimmed_avg_us.to_string(),
                 stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
@@ -288,6 +314,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 stats.p99_us.to_string(),
                 stats.p99_9_us.to_string(),
                 stats.max_us.to_string(),
+                format_throughput(stats.throughput_ops),
                 stats.outlier_count.to_string(),
             ]);
         }
@@ -299,7 +326,18 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         "perf::alloc_only",
         Some("(us)"),
         &[
-            "size", "min", "avg", "tavg", "sd", "p50", "p95", "p99", "p99.9", "max", "out",
+            "size",
+            "min",
+            "avg±ci95",
+            "tavg",
+            "sd",
+            "p50",
+            "p95",
+            "p99",
+            "p99.9",
+            "max",
+            "Kops/s",
+            "out",
         ],
         &rows,
     );
@@ -674,6 +712,10 @@ mod tests {
         assert_eq!(stats.p99_us, 42);
         assert_eq!(stats.p99_9_us, 42);
         assert!((stats.cv_pct - 0.0).abs() < f64::EPSILON);
+        // throughput: 1e6/42 ≈ 23809.5 → 23810
+        assert_eq!(stats.throughput_ops, 23810);
+        // ci95: 1.96 * 0 / 1 = 0
+        assert_eq!(stats.ci95_us, 0);
     }
 
     #[test]
@@ -692,6 +734,10 @@ mod tests {
         assert_eq!(stats.stddev_us, 29);
         // cv = 28.87/50.5*100 ≈ 57.2
         assert!((stats.cv_pct - 57.2).abs() < 0.1);
+        // ci95: ceil(1.96 * 28.87 / 10) = ceil(5.66) = 6
+        assert_eq!(stats.ci95_us, 6);
+        // throughput: 1e6/50.5 ≈ 19802
+        assert_eq!(stats.throughput_ops, 19802);
     }
 
     #[test]
@@ -817,6 +863,38 @@ mod tests {
         let back: LatencyStats = serde_json::from_str(&json).unwrap();
         assert_eq!(stats, back);
         assert!(back.outlier_count > 0);
+    }
+
+    // ── throughput / CI tests ──
+
+    #[test]
+    fn throughput_zero_mean() {
+        // All 0µs samples (e.g., mock backend fast path).
+        let stats = compute_stats(&[0, 0, 0, 0]).unwrap();
+        assert_eq!(stats.throughput_ops, 0);
+        assert_eq!(stats.ci95_us, 0);
+    }
+
+    #[test]
+    fn ci95_decreases_with_more_samples() {
+        // Same value distribution, more samples → tighter CI (via sqrt(n)).
+        // Use alternating 10/20 pattern so stddev is identical per sample.
+        let small: Vec<u64> = [10, 20].iter().copied().cycle().take(10).collect();
+        let large: Vec<u64> = [10, 20].iter().copied().cycle().take(100).collect();
+        let ci_small = compute_stats(&small).unwrap().ci95_us;
+        let ci_large = compute_stats(&large).unwrap().ci95_us;
+        // stddev is same (5), but sqrt(100)/sqrt(10) ≈ 3.16x → CI shrinks.
+        assert!(
+            ci_small > ci_large,
+            "CI should shrink: small={ci_small} large={ci_large}"
+        );
+    }
+
+    #[test]
+    fn format_throughput_kops() {
+        assert_eq!(format_throughput(100_000), "100");
+        assert_eq!(format_throughput(23810), "23");
+        assert_eq!(format_throughput(500), "0.5");
     }
 
     // ── bench function tests ──

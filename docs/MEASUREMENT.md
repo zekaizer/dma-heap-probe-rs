@@ -197,9 +197,53 @@ outlier_count = count(samples WHERE sample IS outlier)
 
 ---
 
-## 5. 벤치마크별 상세
+## 5. Throughput 및 신뢰구간 (Throughput & CI)
 
-### 5.1 `bench_alloc_only`
+### 5.1 Throughput (ops/sec)
+
+```
+throughput_ops = round(1,000,000 / mean_us)
+```
+
+- 평균 지연시간의 역수로 초당 처리량 계산
+- **테이블 표시**: `Kops/s` = `throughput_ops / 1000` (천 단위)
+- `mean_us = 0`일 때 `throughput_ops = 0` (mock 백엔드 fast path)
+- **용도**: 힙 간 성능 비교 ("system: 50Kops/s vs reserved: 30Kops/s")
+
+### 5.2 95% 신뢰구간 (Confidence Interval)
+
+```
+ci95_us = ceil(1.96 × stddev / sqrt(n))
+```
+
+- **의미**: 진짜 평균은 95% 확률로 `[avg - ci95, avg + ci95]` 범위 안에 존재
+- **테이블 표시**: `avg±ci95` (예: `12±2`)
+- **z-score 1.96**: 정규분포 95% 양측 임계값
+- **sqrt(n) 효과**: 반복 횟수를 4배로 늘리면 CI가 절반으로 줄어듦
+
+**해석 가이드:**
+
+| CI 상대 크기 | 의미 | 조치 |
+|-------------|------|------|
+| ci95 < avg × 5% | 정밀한 측정 | 그대로 사용 |
+| ci95 = avg × 5~20% | 보통 | `--iterations` 증가 고려 |
+| ci95 > avg × 20% | 부정확 | `--iterations` 증가 필수 또는 외부 간섭 확인 |
+
+### 5.3 테이블 예시
+
+```
+[system]  perf::alloc_only (us)
+     size  min  avg±ci95  tavg  sd  p50  p95   p99  p99.9   max  Kops/s  out
+       4K    5      12±2     8   8    8   25    38     42    42      83    3
+      64K   15     45±5    40  12   40   60    85    110   110      22    2
+       1M   80   250±18   220  45  230  350   480    520   520       4    1
+```
+
+---
+
+## 6. 벤치마크별 상세
+
+### 6.1 `bench_alloc_only`
 
 커널 `DMA_HEAP_IOCTL_ALLOC` 호출의 순수 지연시간.
 
@@ -207,7 +251,7 @@ outlier_count = count(samples WHERE sample IS outlier)
 - **사이즈**: `--sizes` (기본 4K, 64K, 1M)
 - **용도**: 힙 할당자 성능의 기준선
 
-### 5.2 `bench_full_pipeline`
+### 6.2 `bench_full_pipeline`
 
 실제 사용 시나리오: 할당 → 매핑 → 쓰기 → 읽기 → 해제.
 
@@ -215,7 +259,7 @@ outlier_count = count(samples WHERE sample IS outlier)
 - **memwrite**: `write_bytes(ptr, 0xAA, size)` — 전체 버퍼 쓰기
 - **용도**: 캐시 유지보수 비용 포함한 end-to-end 지연
 
-### 5.3 `bench_close`
+### 6.3 `bench_close`
 
 버퍼 해제 경로 지연시간.
 
@@ -223,7 +267,7 @@ outlier_count = count(samples WHERE sample IS outlier)
 - **사전 조건**: 타이밍 전에 alloc 완료
 - **용도**: deferred free pool로의 반환 지연, CMA 반환 비용
 
-### 5.4 `bench_order_boundary`
+### 6.4 `bench_order_boundary`
 
 커널 buddy allocator의 order 경계에서 할당 비용 변화 측정.
 
@@ -231,7 +275,7 @@ outlier_count = count(samples WHERE sample IS outlier)
 - **관찰 포인트**: `49152 (48K)` vs `65536 (64K)` — order 4 경계
 - **용도**: buddy allocator의 order 승격/분할 비용 시각화
 
-### 5.5 `bench_internal_frag`
+### 6.5 `bench_internal_frag`
 
 비정렬 요청 시 내부 단편화 비율.
 
@@ -240,7 +284,7 @@ outlier_count = count(samples WHERE sample IS outlier)
 - **출력**: `frag% = (actual - requested) / requested × 100`
 - **용도**: 힙의 할당 그래뉼래리티(보통 4K) 확인
 
-### 5.6 `bench_pool_warmup`
+### 6.6 `bench_pool_warmup`
 
 cold start vs warm state 할당 비용 비교.
 
@@ -249,7 +293,7 @@ cold start vs warm state 할당 비용 비교.
 - **출력**: `cold_p50, cold_p95, warm_p50, warm_p95`
 - **용도**: 커널 deferred free pool의 효과 정량화
 
-### 5.7 `bench_size_switch`
+### 6.7 `bench_size_switch`
 
 사이즈 전환이 할당 지연에 미치는 영향.
 
@@ -259,7 +303,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 6. JSON 출력 형식
+## 7. JSON 출력 형식
 
 `LatencyStats` 구조체가 그대로 직렬화된다:
 
@@ -276,13 +320,15 @@ cold start vs warm state 할당 비용 비교.
   "p99_9_us": 42,
   "cv_pct": 66.7,
   "trimmed_avg_us": 9,
-  "outlier_count": 3
+  "outlier_count": 3,
+  "throughput_ops": 83333,
+  "ci95_us": 2
 }
 ```
 
 ---
 
-## 7. 정밀도 한계 및 주의사항
+## 8. 정밀도 한계 및 주의사항
 
 | 한계 | 영향 | 완화 방법 |
 |------|------|-----------|
@@ -294,7 +340,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 8. 알고리즘 복잡도
+## 9. 알고리즘 복잡도
 
 | 단계 | 시간 복잡도 | 공간 복잡도 |
 |------|-------------|-------------|
