@@ -355,6 +355,14 @@ drift_pct = slope × (n-1) / mean × 100
 - **사이즈 범위**: 4K → 8M (15개 포인트, 64K 경계 집중)
 - **관찰 포인트**: `49152 (48K)` vs `65536 (64K)` — order 4 경계
 - **용도**: buddy allocator의 order 승격/분할 비용 시각화
+- **Step Detection**: 인접 사이즈 간 >20% 증가 시 `perf::order_step` 출력
+  - `order N`: buddy allocator order (`ceil(log2(pages))`)
+  - 크기순이 아닌 증가폭순으로 정렬 — 가장 큰 bottleneck 먼저 표시
+
+```
+[system]  perf::order_step (order 5)  from: 64K  to: 128K  avg: 15→25us  +%: 66.7
+[system]  perf::order_step (order 4)  from: 48K  to: 64K   avg: 12→18us  +%: 50.0
+```
 
 ### 8.5 `bench_internal_frag`
 

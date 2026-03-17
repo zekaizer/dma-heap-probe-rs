@@ -259,6 +259,64 @@ struct DriftInfo {
     second_half_avg_us: u64,
 }
 
+/// A detected latency step between two allocation sizes.
+struct OrderStep {
+    size_from: u64,
+    size_to: u64,
+    avg_from: u64,
+    avg_to: u64,
+    /// Buddy allocator order for `size_to`: `ceil(log2(size / PAGE_SIZE))`.
+    order: u32,
+    /// Relative increase: `(avg_to - avg_from) / avg_from * 100`.
+    increase_pct: f64,
+}
+
+/// Detect significant latency steps in order-boundary sweep data.
+///
+/// Scans adjacent `(size, avg_us)` pairs for relative increases > `threshold_pct`.
+/// Returns steps sorted by increase magnitude (largest first).
+#[allow(clippy::cast_precision_loss)]
+fn detect_order_steps(points: &[(u64, u64)], threshold_pct: f64) -> Vec<OrderStep> {
+    const PAGE_SIZE: u64 = 4096;
+
+    let mut steps = Vec::new();
+    for w in points.windows(2) {
+        let (size_from, avg_from) = w[0];
+        let (size_to, avg_to) = w[1];
+
+        if avg_from == 0 {
+            continue;
+        }
+
+        let increase_pct = (avg_to as f64 - avg_from as f64) / avg_from as f64 * 100.0;
+        if increase_pct > threshold_pct {
+            // Buddy order = number of pages needed, expressed as power-of-2 order.
+            let pages = size_to.div_ceil(PAGE_SIZE);
+            let order = if pages <= 1 {
+                0
+            } else {
+                (pages - 1).ilog2() + 1
+            };
+
+            steps.push(OrderStep {
+                size_from,
+                size_to,
+                avg_from,
+                avg_to,
+                order,
+                increase_pct: (increase_pct * 10.0).round() / 10.0,
+            });
+        }
+    }
+
+    steps.sort_by(|a, b| {
+        b.increase_pct
+            .partial_cmp(&a.increase_pct)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    steps
+}
+
 /// Result of ordinary least-squares linear regression: `y = intercept + slope * x`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearFit {
@@ -654,6 +712,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut sweep_points: Vec<(u64, u64)> = Vec::new();
 
     for &size in ORDER_BOUNDARY_SIZES {
         // Warmup
@@ -675,6 +734,7 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
+            sweep_points.push((size, stats.avg_us));
             rows.push(vec![
                 human_size(size),
                 stats.avg_us.to_string(),
@@ -695,6 +755,23 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
         &rows,
     );
+
+    // Detect significant latency steps at order boundaries (>20% increase).
+    let steps = detect_order_steps(&sweep_points, 20.0);
+    for step in &steps {
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            &format!("perf::order_step (order {})", step.order),
+            &[
+                ("from", &human_size(step.size_from)),
+                ("to", &human_size(step.size_to)),
+                ("avg", &format!("{}→{}us", step.avg_from, step.avg_to)),
+                ("+%", &format!("{:.1}", step.increase_pct)),
+            ],
+        );
+    }
+
     Ok(())
 }
 
@@ -1115,6 +1192,52 @@ mod tests {
             drift.drift_pct
         );
         assert!(drift.first_half_avg_us > drift.second_half_avg_us);
+    }
+
+    // ── order step detection tests ──
+
+    #[test]
+    fn order_steps_empty() {
+        assert!(detect_order_steps(&[], 20.0).is_empty());
+        assert!(detect_order_steps(&[(4096, 10)], 20.0).is_empty());
+    }
+
+    #[test]
+    fn order_steps_no_significant_jump() {
+        // Flat latency across sizes — no steps.
+        let points = vec![(4096, 10), (8192, 11), (16384, 12)];
+        let steps = detect_order_steps(&points, 20.0);
+        assert!(steps.is_empty());
+    }
+
+    #[test]
+    fn order_steps_detects_jump() {
+        // 4K→8K: 10→10 (flat), 8K→64K: 10→20 (100% jump)
+        let points = vec![(4096, 10), (8192, 10), (65536, 20)];
+        let steps = detect_order_steps(&points, 20.0);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].size_from, 8192);
+        assert_eq!(steps[0].size_to, 65536);
+        assert!((steps[0].increase_pct - 100.0).abs() < 0.1);
+        assert_eq!(steps[0].order, 4); // 65536/4096 = 16 pages = order 4
+    }
+
+    #[test]
+    fn order_steps_sorted_by_magnitude() {
+        let points = vec![(4096, 10), (8192, 15), (65536, 50), (1_048_576, 60)];
+        let steps = detect_order_steps(&points, 20.0);
+        // 8K→64K = +233%, 4K→8K = +50%; 64K→1M = +20% (at threshold)
+        assert!(steps.len() >= 2);
+        assert!(steps[0].increase_pct >= steps[1].increase_pct);
+    }
+
+    #[test]
+    fn order_steps_buddy_order_calc() {
+        // 4096 = 1 page = order 0, 8192 = 2 pages = order 1, etc.
+        let points = vec![(4096, 5), (8192, 20)];
+        let steps = detect_order_steps(&points, 20.0);
+        assert_eq!(steps.len(), 1);
+        assert_eq!(steps[0].order, 1); // 8192/4096 = 2 pages → order 1
     }
 
     // ── linear regression tests ──
