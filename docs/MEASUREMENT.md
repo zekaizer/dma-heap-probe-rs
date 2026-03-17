@@ -281,9 +281,49 @@ R² = 1 - SS_res / SS_tot
 
 ---
 
-## 7. 벤치마크별 상세
+## 7. Drift Detection (시간적 편향 감지)
 
-### 7.1 `bench_alloc_only`
+측정 도중 지연시간이 체계적으로 변하는지 자동 감지한다.
+
+### 7.1 알고리즘
+
+샘플 인덱스 `i`와 지연시간 `latency[i]`에 대해 선형 회귀:
+
+```
+slope = Σ(i - ī)(y_i - ȳ) / Σ(i - ī)²
+drift_pct = slope × (n-1) / mean × 100
+```
+
+추가로 전반부/후반부 평균을 비교하여 직관적 해석을 제공한다.
+
+### 7.2 출력 조건
+
+`|drift_pct| > 10%`일 때만 경고를 출력한다:
+
+```
+[system]  perf::drift_warn (degrading)  drift: +25.3%  1st_half: 45  2nd_half: 58
+```
+
+| drift_pct | 의미 | 원인 |
+|-----------|------|------|
+| > +10% | 후반부가 느림 (degrading) | Thermal throttling, 메모리 압박 증가 |
+| < -10% | 후반부가 빠름 (improving) | Warmup 부족, JIT/pool이 아직 안정화 안 됨 |
+| -10% ~ +10% | 안정 | 정상적 측정 |
+
+### 7.3 설계 결정
+
+| 결정 | 근거 |
+|------|------|
+| 마지막(가장 큰) 사이즈만 분석 | 큰 할당이 thermal/pressure 영향에 가장 민감 |
+| 임계값 10% | 5% 미만은 통계적 노이즈, 10% 이상은 체계적 편향 |
+| 최소 10 샘플 | 그 이하에서는 회귀 slope가 불안정 |
+| 경고만 출력 (자동 보정 없음) | 사용자가 원인 판단하여 `--warmup`/`--iterations` 조정 |
+
+---
+
+## 8. 벤치마크별 상세
+
+### 8.1 `bench_alloc_only`
 
 커널 `DMA_HEAP_IOCTL_ALLOC` 호출의 순수 지연시간.
 
@@ -292,7 +332,7 @@ R² = 1 - SS_res / SS_tot
 - **용도**: 힙 할당자 성능의 기준선
 - **회귀 분석**: 테이블 후 `perf::alloc_model` 라인으로 size-latency 모델 출력
 
-### 7.2 `bench_full_pipeline`
+### 8.2 `bench_full_pipeline`
 
 실제 사용 시나리오: 할당 → 매핑 → 쓰기 → 읽기 → 해제.
 
@@ -300,7 +340,7 @@ R² = 1 - SS_res / SS_tot
 - **memwrite**: `write_bytes(ptr, 0xAA, size)` — 전체 버퍼 쓰기
 - **용도**: 캐시 유지보수 비용 포함한 end-to-end 지연
 
-### 7.3 `bench_close`
+### 8.3 `bench_close`
 
 버퍼 해제 경로 지연시간.
 
@@ -308,7 +348,7 @@ R² = 1 - SS_res / SS_tot
 - **사전 조건**: 타이밍 전에 alloc 완료
 - **용도**: deferred free pool로의 반환 지연, CMA 반환 비용
 
-### 7.4 `bench_order_boundary`
+### 8.4 `bench_order_boundary`
 
 커널 buddy allocator의 order 경계에서 할당 비용 변화 측정.
 
@@ -316,7 +356,7 @@ R² = 1 - SS_res / SS_tot
 - **관찰 포인트**: `49152 (48K)` vs `65536 (64K)` — order 4 경계
 - **용도**: buddy allocator의 order 승격/분할 비용 시각화
 
-### 7.5 `bench_internal_frag`
+### 8.5 `bench_internal_frag`
 
 비정렬 요청 시 내부 단편화 비율.
 
@@ -325,7 +365,7 @@ R² = 1 - SS_res / SS_tot
 - **출력**: `frag% = (actual - requested) / requested × 100`
 - **용도**: 힙의 할당 그래뉼래리티(보통 4K) 확인
 
-### 7.6 `bench_pool_warmup`
+### 8.6 `bench_pool_warmup`
 
 cold start vs warm state 할당 비용 비교.
 
@@ -334,7 +374,7 @@ cold start vs warm state 할당 비용 비교.
 - **출력**: `cold_p50, cold_p95, warm_p50, warm_p95`
 - **용도**: 커널 deferred free pool의 효과 정량화
 
-### 7.7 `bench_size_switch`
+### 8.7 `bench_size_switch`
 
 사이즈 전환이 할당 지연에 미치는 영향.
 
@@ -344,7 +384,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 8. JSON 출력 형식
+## 9. JSON 출력 형식
 
 `LatencyStats` 구조체가 그대로 직렬화된다:
 
@@ -369,7 +409,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 9. 정밀도 한계 및 주의사항
+## 10. 정밀도 한계 및 주의사항
 
 | 한계 | 영향 | 완화 방법 |
 |------|------|-----------|
@@ -381,7 +421,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 10. 알고리즘 복잡도
+## 11. 알고리즘 복잡도
 
 | 단계 | 시간 복잡도 | 공간 복잡도 |
 |------|-------------|-------------|

@@ -189,6 +189,76 @@ fn format_throughput(ops: u64) -> String {
     }
 }
 
+/// Detect monotonic drift in measurement samples over time.
+///
+/// Fits a linear regression of `(sample_index, latency)` and reports the total
+/// drift as a percentage of the mean. Positive drift = degradation over time
+/// (thermal throttling, memory pressure), negative = warmup still settling.
+///
+/// Returns `None` if fewer than 10 samples (insufficient for meaningful trend).
+#[allow(clippy::cast_precision_loss)]
+fn detect_drift(samples: &[u64]) -> Option<DriftInfo> {
+    let n = samples.len();
+    if n < 10 {
+        return None;
+    }
+
+    let n_f = n as f64;
+    // x values are 0..n-1 (sample indices).
+    // mean_x = (n-1)/2, sum_x = n*(n-1)/2
+    let mean_x = (n_f - 1.0) / 2.0;
+    let mean_y: f64 = samples.iter().map(|&v| v as f64).sum::<f64>() / n_f;
+
+    if mean_y == 0.0 {
+        return Some(DriftInfo {
+            drift_pct: 0.0,
+            first_half_avg_us: 0,
+            second_half_avg_us: 0,
+        });
+    }
+
+    // SS_xx for indices 0..n-1: n*(n-1)*(2n-1)/6 - n*(n-1)^2/4
+    // Simplified: n*(n^2-1)/12
+    let ss_xx = n_f * (n_f * n_f - 1.0) / 12.0;
+
+    let ss_cross: f64 = samples
+        .iter()
+        .enumerate()
+        .map(|(i, &v)| (i as f64 - mean_x) * (v as f64 - mean_y))
+        .sum();
+
+    let slope = ss_cross / ss_xx;
+
+    // Total drift as percentage of mean: slope * (n-1) / mean * 100
+    let total_drift = slope * (n_f - 1.0);
+    let drift_pct = (total_drift / mean_y * 100.0 * 10.0).round() / 10.0;
+
+    // Half-split averages for intuitive comparison.
+    let mid = n / 2;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let first_half_avg =
+        (samples[..mid].iter().map(|&v| v as f64).sum::<f64>() / mid as f64).round() as u64;
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let second_half_avg =
+        (samples[mid..].iter().map(|&v| v as f64).sum::<f64>() / (n - mid) as f64).round() as u64;
+
+    Some(DriftInfo {
+        drift_pct,
+        first_half_avg_us: first_half_avg,
+        second_half_avg_us: second_half_avg,
+    })
+}
+
+/// Measurement drift diagnostic info.
+struct DriftInfo {
+    /// Total drift as percentage of mean. Positive = degradation, negative = warmup settling.
+    drift_pct: f64,
+    /// Average latency of first half of samples.
+    first_half_avg_us: u64,
+    /// Average latency of second half of samples.
+    second_half_avg_us: u64,
+}
+
 /// Result of ordinary least-squares linear regression: `y = intercept + slope * x`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearFit {
@@ -352,6 +422,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
+    let mut last_samples: Vec<u64> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -374,6 +445,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
         if let Some(stats) = compute_stats(&samples) {
             regression_points.push((size, stats.avg_us));
+            last_samples = samples;
             rows.push(vec![
                 human_size(size),
                 stats.min_us.to_string(),
@@ -422,7 +494,26 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             &[
                 ("base_us", &format!("{:.1}", fit.intercept_us)),
                 ("us/KB", &format!("{:.3}", fit.slope_us_per_byte * 1024.0)),
-                ("R²", &format!("{:.3}", fit.r_squared)),
+                ("R\u{b2}", &format!("{:.3}", fit.r_squared)),
+            ],
+        );
+    }
+
+    // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
+    if let Some(drift) = detect_drift(&last_samples).filter(|d| d.drift_pct.abs() > 10.0) {
+        let direction = if drift.drift_pct > 0.0 {
+            "degrading"
+        } else {
+            "improving"
+        };
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            &format!("perf::drift_warn ({direction})"),
+            &[
+                ("drift", &format!("{:+.1}%", drift.drift_pct)),
+                ("1st_half", &drift.first_half_avg_us),
+                ("2nd_half", &drift.second_half_avg_us),
             ],
         );
     }
@@ -981,6 +1072,49 @@ mod tests {
         assert_eq!(format_throughput(100_000), "100");
         assert_eq!(format_throughput(23810), "23");
         assert_eq!(format_throughput(500), "0.5");
+    }
+
+    // ── drift detection tests ──
+
+    #[test]
+    fn drift_too_few_samples() {
+        assert!(detect_drift(&[1, 2, 3]).is_none());
+    }
+
+    #[test]
+    fn drift_stable_samples() {
+        let samples = vec![100; 20];
+        let drift = detect_drift(&samples).unwrap();
+        assert!((drift.drift_pct - 0.0).abs() < f64::EPSILON);
+        assert_eq!(drift.first_half_avg_us, 100);
+        assert_eq!(drift.second_half_avg_us, 100);
+    }
+
+    #[test]
+    fn drift_increasing_trend() {
+        // Linearly increasing: 10, 20, 30, ..., 200
+        let samples: Vec<u64> = (1..=20).map(|i| i * 10).collect();
+        let drift = detect_drift(&samples).unwrap();
+        // Strong positive drift expected.
+        assert!(
+            drift.drift_pct > 50.0,
+            "drift should be large positive: {}",
+            drift.drift_pct
+        );
+        assert!(drift.second_half_avg_us > drift.first_half_avg_us);
+    }
+
+    #[test]
+    fn drift_decreasing_trend() {
+        // Linearly decreasing: 200, 190, ..., 10
+        let samples: Vec<u64> = (1..=20).rev().map(|i| i * 10).collect();
+        let drift = detect_drift(&samples).unwrap();
+        assert!(
+            drift.drift_pct < -50.0,
+            "drift should be large negative: {}",
+            drift.drift_pct
+        );
+        assert!(drift.first_half_avg_us > drift.second_half_avg_us);
     }
 
     // ── linear regression tests ──
