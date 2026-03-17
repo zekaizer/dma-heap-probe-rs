@@ -317,6 +317,82 @@ fn detect_order_steps(points: &[(u64, u64)], threshold_pct: f64) -> Vec<OrderSte
     steps
 }
 
+/// Result of Welch's t-test comparing two independent sample groups.
+struct WelchResult {
+    /// Welch's t-statistic.
+    t_stat: f64,
+    /// Cohen's d effect size: `|mean1 - mean2| / pooled_sd`.
+    cohens_d: f64,
+    /// Significance level: `"***"` (p<0.001), `"**"` (p<0.01), `"*"` (p<0.05), `"ns"`.
+    sig: &'static str,
+    /// Human-readable effect magnitude.
+    effect: &'static str,
+}
+
+/// Welch's t-test for unequal variances + Cohen's d effect size.
+///
+/// Compares two sample groups and reports statistical significance and practical
+/// effect size. Uses normal approximation for p-value (valid for n > 30).
+///
+/// Returns `None` if either group has fewer than 2 samples or zero variance.
+#[allow(clippy::cast_precision_loss)]
+fn welch_test(a: &[u64], b: &[u64]) -> Option<WelchResult> {
+    if a.len() < 2 || b.len() < 2 {
+        return None;
+    }
+
+    let n1 = a.len() as f64;
+    let n2 = b.len() as f64;
+    let mean1: f64 = a.iter().map(|&v| v as f64).sum::<f64>() / n1;
+    let mean2: f64 = b.iter().map(|&v| v as f64).sum::<f64>() / n2;
+    let var1: f64 = a.iter().map(|&v| (v as f64 - mean1).powi(2)).sum::<f64>() / (n1 - 1.0);
+    let var2: f64 = b.iter().map(|&v| (v as f64 - mean2).powi(2)).sum::<f64>() / (n2 - 1.0);
+
+    let se = (var1 / n1 + var2 / n2).sqrt();
+    if se == 0.0 {
+        return None;
+    }
+
+    let t_stat = (mean1 - mean2) / se;
+
+    // Cohen's d: pooled SD from both groups.
+    let pooled_var = f64::midpoint(var1, var2);
+    let cohens_d = if pooled_var > 0.0 {
+        (mean1 - mean2).abs() / pooled_var.sqrt()
+    } else {
+        0.0
+    };
+
+    // Normal approximation significance thresholds (valid for df > 30).
+    let abs_t = t_stat.abs();
+    let sig = if abs_t > 3.291 {
+        "***"
+    } else if abs_t > 2.576 {
+        "**"
+    } else if abs_t > 1.960 {
+        "*"
+    } else {
+        "ns"
+    };
+
+    let effect = if cohens_d < 0.2 {
+        "negligible"
+    } else if cohens_d < 0.5 {
+        "small"
+    } else if cohens_d < 0.8 {
+        "medium"
+    } else {
+        "large"
+    };
+
+    Some(WelchResult {
+        t_stat: (t_stat * 100.0).round() / 100.0,
+        cohens_d: (cohens_d * 100.0).round() / 100.0,
+        sig,
+        effect,
+    })
+}
+
 /// Result of ordinary least-squares linear regression: `y = intercept + slope * x`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearFit {
@@ -840,6 +916,21 @@ fn bench_pool_warmup<B: HeapBackend + DmaBufBackend>(
                 ("warm_p95", &warm.p95_us),
             ],
         );
+
+        // Welch's t-test: is the cold/warm difference statistically significant?
+        if let Some(w) = welch_test(&cold_samples, &warm_samples) {
+            crate::fmt::print_metric(
+                heap_name,
+                heap_w,
+                "perf::pool_effect",
+                &[
+                    ("t", &format!("{:.2}", w.t_stat)),
+                    ("d", &format!("{:.2}", w.cohens_d)),
+                    ("sig", &w.sig),
+                    ("effect", &w.effect),
+                ],
+            );
+        }
     }
 
     Ok(())
@@ -1142,6 +1233,48 @@ mod tests {
             ci_small > ci_large,
             "CI should shrink: small={ci_small} large={ci_large}"
         );
+    }
+
+    // ── Welch's t-test tests ──
+
+    #[test]
+    fn welch_too_few() {
+        assert!(welch_test(&[1], &[2, 3]).is_none());
+        assert!(welch_test(&[1, 2], &[3]).is_none());
+    }
+
+    #[test]
+    fn welch_identical_groups() {
+        let a = vec![100; 20];
+        let b = vec![100; 20];
+        // Zero variance → None (can't compute SE).
+        assert!(welch_test(&a, &b).is_none());
+    }
+
+    #[test]
+    fn welch_significant_difference() {
+        // Group A: mean=10, Group B: mean=100 — clearly different.
+        let a: Vec<u64> = (5..=15).collect();
+        let b: Vec<u64> = (95..=105).collect();
+        let w = welch_test(&a, &b).unwrap();
+        assert!(
+            w.t_stat < -10.0,
+            "t should be strongly negative: {}",
+            w.t_stat
+        );
+        assert_eq!(w.sig, "***");
+        assert_eq!(w.effect, "large");
+        assert!(w.cohens_d > 0.8);
+    }
+
+    #[test]
+    fn welch_not_significant() {
+        // Nearly identical distributions — not significant.
+        let a: Vec<u64> = vec![10, 11, 10, 11, 10, 11, 10, 11, 10, 11];
+        let b: Vec<u64> = vec![10, 11, 10, 11, 10, 11, 10, 11, 11, 10];
+        let w = welch_test(&a, &b).unwrap();
+        assert_eq!(w.sig, "ns");
+        assert_eq!(w.effect, "negligible");
     }
 
     #[test]

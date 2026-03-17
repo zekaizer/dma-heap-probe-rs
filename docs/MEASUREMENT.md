@@ -381,6 +381,16 @@ cold start vs warm state 할당 비용 비교.
 - **warm**: 100회 alloc/free 사이클 후 100회 측정
 - **출력**: `cold_p50, cold_p95, warm_p50, warm_p95`
 - **용도**: 커널 deferred free pool의 효과 정량화
+- **통계 검정** (`perf::pool_effect`): Welch's t-test + Cohen's d
+  - `t`: t-통계량 (cold - warm). 양수이면 cold가 더 느림
+  - `d`: Cohen's d 효과 크기. `<0.2` negligible, `0.2–0.5` small, `0.5–0.8` medium, `>0.8` large
+  - `sig`: `***` (p<0.001), `**` (p<0.01), `*` (p<0.05), `ns` (not significant)
+  - 정규 근사 사용 (n=100 → df≈198, 정규와 사실상 동일)
+
+```
+[system]  perf::pool_warmup  cold_p50: 45  cold_p95: 80  warm_p50: 12  warm_p95: 25
+[system]  perf::pool_effect  t: 8.32  d: 1.85  sig: ***  effect: large
+```
 
 ### 8.7 `bench_size_switch`
 
