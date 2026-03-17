@@ -169,6 +169,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
                 );
                 state.total_errors.fetch_add(1, Relaxed);
                 hc.errors.fetch_add(1, Relaxed);
+                hold_pool.notify_pressure(worker_id);
                 continue;
             }
         };
