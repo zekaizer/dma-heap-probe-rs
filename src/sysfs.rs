@@ -55,14 +55,14 @@ const SYSFS_DMABUF_PATH: &str = "/sys/kernel/dmabuf/buffers";
 /// Returns an empty snapshot if the path does not exist (e.g. on host).
 pub fn snapshot() -> anyhow::Result<SysfsSnapshot> {
     let base = Path::new(SYSFS_DMABUF_PATH);
-    if !base.exists() {
+    let Ok(entries) = std::fs::read_dir(base) else {
         return Ok(SysfsSnapshot {
             buffers: Vec::new(),
         });
-    }
+    };
 
     let mut buffers = Vec::new();
-    for entry in std::fs::read_dir(base).context("failed to read sysfs dmabuf directory")? {
+    for entry in entries {
         let entry = entry?;
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
@@ -120,11 +120,11 @@ fn read_cma_areas_from(base_path: &str) -> Vec<CmaAreaStats> {
     let mut areas: Vec<CmaAreaStats> = entries
         .filter_map(std::result::Result::ok)
         .filter_map(|entry| {
-            let name = entry.file_name().to_string_lossy().to_string();
-            let dir = entry.path();
-            if !dir.is_dir() {
+            if !entry.file_type().ok()?.is_dir() {
                 return None;
             }
+            let name = entry.file_name().to_string_lossy().to_string();
+            let dir = entry.path();
             let read_counter = |file: &str| -> u64 {
                 std::fs::read_to_string(dir.join(file))
                     .ok()

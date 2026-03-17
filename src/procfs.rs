@@ -14,6 +14,34 @@ pub struct BuddyInfoEntry {
     pub free_counts: Vec<u64>,
 }
 
+// ---------------------------------------------------------------------------
+// Buddy allocator utility functions
+// ---------------------------------------------------------------------------
+
+/// Total free pages in a `free_counts` array: `sum(count[i] * 2^i)`.
+pub fn total_free_pages(free_counts: &[u64]) -> u64 {
+    free_counts
+        .iter()
+        .enumerate()
+        .map(|(i, &c)| c * (1u64 << i))
+        .sum()
+}
+
+/// Highest order with at least one free block, or 0 if all empty.
+pub fn max_contiguous_order(free_counts: &[u64]) -> usize {
+    free_counts
+        .iter()
+        .enumerate()
+        .rev()
+        .find(|(_, c)| **c > 0)
+        .map_or(0, |(i, _)| i)
+}
+
+/// Count of free blocks at `min_order` or higher.
+pub fn blocks_above_order(free_counts: &[u64], min_order: usize) -> u64 {
+    free_counts.iter().skip(min_order).sum()
+}
+
 /// One line from the "Free pages count per migrate type" section of `/proc/pagetypeinfo`.
 ///
 /// Example: `Node    0, zone   Normal, type    Unmovable  100  50  30  10  5  2  1  0  0  0  0`
@@ -446,46 +474,38 @@ fn parse_psi_line(line: &str) -> Option<PsiLine> {
     })
 }
 
-/// Parse `/proc/pressure/memory` content.
-pub fn parse_psi_memory(content: &str) -> PsiMemory {
-    let mut psi = PsiMemory::default();
+/// Extract the "some" and "full" PSI lines from content.
+fn parse_psi_some_full(content: &str) -> (PsiLine, PsiLine) {
+    let mut some = PsiLine::default();
+    let mut full = PsiLine::default();
     for line in content.lines() {
         if let Some(parsed) = line
             .starts_with("some ")
             .then(|| parse_psi_line(line))
             .flatten()
         {
-            psi.some = parsed;
+            some = parsed;
         } else if let Some(parsed) = line
             .starts_with("full ")
             .then(|| parse_psi_line(line))
             .flatten()
         {
-            psi.full = parsed;
+            full = parsed;
         }
     }
-    psi
+    (some, full)
+}
+
+/// Parse `/proc/pressure/memory` content.
+pub fn parse_psi_memory(content: &str) -> PsiMemory {
+    let (some, full) = parse_psi_some_full(content);
+    PsiMemory { some, full }
 }
 
 /// Parse `/proc/pressure/io` content.
 pub fn parse_psi_io(content: &str) -> PsiIo {
-    let mut psi = PsiIo::default();
-    for line in content.lines() {
-        if let Some(parsed) = line
-            .starts_with("some ")
-            .then(|| parse_psi_line(line))
-            .flatten()
-        {
-            psi.some = parsed;
-        } else if let Some(parsed) = line
-            .starts_with("full ")
-            .then(|| parse_psi_line(line))
-            .flatten()
-        {
-            psi.full = parsed;
-        }
-    }
-    psi
+    let (some, full) = parse_psi_some_full(content);
+    PsiIo { some, full }
 }
 
 /// Read and parse `/proc/pressure/memory`.

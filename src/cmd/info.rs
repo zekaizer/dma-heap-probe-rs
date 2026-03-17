@@ -586,14 +586,6 @@ pub fn aggregate_process_usage(entries: &[ProcessBufEntry]) -> Vec<ProcessSummar
 }
 
 // ---------------------------------------------------------------------------
-// Memory context builder
-// ---------------------------------------------------------------------------
-
-fn build_memory_context(meminfo: MemInfo, vmstat: VmStat) -> MemoryContext {
-    MemoryContext { meminfo, vmstat }
-}
-
-// ---------------------------------------------------------------------------
 // Formatting helpers
 // ---------------------------------------------------------------------------
 
@@ -654,77 +646,23 @@ fn format_row(widths: &[usize], aligns: &[Align], values: &[&str]) -> String {
 /// Shows total free memory, largest contiguous block, and how many blocks
 /// can satisfy common DMA allocation sizes (>=64 KiB at order 4, >=2 MiB at
 /// order 9) without compaction.
-fn format_frag_summary(out: &mut String, buddy: &[BuddyInfoEntry]) {
-    const PAGE_SIZE: u64 = 4096;
-    // Thresholds: order 4 = 64 KiB, order 9 = 2 MiB
-    const ORDER_64K: usize = 4;
-    const ORDER_2M: usize = 9;
-
-    out.push_str("  Summary (page size: 4 KiB):\n");
-    let zone_w = buddy.iter().map(|b| b.zone.len()).max().unwrap_or(4).max(4);
-    writeln!(
-        out,
-        "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
-        "NODE", "ZONE", "TOTAL FREE", "MAX BLOCK", "BLK>=64K", "BLK>=2M",
-    )
-    .unwrap();
-    for b in buddy {
-        // Total free pages = sum(count[i] * 2^i)
-        let total_pages: u64 = b
-            .free_counts
-            .iter()
-            .enumerate()
-            .map(|(i, &c)| c * (1u64 << i))
-            .sum();
-        let total_bytes = total_pages * PAGE_SIZE;
-
-        // Max contiguous block = highest order with count > 0
-        let max_order = b
-            .free_counts
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, c)| **c > 0)
-            .map_or(0, |(i, _)| i);
-        let max_bytes = (1u64 << max_order) * PAGE_SIZE;
-
-        // Blocks >= threshold order = sum(count[i] for i >= threshold)
-        let blocks_ge = |threshold: usize| -> u64 { b.free_counts.iter().skip(threshold).sum() };
-
-        writeln!(
-            out,
-            "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
-            b.node,
-            b.zone,
-            format_size(total_bytes),
-            format_size(max_bytes),
-            blocks_ge(ORDER_64K),
-            blocks_ge(ORDER_2M),
-        )
-        .unwrap();
-    }
-    out.push('\n');
-}
-
-/// Summary of CMA migrate type entries from pagetypeinfo.
+/// Write a per-zone order summary table: total free, max block, blocks >= 64K / 2M.
 ///
-/// Extracts only CMA rows and shows per-zone: total free CMA pages, max
-/// contiguous block, and block counts at key thresholds — directly answering
-/// "can a CMA-backed DMA heap allocate N contiguous pages?"
-fn format_cma_migrate_summary(out: &mut String, pti: &[PageTypeInfoEntry]) {
+/// `rows` yields `(node, zone_name, free_counts)` tuples — works for both
+/// `BuddyInfoEntry` and filtered `PageTypeInfoEntry` (CMA rows).
+fn format_order_summary(out: &mut String, title: &str, rows: &[(u32, &str, &[u64])]) {
     const PAGE_SIZE: u64 = 4096;
     const ORDER_64K: usize = 4;
     const ORDER_2M: usize = 9;
 
-    let cma_rows: Vec<_> = pti.iter().filter(|p| p.page_type == "CMA").collect();
-    if cma_rows.is_empty() {
+    if rows.is_empty() {
         return;
     }
 
-    out.push_str("  CMA migrate type summary (page size: 4 KiB):\n");
-    let zone_w = cma_rows
+    writeln!(out, "  {title}").unwrap();
+    let zone_w = rows
         .iter()
-        .map(|p| p.zone.len())
+        .map(|(_, z, _)| z.len())
         .max()
         .unwrap_or(4)
         .max(4);
@@ -734,39 +672,43 @@ fn format_cma_migrate_summary(out: &mut String, pti: &[PageTypeInfoEntry]) {
         "NODE", "ZONE", "TOTAL FREE", "MAX BLOCK", "BLK>=64K", "BLK>=2M",
     )
     .unwrap();
-    for p in &cma_rows {
-        let total_pages: u64 = p
-            .free_counts
-            .iter()
-            .enumerate()
-            .map(|(i, &c)| c * (1u64 << i))
-            .sum();
-        let total_bytes = total_pages * PAGE_SIZE;
 
-        let max_order = p
-            .free_counts
-            .iter()
-            .enumerate()
-            .rev()
-            .find(|(_, c)| **c > 0)
-            .map_or(0, |(i, _)| i);
-        let max_bytes = (1u64 << max_order) * PAGE_SIZE;
-
-        let blocks_ge = |threshold: usize| -> u64 { p.free_counts.iter().skip(threshold).sum() };
+    for &(node, zone, free_counts) in rows {
+        let total_bytes = procfs::total_free_pages(free_counts) * PAGE_SIZE;
+        let max_bytes = (1u64 << procfs::max_contiguous_order(free_counts)) * PAGE_SIZE;
 
         writeln!(
             out,
             "  {:>4}  {:<zone_w$}  {:>10}  {:>10}  {:>10}  {:>10}",
-            p.node,
-            p.zone,
+            node,
+            zone,
             format_size(total_bytes),
             format_size(max_bytes),
-            blocks_ge(ORDER_64K),
-            blocks_ge(ORDER_2M),
+            procfs::blocks_above_order(free_counts, ORDER_64K),
+            procfs::blocks_above_order(free_counts, ORDER_2M),
         )
         .unwrap();
     }
     out.push('\n');
+}
+
+/// Per-zone fragmentation summary derived from buddyinfo.
+fn format_frag_summary(out: &mut String, buddy: &[BuddyInfoEntry]) {
+    let rows: Vec<_> = buddy
+        .iter()
+        .map(|b| (b.node, b.zone.as_str(), b.free_counts.as_slice()))
+        .collect();
+    format_order_summary(out, "Summary (page size: 4 KiB):", &rows);
+}
+
+/// CMA migrate type summary from pagetypeinfo.
+fn format_cma_migrate_summary(out: &mut String, pti: &[PageTypeInfoEntry]) {
+    let rows: Vec<_> = pti
+        .iter()
+        .filter(|p| p.page_type == "CMA")
+        .map(|p| (p.node, p.zone.as_str(), p.free_counts.as_slice()))
+        .collect();
+    format_order_summary(out, "CMA migrate type summary (page size: 4 KiB):", &rows);
 }
 
 // ---------------------------------------------------------------------------
@@ -1546,8 +1488,11 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
 
     // 4. Memory context
     let memory = match (procfs::read_meminfo(), procfs::read_vmstat()) {
-        (Ok(meminfo), Ok(vmstat)) => Some(build_memory_context(meminfo, vmstat)),
-        (Ok(meminfo), Err(_)) => Some(build_memory_context(meminfo, VmStat::default())),
+        (Ok(meminfo), Ok(vmstat)) => Some(MemoryContext { meminfo, vmstat }),
+        (Ok(meminfo), Err(_)) => Some(MemoryContext {
+            meminfo,
+            vmstat: VmStat::default(),
+        }),
         _ => None,
     };
 
@@ -1621,13 +1566,14 @@ pub fn run<B: crate::backend::HeapBackend + crate::backend::DmaBufBackend>(
 
 /// Compact snapshot for follow mode: buffer count + total size + memory state.
 struct FollowSnapshot {
-    heap_count: usize,
     total_buffers: usize,
     total_size: u64,
     mem_available_kb: Option<u64>,
     vmstat: Option<VmStat>,
     psi_mem_avg10: Option<f64>,
     pool_kb: Option<u64>,
+    /// Retained debugfs entries for detail mode (avoids double read).
+    debugfs_entries: Option<Vec<DebugfsBufEntry>>,
 }
 
 /// Selected vmstat counters for follow-mode delta display.
@@ -1684,10 +1630,9 @@ impl VmStatDelta {
 
 /// Collect a lightweight snapshot for follow mode.
 fn collect_follow_snapshot() -> FollowSnapshot {
-    let heaps = enumerate_heaps(DMA_HEAP_BASE);
-    let heap_count = heaps.len();
+    let debugfs_entries = read_debugfs_bufinfo().ok();
 
-    let (total_buffers, total_size) = if let Ok(entries) = read_debugfs_bufinfo() {
+    let (total_buffers, total_size) = if let Some(ref entries) = debugfs_entries {
         let total = entries.len();
         let size: u64 = entries.iter().map(|e| e.size).sum();
         (total, size)
@@ -1699,20 +1644,19 @@ fn collect_follow_snapshot() -> FollowSnapshot {
         (0, 0)
     };
 
-    let meminfo = procfs::read_meminfo().ok();
-    let mem_available_kb = meminfo.as_ref().map(|m| m.mem_available_kb);
+    let mem_available_kb = procfs::read_meminfo().ok().map(|m| m.mem_available_kb);
     let vmstat = procfs::read_vmstat().ok();
     let psi_mem_avg10 = procfs::read_psi_memory().map(|p| p.some.avg10);
     let pool_kb = sysfs::read_dma_heap_pool_kb();
 
     FollowSnapshot {
-        heap_count,
         total_buffers,
         total_size,
         mem_available_kb,
         vmstat,
         psi_mem_avg10,
         pool_kb,
+        debugfs_entries,
     }
 }
 
@@ -1721,6 +1665,8 @@ fn collect_follow_snapshot() -> FollowSnapshot {
 /// When reclaim/compaction activity is detected between samples, a second
 /// line shows vmstat counter deltas so memory pressure is immediately visible.
 pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String]) {
+    // Heap count is static — enumerate once outside the loop.
+    let heap_count = enumerate_heaps(DMA_HEAP_BASE).len();
     let mut prev: Option<FollowSnapshot> = None;
 
     loop {
@@ -1753,7 +1699,7 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
         tee_println!(
             "[{}] heaps={} bufs={} size={} mem_avail={}{psi_str}{pool_str}{}",
             ts,
-            snap.heap_count,
+            heap_count,
             snap.total_buffers,
             format_size(snap.total_size),
             mem_str,
@@ -1790,8 +1736,8 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
         }
 
         if detail && !heaps.is_empty() {
-            // Per-heap summary from debugfs
-            if let Ok(entries) = read_debugfs_bufinfo() {
+            // Reuse debugfs entries from snapshot (avoids double read)
+            if let Some(ref entries) = snap.debugfs_entries {
                 for heap in heaps {
                     let matching: Vec<_> = entries.iter().filter(|e| e.exp_name == *heap).collect();
                     let count = matching.len();
