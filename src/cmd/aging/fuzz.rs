@@ -543,8 +543,8 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
                 std::thread::sleep(Duration::from_millis(10));
                 continue;
             }
-            Err(_) => {
-                tracing::debug!(worker_id, "alloc error");
+            Err(e) => {
+                tracing::info!(worker_id, errno = %e, "alloc error");
                 state.total_errors.fetch_add(1, Relaxed);
                 hc.errors.fetch_add(1, Relaxed);
                 hold_pool.notify_pressure(worker_id);
