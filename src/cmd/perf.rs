@@ -38,6 +38,11 @@ pub struct LatencyStats {
     pub p99_9_us: u64,
     /// Coefficient of variation (stddev / mean * 100). Lower is more stable.
     pub cv_pct: f64,
+    /// Average after removing IQR outliers (1.5 * IQR fence).
+    /// Filters OS scheduler jitter and interrupt noise.
+    pub trimmed_avg_us: u64,
+    /// Number of samples identified as outliers by IQR method.
+    pub outlier_count: usize,
 }
 
 /// Compute latency statistics from a slice of microsecond measurements.
@@ -80,6 +85,9 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
         0.0
     };
 
+    // IQR outlier detection: fence = [Q1 - 1.5*IQR, Q3 + 1.5*IQR]
+    let (trimmed_avg, outlier_count) = iqr_trimmed_mean(&sorted, mean_f);
+
     Some(LatencyStats {
         count,
         min_us: sorted[0],
@@ -91,6 +99,8 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
         p99_us: percentile(&sorted, 99),
         p99_9_us: percentile_frac(&sorted, 999, 1000),
         cv_pct: (cv * 10.0).round() / 10.0,
+        trimmed_avg_us: trimmed_avg,
+        outlier_count,
     })
 }
 
@@ -108,6 +118,47 @@ pub(crate) fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
     #[allow(clippy::cast_possible_truncation)]
     let rank = (numer * n).div_ceil(denom) as usize;
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+/// Compute trimmed mean by removing IQR outliers from a sorted slice.
+///
+/// Uses Tukey's fence: outliers are values outside `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`.
+/// Returns `(trimmed_avg_us, outlier_count)`. Falls back to `raw_mean` if all
+/// samples are outliers (degenerate case).
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_sign_loss,
+    clippy::cast_possible_truncation
+)]
+fn iqr_trimmed_mean(sorted: &[u64], raw_mean: f64) -> (u64, usize) {
+    let n = sorted.len();
+    if n < 4 {
+        // Too few samples for meaningful IQR; return raw mean.
+        return (raw_mean.round() as u64, 0);
+    }
+
+    let q1 = percentile(sorted, 25) as f64;
+    let q3 = percentile(sorted, 75) as f64;
+    let iqr = q3 - q1;
+    let lower = q1 - 1.5 * iqr;
+    let upper = q3 + 1.5 * iqr;
+
+    let mut sum = 0.0_f64;
+    let mut kept = 0_usize;
+    for &v in sorted {
+        let vf = v as f64;
+        if vf >= lower && vf <= upper {
+            sum += vf;
+            kept += 1;
+        }
+    }
+
+    if kept == 0 {
+        return (raw_mean.round() as u64, n);
+    }
+
+    let trimmed_avg = (sum / kept as f64).round() as u64;
+    (trimmed_avg, n - kept)
 }
 
 use crate::probe::align_to;
@@ -230,12 +281,14 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 human_size(size),
                 stats.min_us.to_string(),
                 stats.avg_us.to_string(),
+                stats.trimmed_avg_us.to_string(),
                 stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
                 stats.p99_us.to_string(),
                 stats.p99_9_us.to_string(),
                 stats.max_us.to_string(),
+                stats.outlier_count.to_string(),
             ]);
         }
     }
@@ -246,7 +299,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         "perf::alloc_only",
         Some("(us)"),
         &[
-            "size", "min", "avg", "sd", "p50", "p95", "p99", "p99.9", "max",
+            "size", "min", "avg", "tavg", "sd", "p50", "p95", "p99", "p99.9", "max", "out",
         ],
         &rows,
     );
@@ -720,6 +773,50 @@ mod tests {
         assert_eq!(human_size(4095), "4095");
         assert_eq!(human_size(49152), "48K");
         assert_eq!(human_size(1), "1");
+    }
+
+    // ── IQR outlier tests ──
+
+    #[test]
+    fn iqr_no_outliers_uniform() {
+        // Uniform data: no outliers expected.
+        let samples = vec![100; 20];
+        let stats = compute_stats(&samples).unwrap();
+        assert_eq!(stats.outlier_count, 0);
+        assert_eq!(stats.trimmed_avg_us, 100);
+    }
+
+    #[test]
+    fn iqr_detects_outlier() {
+        // 19 values of 10, one extreme outlier at 1000.
+        let mut samples = vec![10u64; 19];
+        samples.push(1000);
+        let stats = compute_stats(&samples).unwrap();
+        assert!(stats.outlier_count >= 1);
+        // Trimmed avg should be close to 10 (the non-outlier value).
+        assert!(stats.trimmed_avg_us <= 10);
+        // Raw avg is pulled up by the outlier.
+        assert!(stats.avg_us > stats.trimmed_avg_us);
+    }
+
+    #[test]
+    fn iqr_small_sample_no_filter() {
+        // < 4 samples: IQR not applied.
+        let stats = compute_stats(&[5, 10, 1000]).unwrap();
+        assert_eq!(stats.outlier_count, 0);
+        // trimmed_avg equals raw avg for small samples.
+        assert_eq!(stats.trimmed_avg_us, stats.avg_us);
+    }
+
+    #[test]
+    fn iqr_preserves_json_roundtrip() {
+        let mut samples = vec![50u64; 30];
+        samples.push(500); // outlier
+        let stats = compute_stats(&samples).unwrap();
+        let json = serde_json::to_string(&stats).unwrap();
+        let back: LatencyStats = serde_json::from_str(&json).unwrap();
+        assert_eq!(stats, back);
+        assert!(back.outlier_count > 0);
     }
 
     // ── bench function tests ──
