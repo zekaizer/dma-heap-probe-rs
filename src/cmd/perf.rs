@@ -1052,6 +1052,33 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    // CI convergence: how fast does CI shrink with more samples?
+    // Computes CI at 25%, 50%, 75%, 100% of samples to show convergence rate.
+    if last_samples.len() >= 20 {
+        let n = last_samples.len();
+        let quarters = [n / 4, n / 2, n * 3 / 4, n];
+        let mut ci_rows: Vec<Vec<String>> = Vec::new();
+        for &q in &quarters {
+            if let Some(st) = compute_stats(&last_samples[..q]) {
+                ci_rows.push(vec![
+                    q.to_string(),
+                    st.avg_us.to_string(),
+                    format!("±{}", st.ci95_us),
+                ]);
+            }
+        }
+        if ci_rows.len() == 4 {
+            crate::fmt::print_table(
+                heap_name,
+                heap_w,
+                "perf::ci_convergence",
+                Some("(us)"),
+                &["N", "avg", "ci95"],
+                &ci_rows,
+            );
+        }
+    }
+
     // Quality scorecard: aggregate all diagnostic signals.
     let drift_pct = detect_drift(&last_samples).map_or(0.0, |d| d.drift_pct);
     let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();

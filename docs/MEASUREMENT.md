@@ -518,29 +518,44 @@ cold start vs warm state 할당 비용 비교.
 
 `bench_alloc_only` 완료 후 4개 차원의 진단 신호를 종합한 품질 점수를 출력한다.
 
-### 10.1 채점 체계
+### 10.1 채점 체계 (5차원 × 20점)
 
-| 차원 | 신호 | 25점 | 20점 | 10점 | 5점 | 0점 |
-|------|------|------|------|------|-----|-----|
+| 차원 | 신호 | 20점 | 16점 | 8점 | 4점 | 0점 |
+|------|------|------|------|-----|-----|-----|
 | Stability | max CV (%) | <5 | <10 | <20 | <30 | >=30 |
 | Precision | max CI/avg (%) | <3 | <10 | <20 | - | >=20 |
 | Cleanliness | outlier rate (%) | <1 | <5 | <10 | - | >=10 |
 | Stationarity | \|drift\| (%) | <5 | <10 | - | <20 | >=20 |
+| Warmup | head/tail t-test | pass | - | - | - | fail |
 
 **등급**: >=90 EXCELLENT, >=75 GOOD, >=50 FAIR, <50 NOISY
 
-### 10.2 출력 예시
+### 10.2 CI Convergence 분석
+
+N/4, N/2, 3N/4, N 시점에서 CI 폭을 표시하여 수렴 속도를 시각화:
+
+```
+[system]  perf::ci_convergence (us)
+              N  avg  ci95
+             25   12   ±8
+             50   11   ±5
+             75   11   ±4
+            100   11   ±3
+```
+
+CI가 후반부에서 거의 줄지 않으면 (`±4 → ±3`) 반복 횟수 충분.
+여전히 빠르게 줄고 있으면 (`±8 → ±3`) `--iterations` 증가 권장.
+
+### 10.3 출력 예시
 
 ```
 [system]  perf::quality  score: 90/100  rating: EXCELLENT
 ```
 
-점수가 낮은 차원에 대해 개선 권고를 출력:
-
 ```
-[system]  perf::quality  score: 55/100  rating: FAIR
-[system]  perf::quality  stability=10/25  hint: cv>10%: increase --iterations or reduce load
-[system]  perf::quality  stationarity=5/25  hint: drift>10%: increase --warmup or shorten test
+[system]  perf::quality  score: 52/100  rating: FAIR
+[system]  perf::quality  stability=8/20  hint: cv>10%: increase --iterations or reduce load
+[system]  perf::quality  warmup=0/20  hint: warmup insufficient: increase --warmup
 ```
 
 ---
