@@ -177,16 +177,29 @@ fn dispatch_command<
             warmup,
         } => {
             let start = Instant::now();
+            let perf_analysis = std::cell::RefCell::new(None);
             let (sub, err) = run_per_heap(heaps, |h| {
-                cmd::perf::run(backend, h, sizes.as_deref(), *iterations, *warmup, heap_w)
+                let (s, e, a) =
+                    cmd::perf::run(backend, h, sizes.as_deref(), *iterations, *warmup, heap_w);
+                if perf_analysis.borrow().is_none() {
+                    *perf_analysis.borrow_mut() = a;
+                }
+                (s, e)
             });
-            Ok(Some(build_single_stage_result(
-                "perf",
-                heaps,
-                &sub,
-                err,
-                start.elapsed(),
-            )))
+            let perf_analysis = perf_analysis.into_inner();
+            let mut result = build_single_stage_result("perf", heaps, &sub, err, start.elapsed());
+            // Merge PerfAnalysis into JSON details.
+            if let (Some(analysis), Some(stage)) = (&perf_analysis, result.stages.first_mut()) {
+                let mut details = stage.details.take().unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut map) = details {
+                    map.insert(
+                        "analysis".to_string(),
+                        serde_json::to_value(analysis).unwrap_or_default(),
+                    );
+                }
+                stage.details = Some(details);
+            }
+            Ok(Some(result))
         }
         Command::Pressure {
             alloc_size,
@@ -394,7 +407,8 @@ fn run_all<
             stage_result(cmd::negative::run(backend, heap, heap_w))
         });
         runner::run_stage(&mut results, "perf", heap, heap_w, || {
-            stage_result(cmd::perf::run(backend, heap, None, 10, 2, heap_w))
+            let (s, e, _) = cmd::perf::run(backend, heap, None, 10, 2, heap_w);
+            stage_result((s, e))
         });
         runner::run_stage(&mut results, "pressure", heap, heap_w, || {
             stage_result(cmd::pressure::run(backend, heap, 4096, None, heap_w))

@@ -1382,7 +1382,7 @@ mod tests {
                 outlier_count: 0,
                 throughput_ops: 20000,
                 ci95_us: 0,
-            mad_us: 0,
+                mad_us: 0,
             }),
             baseline_avg_us: Some(40),
             final_interval_avg_us: Some(55),

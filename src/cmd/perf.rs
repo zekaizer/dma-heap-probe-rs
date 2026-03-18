@@ -654,6 +654,38 @@ fn welch_test(a: &[u64], b: &[u64]) -> Option<WelchResult> {
     })
 }
 
+/// Aggregated analysis results for JSON output.
+///
+/// Captures all advanced diagnostics so they can be serialized alongside
+/// basic `LatencyStats` in the JSON output for programmatic consumption.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PerfAnalysis {
+    /// Per-size latency statistics.
+    pub stats: Vec<SizeStats>,
+    /// Size-latency linear regression model.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub regression: Option<LinearFit>,
+    /// Quality scorecard (0-100).
+    pub quality_score: u32,
+    /// Quality rating.
+    pub quality_rating: String,
+    /// Drift percentage on largest size (0.0 if not detected).
+    pub drift_pct: f64,
+    /// Lag-1 autocorrelation on largest size.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub autocorr_r: Option<f64>,
+    /// Effective sample size (Kish's formula).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ess: Option<f64>,
+}
+
+/// Latency stats for a specific allocation size.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SizeStats {
+    pub size: u64,
+    pub latency: LatencyStats,
+}
+
 /// Result of ordinary least-squares linear regression: `y = intercept + slope * x`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LinearFit {
@@ -737,7 +769,7 @@ fn human_size(bytes: u64) -> String {
 }
 
 /// Run all stage 3 performance tests.
-/// Returns sub-test results (and the first error, if any).
+/// Returns sub-test results, the first error (if any), and analysis JSON.
 #[allow(clippy::cast_possible_truncation)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -746,7 +778,11 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
-) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
+) -> (
+    Vec<SubTestResult>,
+    Option<anyhow::Error>,
+    Option<PerfAnalysis>,
+) {
     let sizes = sizes.unwrap_or(DEFAULT_SIZES);
 
     tracing::debug!(
@@ -759,12 +795,12 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
+    // Run bench_alloc_only separately to capture PerfAnalysis.
+    let alloc_result = bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w);
+    let analysis = alloc_result.as_ref().ok().cloned();
+
     let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
-        (
-            "bench_alloc_only",
-            bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w),
-            false,
-        ),
+        ("bench_alloc_only", alloc_result.map(|_| ()), false),
         (
             "bench_full_pipeline",
             if caps.can_mmap {
@@ -801,10 +837,12 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
     ];
 
-    runner::collect_test_results("perf", heap_name, heap_w, &tests)
+    let (sub, err) = runner::collect_test_results("perf", heap_name, heap_w, &tests);
+    (sub, err, analysis)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
+/// Returns `PerfAnalysis` with all computed diagnostics for JSON output.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -813,7 +851,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
-) -> nix::Result<()> {
+) -> nix::Result<PerfAnalysis> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
@@ -1006,7 +1044,28 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
     }
 
-    Ok(())
+    // Build PerfAnalysis for JSON output.
+    let size_stats: Vec<SizeStats> = sizes
+        .iter()
+        .zip(all_stats.iter())
+        .map(|(&s, st)| SizeStats {
+            size: s,
+            latency: st.clone(),
+        })
+        .collect();
+    let regression = linear_regression(&regression_points);
+    let (ac_r, ac_ess) =
+        autocorrelation(&last_samples).map_or((None, None), |(r, e)| (Some(r), Some(e)));
+
+    Ok(PerfAnalysis {
+        stats: size_stats,
+        regression,
+        quality_score: qc.total,
+        quality_rating: qc.rating.to_string(),
+        drift_pct,
+        autocorr_r: ac_r,
+        ess: ac_ess,
+    })
 }
 
 /// Score a metric value against thresholds, returning (score, optional recommendation).
@@ -2347,9 +2406,13 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err) = run(&b, "system", Some(&[4096]), 5, 1, 6);
+        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 5, 1, 6);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 7);
+        let a = analysis.unwrap();
+        assert_eq!(a.stats.len(), 1);
+        assert_eq!(a.stats[0].size, 4096);
+        assert!(a.quality_score > 0);
     }
 }
