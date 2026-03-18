@@ -822,6 +822,36 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    // Throughput scaling efficiency: how well does throughput hold as size grows?
+    if all_stats.len() >= 2 {
+        let base_tp = all_stats[0].throughput_ops;
+        if base_tp > 0 {
+            let mut scaling_rows: Vec<Vec<String>> = Vec::new();
+            for (i, stats) in all_stats.iter().enumerate() {
+                #[allow(clippy::cast_precision_loss)]
+                let efficiency = stats.throughput_ops as f64 / base_tp as f64 * 100.0;
+                let size = sizes[i];
+                // Bandwidth: throughput * size = bytes/sec.
+                #[allow(clippy::cast_precision_loss)]
+                let bw_mb = stats.throughput_ops as f64 * size as f64 / 1_048_576.0;
+                scaling_rows.push(vec![
+                    human_size(size),
+                    format_throughput(stats.throughput_ops),
+                    format!("{efficiency:.1}"),
+                    format!("{bw_mb:.0}"),
+                ]);
+            }
+            crate::fmt::print_table(
+                heap_name,
+                heap_w,
+                "perf::scaling",
+                None,
+                &["size", "Kops/s", "eff%", "MB/s"],
+                &scaling_rows,
+            );
+        }
+    }
+
     // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
     if let Some(drift) = detect_drift(&last_samples).filter(|d| d.drift_pct.abs() > 10.0) {
         let direction = if drift.drift_pct > 0.0 {

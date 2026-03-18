@@ -347,6 +347,18 @@ drift_pct = slope × (n-1) / mean × 100
 - **사이즈**: `--sizes` (기본 4K, 64K, 1M)
 - **용도**: 힙 할당자 성능의 기준선
 - **회귀 분석**: 테이블 후 `perf::alloc_model` 라인으로 size-latency 모델 출력
+- **Scaling Efficiency** (`perf::scaling`): 사이즈별 throughput 유지율 + bandwidth
+  - `eff%`: 최소 사이즈 throughput 대비 비율 (100% = 동일)
+  - `MB/s`: `throughput * size` — 실제 메모리 대역폭
+  - 이상적 할당자: eff% 일정, MB/s는 사이즈에 비례
+
+```
+[system]  perf::scaling
+           size  Kops/s  eff%    MB/s
+             4K      83  100.0    332
+            64K      22   26.5   1408
+             1M       4    4.8   4096
+```
 
 ### 8.2 `bench_full_pipeline`
 
