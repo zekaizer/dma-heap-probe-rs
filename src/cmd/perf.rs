@@ -359,6 +359,52 @@ fn iqr_trimmed_mean(sorted: &[u64], raw_mean: f64) -> (u64, usize) {
     (trimmed_avg, n - kept)
 }
 
+/// Compute skewness (3rd moment) and excess kurtosis (4th moment - 3).
+///
+/// - Skewness > 0: right-tailed (common for latency). Higher = longer tail.
+/// - Kurtosis > 0 (leptokurtic): heavier tails than normal.
+/// - Kurtosis < 0 (platykurtic): lighter tails than normal.
+///
+/// Returns `None` if fewer than 4 samples or zero variance.
+#[allow(clippy::cast_precision_loss)]
+fn distribution_shape(samples: &[u64]) -> Option<(f64, f64)> {
+    let n = samples.len();
+    if n < 4 {
+        return None;
+    }
+
+    let mean: f64 = samples.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    let m2: f64 = samples
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(2))
+        .sum::<f64>()
+        / n as f64;
+
+    if m2 == 0.0 {
+        return None;
+    }
+
+    let sd = m2.sqrt();
+    let m3: f64 = samples
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(3))
+        .sum::<f64>()
+        / n as f64;
+    let m4: f64 = samples
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(4))
+        .sum::<f64>()
+        / n as f64;
+
+    let skewness = m3 / sd.powi(3);
+    let kurtosis = m4 / sd.powi(4) - 3.0; // excess kurtosis
+
+    Some((
+        (skewness * 100.0).round() / 100.0,
+        (kurtosis * 100.0).round() / 100.0,
+    ))
+}
+
 /// Test whether warmup was sufficient by comparing the first 10% of
 /// **time-ordered** measurement samples against the remaining 90%.
 ///
@@ -1004,6 +1050,26 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 &scaling_rows,
             );
         }
+    }
+
+    // Distribution shape of last (largest) size.
+    if let Some((skew, kurt)) = distribution_shape(&last_samples) {
+        let tail = match () {
+            () if skew > 2.0 => "heavy right tail",
+            () if skew > 0.5 => "right-skewed",
+            () if skew < -0.5 => "left-skewed",
+            () => "symmetric",
+        };
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::distribution",
+            &[
+                ("skew", &format!("{skew:.2}")),
+                ("kurtosis", &format!("{kurt:.2}")),
+                ("shape", &tail),
+            ],
+        );
     }
 
     // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
@@ -1904,6 +1970,31 @@ mod tests {
         let (r, ess) = autocorrelation(&samples).unwrap();
         assert!(r > 0.5, "monotonic should have high r: {r}");
         assert!(ess < 50.0, "ESS should be much less than N=100: {ess}");
+    }
+
+    // ── distribution shape tests ──
+
+    #[test]
+    fn shape_symmetric() {
+        // Uniform 1..=100: symmetric, skewness ≈ 0.
+        let samples: Vec<u64> = (1..=100).collect();
+        let (skew, _kurt) = distribution_shape(&samples).unwrap();
+        assert!(skew.abs() < 0.1, "uniform should be symmetric: skew={skew}");
+    }
+
+    #[test]
+    fn shape_right_skewed() {
+        // 90 values at 10, 10 values at 1000: right-skewed.
+        let mut samples = vec![10u64; 90];
+        samples.extend(vec![1000u64; 10]);
+        let (skew, kurt) = distribution_shape(&samples).unwrap();
+        assert!(skew > 1.0, "should be right-skewed: skew={skew}");
+        assert!(kurt > 0.0, "should be leptokurtic: kurt={kurt}");
+    }
+
+    #[test]
+    fn shape_too_few() {
+        assert!(distribution_shape(&[1, 2, 3]).is_none());
     }
 
     // ── percentile CI tests ──
