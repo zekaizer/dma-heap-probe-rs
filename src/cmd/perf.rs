@@ -482,6 +482,46 @@ fn detect_order_steps(points: &[(u64, u64)], threshold_pct: f64) -> Vec<OrderSte
     steps
 }
 
+/// A monotonicity inversion: a larger allocation size with lower latency.
+struct Inversion {
+    smaller_size: u64,
+    larger_size: u64,
+    smaller_avg: u64,
+    larger_avg: u64,
+    /// Percentage decrease: `(smaller_avg - larger_avg) / smaller_avg * 100`.
+    decrease_pct: f64,
+}
+
+/// Detect monotonicity inversions in order-boundary sweep data.
+///
+/// Scans adjacent `(size, avg_us)` pairs for cases where a larger size has
+/// *lower* latency — indicating allocator fast-paths or size-class pooling.
+/// Only reports decreases > 10% to filter noise.
+#[allow(clippy::cast_precision_loss)]
+fn detect_inversions(points: &[(u64, u64)]) -> Vec<Inversion> {
+    let mut inversions = Vec::new();
+    for w in points.windows(2) {
+        let (size_s, avg_s) = w[0];
+        let (size_l, avg_l) = w[1];
+
+        if avg_s == 0 || avg_l >= avg_s {
+            continue;
+        }
+
+        let decrease_pct = (avg_s as f64 - avg_l as f64) / avg_s as f64 * 100.0;
+        if decrease_pct > 10.0 {
+            inversions.push(Inversion {
+                smaller_size: size_s,
+                larger_size: size_l,
+                smaller_avg: avg_s,
+                larger_avg: avg_l,
+                decrease_pct: (decrease_pct * 10.0).round() / 10.0,
+            });
+        }
+    }
+    inversions
+}
+
 /// Find the earliest index where a sliding window mean stabilizes within
 /// `tolerance_pct`% of the overall phase mean.
 ///
@@ -1358,6 +1398,21 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    // Monotonicity inversions: larger size with lower latency → fast-path/pool optimization.
+    for inv in detect_inversions(&sweep_points) {
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::inversion",
+            &[
+                ("larger", &human_size(inv.larger_size)),
+                ("smaller", &human_size(inv.smaller_size)),
+                ("avg", &format!("{}→{}us", inv.smaller_avg, inv.larger_avg)),
+                ("-%", &format!("{:.1}", inv.decrease_pct)),
+            ],
+        );
+    }
+
     Ok(())
 }
 
@@ -2133,6 +2188,32 @@ mod tests {
         let steps = detect_order_steps(&points, 20.0);
         assert_eq!(steps.len(), 1);
         assert_eq!(steps[0].order, 1); // 8192/4096 = 2 pages → order 1
+    }
+
+    // ── inversion detection tests ──
+
+    #[test]
+    fn inversion_none_for_monotonic() {
+        let points = vec![(4096, 10), (8192, 15), (65536, 30)];
+        assert!(detect_inversions(&points).is_empty());
+    }
+
+    #[test]
+    fn inversion_detects_decrease() {
+        // 64K is faster than 48K — pool optimization.
+        let points = vec![(49152, 20), (65536, 10)];
+        let inv = detect_inversions(&points);
+        assert_eq!(inv.len(), 1);
+        assert_eq!(inv[0].smaller_size, 49152);
+        assert_eq!(inv[0].larger_size, 65536);
+        assert!((inv[0].decrease_pct - 50.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn inversion_ignores_small_decrease() {
+        // 5% decrease — below 10% threshold.
+        let points = vec![(4096, 100), (8192, 95)];
+        assert!(detect_inversions(&points).is_empty());
     }
 
     // ── linear regression tests ──
