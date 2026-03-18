@@ -825,6 +825,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut ratio_points: Vec<(u64, u64, u64)> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -834,18 +835,24 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
             drop(buf);
         }
 
-        // Pre-alloc then measure close latency
-        let mut samples = Vec::with_capacity(iterations as usize);
+        // Paired alloc + close measurement for efficiency ratio.
+        let mut close_samples = Vec::with_capacity(iterations as usize);
+        let mut alloc_samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
+            let t0 = Instant::now();
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let t1 = Instant::now();
             let buf = DmaBuf::new(backend, fd, size as usize);
-            let start = Instant::now();
+            let t2 = Instant::now();
             drop(buf);
-            let elapsed = start.elapsed().as_micros() as u64;
-            samples.push(elapsed);
+            let t3 = Instant::now();
+            alloc_samples.push(t1.duration_since(t0).as_micros() as u64);
+            close_samples.push(t3.duration_since(t2).as_micros() as u64);
         }
 
-        if let Some(stats) = compute_stats(&samples) {
+        if let Some(stats) = compute_stats(&close_samples) {
+            let alloc_avg = compute_stats(&alloc_samples).map_or(0, |s| s.avg_us);
+            ratio_points.push((size, alloc_avg, stats.avg_us));
             rows.push(vec![
                 human_size(size),
                 stats.avg_us.to_string(),
@@ -866,6 +873,42 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
         &rows,
     );
+
+    // Close/alloc efficiency ratio per size.
+    if !ratio_points.is_empty() {
+        let mut ratio_rows: Vec<Vec<String>> = Vec::new();
+        for &(size, alloc_avg, close_avg) in &ratio_points {
+            #[allow(clippy::cast_precision_loss)]
+            let ratio = if alloc_avg > 0 {
+                close_avg as f64 / alloc_avg as f64
+            } else {
+                0.0
+            };
+            let label = if ratio < 0.5 {
+                "fast"
+            } else if ratio <= 2.0 {
+                "balanced"
+            } else {
+                "expensive"
+            };
+            ratio_rows.push(vec![
+                human_size(size),
+                alloc_avg.to_string(),
+                close_avg.to_string(),
+                format!("{ratio:.2}"),
+                label.to_string(),
+            ]);
+        }
+        crate::fmt::print_table(
+            heap_name,
+            heap_w,
+            "perf::close_ratio",
+            None,
+            &["size", "alloc", "close", "ratio", "verdict"],
+            &ratio_rows,
+        );
+    }
+
     Ok(())
 }
 

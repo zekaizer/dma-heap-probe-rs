@@ -367,6 +367,18 @@ drift_pct = slope × (n-1) / mean × 100
 - **측정 대상**: `drop(DmaBuf)` = munmap + close
 - **사전 조건**: 타이밍 전에 alloc 완료
 - **용도**: deferred free pool로의 반환 지연, CMA 반환 비용
+- **Close/Alloc Ratio** (`perf::close_ratio`): paired alloc+close 측정으로 효율 비교
+  - 매 iteration에서 alloc과 close를 개별 타이밍
+  - `ratio = close_avg / alloc_avg`
+  - `<0.5` fast (deferred free), `0.5–2.0` balanced, `>2.0` expensive (CMA compaction)
+
+```
+[system]  perf::close_ratio
+           size  alloc  close  ratio  verdict
+             4K     12      3   0.25     fast
+            64K     45     15   0.33     fast
+             1M    250    800   3.20  expensive
+```
 
 ### 8.4 `bench_order_boundary`
 
