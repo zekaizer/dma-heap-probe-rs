@@ -613,7 +613,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
-#[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
 fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -626,6 +626,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
     let mut last_samples: Vec<u64> = Vec::new();
+    let mut all_stats: Vec<LatencyStats> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -653,6 +654,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             let (p99_lo, p99_hi) = percentile_ci(&sorted, 99);
 
             regression_points.push((size, stats.avg_us));
+            all_stats.push(stats.clone());
             last_samples = samples;
             rows.push(vec![
                 human_size(size),
@@ -726,7 +728,148 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    // Quality scorecard: aggregate all diagnostic signals.
+    let drift_pct = detect_drift(&last_samples).map_or(0.0, |d| d.drift_pct);
+    let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();
+    let qc = quality_scorecard(&stat_refs, drift_pct);
+    crate::fmt::print_metric(
+        heap_name,
+        heap_w,
+        "perf::quality",
+        &[
+            ("score", &format!("{}/100", qc.total)),
+            ("rating", &qc.rating),
+        ],
+    );
+    for (dim, score, rec) in &qc.details {
+        if let Some(advice) = rec {
+            crate::fmt::print_metric(
+                heap_name,
+                heap_w,
+                &format!("perf::quality  {dim}={score}/25"),
+                &[("hint", advice)],
+            );
+        }
+    }
+
     Ok(())
+}
+
+/// Score a metric value against thresholds, returning (score, optional recommendation).
+///
+/// `thresholds` is a sorted list of `(limit, score)` — if `value < limit`, return that score.
+/// `recs` maps threshold values to recommendation strings (only for degraded scores).
+/// `fallback_rec` is used when value exceeds all thresholds.
+fn score_threshold(
+    value: f64,
+    thresholds: &[(f64, u32)],
+    floor: u32,
+    recs: &[(f64, &'static str)],
+    fallback_rec: &'static str,
+) -> (u32, Option<&'static str>) {
+    for &(limit, score) in thresholds {
+        if value < limit {
+            let rec = recs.iter().find(|&&(t, _)| value >= t).map(|&(_, r)| r);
+            return (score, rec);
+        }
+    }
+    (floor, Some(fallback_rec))
+}
+
+/// Measurement quality assessment from aggregated diagnostic signals.
+struct QualityScore {
+    /// Total score 0-100.
+    total: u32,
+    /// Rating label.
+    rating: &'static str,
+    /// Per-dimension scores and recommendations.
+    details: Vec<(&'static str, u32, Option<&'static str>)>,
+}
+
+/// Compute measurement quality scorecard from collected stats.
+///
+/// Evaluates 4 dimensions (25 points each):
+/// - **Stability**: coefficient of variation across all sizes
+/// - **Precision**: relative confidence interval width
+/// - **Cleanliness**: outlier rate
+/// - **Stationarity**: temporal drift
+#[allow(clippy::cast_precision_loss)]
+fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScore {
+    // Stability: max CV across sizes.
+    let max_cv = all_stats.iter().map(|s| s.cv_pct).fold(0.0_f64, f64::max);
+    let (stab_score, stab_rec) = score_threshold(
+        max_cv,
+        &[(5.0, 25), (10.0, 20), (20.0, 10), (30.0, 5)],
+        0,
+        &[
+            (10.0, "cv>10%: increase --iterations or reduce load"),
+            (20.0, "cv>20%: significant noise, increase --iterations"),
+        ],
+        "cv>30%: excessive noise, check for interference",
+    );
+
+    // Precision: max relative CI (ci95/avg).
+    let max_rel_ci = all_stats
+        .iter()
+        .filter(|s| s.avg_us > 0)
+        .map(|s| s.ci95_us as f64 / s.avg_us as f64 * 100.0)
+        .fold(0.0_f64, f64::max);
+    let (prec_score, prec_rec) = score_threshold(
+        max_rel_ci,
+        &[(3.0, 25), (10.0, 20), (20.0, 10)],
+        0,
+        &[(10.0, "ci>10%: increase --iterations for tighter CI")],
+        "ci>20%: imprecise, need significantly more iterations",
+    );
+
+    // Cleanliness: total outlier rate.
+    let n_samples: usize = all_stats.iter().map(|s| s.count).sum();
+    let n_outliers: usize = all_stats.iter().map(|s| s.outlier_count).sum();
+    let outlier_pct = if n_samples > 0 {
+        n_outliers as f64 / n_samples as f64 * 100.0
+    } else {
+        0.0
+    };
+    let (clean_score, clean_rec) = score_threshold(
+        outlier_pct,
+        &[(1.0, 25), (5.0, 20), (10.0, 10)],
+        0,
+        &[(5.0, "outliers>5%: consider --drop-caches or isolcpus")],
+        "outliers>10%: heavy interference, isolate workload",
+    );
+
+    // Stationarity: drift magnitude.
+    let abs_drift = drift_pct.abs();
+    let (drift_score, drift_rec) = score_threshold(
+        abs_drift,
+        &[(5.0, 25), (10.0, 15), (20.0, 5)],
+        0,
+        &[(10.0, "drift>10%: increase --warmup or shorten test")],
+        "drift>20%: thermal throttling or memory pressure",
+    );
+
+    let total = stab_score + prec_score + clean_score + drift_score;
+    let rating = match total {
+        90..=100 => "EXCELLENT",
+        75..=89 => "GOOD",
+        50..=74 => "FAIR",
+        _ => "NOISY",
+    };
+
+    let mut details = vec![
+        ("stability", stab_score, stab_rec),
+        ("precision", prec_score, prec_rec),
+        ("cleanliness", clean_score, clean_rec),
+        ("stationarity", drift_score, drift_rec),
+    ];
+    // Only keep items with recommendations to reduce noise.
+    details.retain(|&(_, score, _)| score < 25);
+
+    QualityScore {
+        total,
+        rating,
+        details,
+    }
 }
 
 /// Pipeline stage names for breakdown analysis.
@@ -1351,6 +1494,69 @@ mod tests {
             width50 >= width99,
             "p50 CI ({width50}) should be ≥ p99 CI ({width99})"
         );
+    }
+
+    // ── quality scorecard tests ──
+
+    #[test]
+    fn scorecard_excellent() {
+        // Perfect measurements: low CV, no outliers, no drift.
+        let stats = LatencyStats {
+            count: 100,
+            min_us: 10,
+            max_us: 12,
+            avg_us: 11,
+            stddev_us: 0,
+            p50_us: 11,
+            p95_us: 12,
+            p99_us: 12,
+            p99_9_us: 12,
+            cv_pct: 1.0,
+            trimmed_avg_us: 11,
+            outlier_count: 0,
+            throughput_ops: 90909,
+            ci95_us: 0,
+        };
+        let qc = quality_scorecard(&[&stats], 0.0);
+        assert_eq!(qc.rating, "EXCELLENT");
+        assert!(qc.total >= 90);
+        assert!(qc.details.is_empty(), "no recommendations for excellent");
+    }
+
+    #[test]
+    fn scorecard_noisy() {
+        // Bad measurements: high CV, many outliers, strong drift.
+        let stats = LatencyStats {
+            count: 100,
+            min_us: 1,
+            max_us: 1000,
+            avg_us: 50,
+            stddev_us: 200,
+            p50_us: 20,
+            p95_us: 500,
+            p99_us: 900,
+            p99_9_us: 1000,
+            cv_pct: 400.0,
+            trimmed_avg_us: 20,
+            outlier_count: 30,
+            throughput_ops: 20000,
+            ci95_us: 40,
+        };
+        let qc = quality_scorecard(&[&stats], 50.0);
+        assert_eq!(qc.rating, "NOISY");
+        assert!(qc.total < 50);
+        assert!(!qc.details.is_empty(), "should have recommendations");
+    }
+
+    #[test]
+    fn score_threshold_basic() {
+        let (s, r) = score_threshold(3.0, &[(5.0, 25), (10.0, 20)], 0, &[], "bad");
+        assert_eq!(s, 25);
+        assert!(r.is_none());
+
+        let (s, r) = score_threshold(99.0, &[(5.0, 25)], 0, &[], "bad");
+        assert_eq!(s, 0);
+        assert_eq!(r, Some("bad"));
     }
 
     // ── percentile edge cases ──

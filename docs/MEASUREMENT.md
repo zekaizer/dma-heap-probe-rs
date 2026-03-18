@@ -488,7 +488,38 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 10. 정밀도 한계 및 주의사항
+## 10. Measurement Quality Scorecard
+
+`bench_alloc_only` 완료 후 4개 차원의 진단 신호를 종합한 품질 점수를 출력한다.
+
+### 10.1 채점 체계
+
+| 차원 | 신호 | 25점 | 20점 | 10점 | 5점 | 0점 |
+|------|------|------|------|------|-----|-----|
+| Stability | max CV (%) | <5 | <10 | <20 | <30 | >=30 |
+| Precision | max CI/avg (%) | <3 | <10 | <20 | - | >=20 |
+| Cleanliness | outlier rate (%) | <1 | <5 | <10 | - | >=10 |
+| Stationarity | \|drift\| (%) | <5 | <10 | - | <20 | >=20 |
+
+**등급**: >=90 EXCELLENT, >=75 GOOD, >=50 FAIR, <50 NOISY
+
+### 10.2 출력 예시
+
+```
+[system]  perf::quality  score: 90/100  rating: EXCELLENT
+```
+
+점수가 낮은 차원에 대해 개선 권고를 출력:
+
+```
+[system]  perf::quality  score: 55/100  rating: FAIR
+[system]  perf::quality  stability=10/25  hint: cv>10%: increase --iterations or reduce load
+[system]  perf::quality  stationarity=5/25  hint: drift>10%: increase --warmup or shorten test
+```
+
+---
+
+## 12. 정밀도 한계 및 주의사항
 
 | 한계 | 영향 | 완화 방법 |
 |------|------|-----------|
@@ -500,7 +531,7 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 11. 알고리즘 복잡도
+## 13. 알고리즘 복잡도
 
 | 단계 | 시간 복잡도 | 공간 복잡도 |
 |------|-------------|-------------|
