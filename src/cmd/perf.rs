@@ -137,6 +137,35 @@ pub(crate) fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
     sorted[rank.saturating_sub(1).min(sorted.len() - 1)]
 }
 
+/// Compute 95% confidence interval for a percentile using binomial order statistics.
+///
+/// For the p-th percentile (0–100) from n sorted samples, the CI bounds are
+/// order statistics at ranks: `rank ± 1.96 * sqrt(n * p/100 * (1 - p/100))`.
+/// This is distribution-free — no normality assumption required.
+///
+/// Returns `(lower_bound, upper_bound)` from the sorted data.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn percentile_ci(sorted: &[u64], p: u32) -> (u64, u64) {
+    let n = sorted.len();
+    if n < 2 {
+        let val = sorted.first().copied().unwrap_or(0);
+        return (val, val);
+    }
+
+    let p_frac = f64::from(p) / 100.0;
+    let rank = (f64::from(p) * n as f64 / 100.0).ceil() as usize;
+    let se_rank = (n as f64 * p_frac * (1.0 - p_frac)).sqrt();
+
+    let lower_rank = (rank as f64 - 1.96 * se_rank).floor().max(1.0) as usize;
+    let upper_rank = (rank as f64 + 1.96 * se_rank).ceil().min(n as f64) as usize;
+
+    (sorted[lower_rank - 1], sorted[upper_rank - 1])
+}
+
 /// Compute trimmed mean by removing IQR outliers from a sorted slice.
 ///
 /// Uses Tukey's fence: outliers are values outside `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`.
@@ -618,6 +647,11 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
 
         if let Some(stats) = compute_stats(&samples) {
+            // Compute p99 CI from sorted samples (non-parametric, binomial order stats).
+            let mut sorted = samples.clone();
+            sorted.sort_unstable();
+            let (p99_lo, p99_hi) = percentile_ci(&sorted, 99);
+
             regression_points.push((size, stats.avg_us));
             last_samples = samples;
             rows.push(vec![
@@ -628,7 +662,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 stats.stddev_us.to_string(),
                 stats.p50_us.to_string(),
                 stats.p95_us.to_string(),
-                stats.p99_us.to_string(),
+                format!("{}[{}-{}]", stats.p99_us, p99_lo, p99_hi),
                 stats.p99_9_us.to_string(),
                 stats.max_us.to_string(),
                 format_throughput(stats.throughput_ops),
@@ -650,7 +684,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             "sd",
             "p50",
             "p95",
-            "p99",
+            "p99[ci95]",
             "p99.9",
             "max",
             "Kops/s",
@@ -1273,6 +1307,50 @@ mod tests {
         let json = serde_json::to_string(&stats).unwrap();
         let deserialized: LatencyStats = serde_json::from_str(&json).unwrap();
         assert_eq!(stats, deserialized);
+    }
+
+    // ── percentile CI tests ──
+
+    #[test]
+    fn percentile_ci_single() {
+        let (lo, hi) = percentile_ci(&[42], 99);
+        assert_eq!(lo, 42);
+        assert_eq!(hi, 42);
+    }
+
+    #[test]
+    fn percentile_ci_100_samples() {
+        let sorted: Vec<u64> = (1..=100).collect();
+        let (lo, hi) = percentile_ci(&sorted, 99);
+        // p99 = 99, CI should bracket it: lower < 99, upper >= 99
+        assert!(lo <= 99, "lower bound {lo} should be ≤ 99");
+        assert!(hi >= 99, "upper bound {hi} should be ≥ 99");
+        // CI width should be small for 100 samples
+        assert!(hi - lo <= 5, "CI too wide: [{lo}, {hi}]");
+    }
+
+    #[test]
+    fn percentile_ci_bounds_within_data() {
+        let sorted: Vec<u64> = (10..=50).collect();
+        let (lo, hi) = percentile_ci(&sorted, 95);
+        assert!(
+            lo >= 10 && hi <= 50,
+            "CI [{lo},{hi}] must be within data range [10,50]"
+        );
+    }
+
+    #[test]
+    fn percentile_ci_median_widest() {
+        // se_rank = sqrt(n*p*(1-p)) is maximized at p=50, so median CI is widest.
+        let sorted: Vec<u64> = (1..=100).collect();
+        let (lo50, hi50) = percentile_ci(&sorted, 50);
+        let (lo99, hi99) = percentile_ci(&sorted, 99);
+        let width50 = hi50 - lo50;
+        let width99 = hi99 - lo99;
+        assert!(
+            width50 >= width99,
+            "p50 CI ({width50}) should be ≥ p99 CI ({width99})"
+        );
     }
 
     // ── percentile edge cases ──

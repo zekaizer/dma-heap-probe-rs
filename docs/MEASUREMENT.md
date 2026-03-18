@@ -150,6 +150,22 @@ fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
 
 **제공 백분위수:** p50 (중앙값), p95, p99, p99.9
 
+### 3.6 백분위수 신뢰구간 (Percentile CI)
+
+p99에 대한 95% 비모수 신뢰구간 (binomial order statistics):
+
+```
+rank = ceil(p × n / 100)
+se_rank = sqrt(n × p/100 × (1 - p/100))
+lower = sorted[max(1, floor(rank - 1.96 × se_rank)) - 1]
+upper = sorted[min(n, ceil(rank + 1.96 × se_rank)) - 1]
+```
+
+- **분포 무관** (non-parametric): 정규 분포 가정 불필요
+- **수학적 성질**: `se_rank`는 p=50에서 최대, p=99에서 최소 → 중앙값 CI가 가장 넓음
+- **테이블 표시**: `p99[ci95]` 컬럼 (예: `38[32-45]`)
+- **SLA/SLO 활용**: "p99 ≤ 45µs with 95% confidence"
+
 ---
 
 ## 4. IQR 이상치 탐지 (Outlier Detection)
