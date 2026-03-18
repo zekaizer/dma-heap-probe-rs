@@ -359,6 +359,27 @@ fn iqr_trimmed_mean(sorted: &[u64], raw_mean: f64) -> (u64, usize) {
     (trimmed_avg, n - kept)
 }
 
+/// Test whether warmup was sufficient by comparing the first 10% of
+/// **time-ordered** measurement samples against the remaining 90%.
+///
+/// Uses Welch's t-test: if significantly different (p < 0.05), the first
+/// samples are still in "cold start" mode and warmup should be increased.
+/// Returns `true` if warmup appears sufficient (no significant difference).
+fn warmup_sufficient(samples: &[u64]) -> bool {
+    let n = samples.len();
+    if n < 20 {
+        return true; // too few to test
+    }
+    let split = n / 10; // first 10%
+    if split < 2 {
+        return true;
+    }
+    let head = &samples[..split];
+    let tail = &samples[split..];
+    // If Welch's test finds significant difference → warmup insufficient.
+    welch_test(head, tail).is_none_or(|w| w.sig == "ns")
+}
+
 use crate::probe::align_to;
 
 /// Format throughput as Kops/s (thousands of operations per second).
@@ -1004,6 +1025,17 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
+    // Warmup sufficiency: first 10% vs rest 90% via Welch's t-test.
+    let warmup_ok = warmup_sufficient(&last_samples);
+    if !warmup_ok {
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::warmup_warn",
+            &[("hint", &"first 10% differs from rest: increase --warmup")],
+        );
+    }
+
     // Autocorrelation check on last (largest) size — detects non-independence.
     if let Some((r, ess)) = autocorrelation(&last_samples).filter(|&(r, _)| r.abs() > 0.1) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -1023,7 +1055,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     // Quality scorecard: aggregate all diagnostic signals.
     let drift_pct = detect_drift(&last_samples).map_or(0.0, |d| d.drift_pct);
     let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();
-    let qc = quality_scorecard(&stat_refs, drift_pct);
+    let qc = quality_scorecard(&stat_refs, drift_pct, warmup_ok);
     crate::fmt::print_metric(
         heap_name,
         heap_w,
@@ -1038,7 +1070,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             crate::fmt::print_metric(
                 heap_name,
                 heap_w,
-                &format!("perf::quality  {dim}={score}/25"),
+                &format!("perf::quality  {dim}={score}/20"),
                 &[("hint", advice)],
             );
         }
@@ -1101,18 +1133,19 @@ struct QualityScore {
 
 /// Compute measurement quality scorecard from collected stats.
 ///
-/// Evaluates 4 dimensions (25 points each):
+/// Evaluates 5 dimensions (20 points each):
 /// - **Stability**: coefficient of variation across all sizes
 /// - **Precision**: relative confidence interval width
 /// - **Cleanliness**: outlier rate
 /// - **Stationarity**: temporal drift
+/// - **Warmup**: first 10% vs rest via Welch's t-test
 #[allow(clippy::cast_precision_loss)]
-fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScore {
+fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64, warmup_ok: bool) -> QualityScore {
     // Stability: max CV across sizes.
     let max_cv = all_stats.iter().map(|s| s.cv_pct).fold(0.0_f64, f64::max);
     let (stab_score, stab_rec) = score_threshold(
         max_cv,
-        &[(5.0, 25), (10.0, 20), (20.0, 10), (30.0, 5)],
+        &[(5.0, 20), (10.0, 16), (20.0, 8), (30.0, 4)],
         0,
         &[
             (10.0, "cv>10%: increase --iterations or reduce load"),
@@ -1129,7 +1162,7 @@ fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScor
         .fold(0.0_f64, f64::max);
     let (prec_score, prec_rec) = score_threshold(
         max_rel_ci,
-        &[(3.0, 25), (10.0, 20), (20.0, 10)],
+        &[(3.0, 20), (10.0, 16), (20.0, 8)],
         0,
         &[(10.0, "ci>10%: increase --iterations for tighter CI")],
         "ci>20%: imprecise, need significantly more iterations",
@@ -1145,7 +1178,7 @@ fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScor
     };
     let (clean_score, clean_rec) = score_threshold(
         outlier_pct,
-        &[(1.0, 25), (5.0, 20), (10.0, 10)],
+        &[(1.0, 20), (5.0, 16), (10.0, 8)],
         0,
         &[(5.0, "outliers>5%: consider --drop-caches or isolcpus")],
         "outliers>10%: heavy interference, isolate workload",
@@ -1155,13 +1188,20 @@ fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScor
     let abs_drift = drift_pct.abs();
     let (drift_score, drift_rec) = score_threshold(
         abs_drift,
-        &[(5.0, 25), (10.0, 15), (20.0, 5)],
+        &[(5.0, 20), (10.0, 12), (20.0, 4)],
         0,
         &[(10.0, "drift>10%: increase --warmup or shorten test")],
         "drift>20%: thermal throttling or memory pressure",
     );
 
-    let total = stab_score + prec_score + clean_score + drift_score;
+    // Warmup sufficiency: binary (pass/fail from Welch's t-test).
+    let (warm_score, warm_rec): (u32, Option<&str>) = if warmup_ok {
+        (20, None)
+    } else {
+        (0, Some("warmup insufficient: increase --warmup"))
+    };
+
+    let total = stab_score + prec_score + clean_score + drift_score + warm_score;
     let rating = match total {
         90..=100 => "EXCELLENT",
         75..=89 => "GOOD",
@@ -1174,9 +1214,10 @@ fn quality_scorecard(all_stats: &[&LatencyStats], drift_pct: f64) -> QualityScor
         ("precision", prec_score, prec_rec),
         ("cleanliness", clean_score, clean_rec),
         ("stationarity", drift_score, drift_rec),
+        ("warmup", warm_score, warm_rec),
     ];
     // Only keep items with recommendations to reduce noise.
-    details.retain(|&(_, score, _)| score < 25);
+    details.retain(|&(_, score, _)| score < 20);
 
     QualityScore {
         total,
@@ -1882,6 +1923,30 @@ mod tests {
         );
     }
 
+    // ── warmup sufficiency tests ──
+
+    #[test]
+    fn warmup_sufficient_uniform() {
+        // Uniform data: no cold start effect.
+        assert!(warmup_sufficient(&[50; 100]));
+    }
+
+    #[test]
+    fn warmup_insufficient_cold_start() {
+        // First 10% much higher than rest → warmup insufficient.
+        // Need variance within groups for Welch's test to work.
+        let mut samples: Vec<u64> = (490..=510).cycle().take(10).collect(); // cold ~500
+        let warm: Vec<u64> = (8..=12).cycle().take(90).collect(); // warm ~10
+        samples.extend(warm);
+        assert!(!warmup_sufficient(&samples));
+    }
+
+    #[test]
+    fn warmup_too_few() {
+        // < 20 samples: assume sufficient.
+        assert!(warmup_sufficient(&[1, 2, 3]));
+    }
+
     // ── bimodal detection tests ──
 
     #[test]
@@ -1948,7 +2013,7 @@ mod tests {
             ci95_us: 0,
             mad_us: 0,
         };
-        let qc = quality_scorecard(&[&stats], 0.0);
+        let qc = quality_scorecard(&[&stats], 0.0, true);
         assert_eq!(qc.rating, "EXCELLENT");
         assert!(qc.total >= 90);
         assert!(qc.details.is_empty(), "no recommendations for excellent");
@@ -1974,7 +2039,7 @@ mod tests {
             ci95_us: 40,
             mad_us: 100,
         };
-        let qc = quality_scorecard(&[&stats], 50.0);
+        let qc = quality_scorecard(&[&stats], 50.0, false);
         assert_eq!(qc.rating, "NOISY");
         assert!(qc.total < 50);
         assert!(!qc.details.is_empty(), "should have recommendations");
