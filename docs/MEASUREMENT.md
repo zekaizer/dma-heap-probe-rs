@@ -60,7 +60,7 @@ for _ in 0..iterations {
 - **목적**: 커널 페이지 풀, slab 캐시, TLB 프리밍
 - **기본값**: `--warmup 10` (CLI 인자로 조정 가능)
 - **메커니즘**: 워밍업 반복에서 alloc/free 사이클을 실행하여 커널이 deferred free pool을 채우도록 유도
-- **한계**: 워밍업이 충분한지 자동 검증하지 않음 (CV로 간접 확인 가능)
+- **자동 검증**: `warmup_sufficient()` — 측정 시작 10% vs 나머지 90% Welch's t-test로 cold start 잔류 감지
 
 ---
 
@@ -180,6 +180,18 @@ upper = sorted[min(n, ceil(rank + 1.96 × se_rank)) - 1]
 - **테이블 표시**: `p99[ci95]` 컬럼 (예: `38[32-45]`)
 - **SLA/SLO 활용**: "p99 ≤ 45µs with 95% confidence"
 
+### 3.8 Median Absolute Deviation (MAD)
+
+```
+MAD = median(|x_i - median(x)|)
+```
+
+- **Breakdown point**: 50% (stddev의 0% 대비 극도로 robust)
+- 전체 데이터의 50%가 오염되어도 MAD는 정확함
+- `MAD = 0, stddev > 0` → outlier만 산포에 기여 (핵심 분포는 일정)
+- **MADN** = `MAD × 1.4826` — 정규분포 하에서 stddev의 일관 추정량
+- `MADN << stddev` → heavy tail 존재
+
 ---
 
 ## 4. IQR 이상치 탐지 (Outlier Detection)
@@ -227,9 +239,63 @@ outlier_count = count(samples WHERE sample IS outlier)
 
 ---
 
-## 5. Throughput 및 신뢰구간 (Throughput & CI)
+## 5. 분포 형태 분석 (Distribution Shape)
 
-### 5.1 Throughput (ops/sec)
+### 5.1 Skewness (왜도) & Excess Kurtosis (초과 첨도)
+
+```
+skewness = E[(x - mean)³] / stddev³
+kurtosis = E[(x - mean)⁴] / stddev⁴ - 3
+```
+
+| 값 | 의미 |
+|----|------|
+| skew > 2.0 | heavy right tail — 극단적 지연 스파이크 존재 |
+| skew > 0.5 | right-skewed — 일반적 지연 분포 |
+| skew ≈ 0 | symmetric — 대칭 분포 |
+| skew < -0.5 | left-skewed — 비정상 (드묾) |
+| kurtosis > 0 | leptokurtic — 정규분포보다 꼬리가 두꺼움 |
+| kurtosis < 0 | platykurtic — 정규분포보다 꼬리가 얇음 |
+
+### 5.2 Shannon Entropy (정보 엔트로피)
+
+```
+H = -Σ p_i × log2(p_i)
+H_normalized = H / log2(k)    // [0, 1] 범위로 정규화
+```
+
+히스토그램 기반 (Sturges' rule 버킷). 정규화 엔트로피:
+
+| 값 | 의미 |
+|----|------|
+| < 0.3 | deterministic — 할당 지연이 매우 예측 가능 |
+| 0.3–0.7 | moderate — 보통 수준의 변동 |
+| > 0.7 | unpredictable — 높은 불확실성, 외부 간섭 의심 |
+
+힙 간 비교: "system: H=0.2 (deterministic) vs reserved: H=0.8 (unpredictable)"
+
+### 5.3 Bimodal Detection (이중 모드 감지)
+
+히스토그램 피크 탐지 + valley 깊이 검사:
+
+1. Sturges' rule로 버킷 생성 (최소 8개)
+2. 로컬 최대값(양쪽보다 큰 버킷) 탐지
+3. 상위 2개 피크 사이의 valley(최소 카운트) 확인
+4. `valley_count / min(peak1, peak2) < 0.5` → bimodal 선언
+
+```
+[system]  perf::bimodal@4K  fast: 8us (75%)  slow: 45us  valley: 12%
+```
+
+- **fast mode**: pool hit (deferred free에서 즉시 반환)
+- **slow mode**: buddy allocator fallback
+- `valley` 값이 낮을수록 두 모드가 명확히 분리
+
+---
+
+## 6. Throughput 및 신뢰구간 (Throughput & CI)
+
+### 6.1 Throughput (ops/sec)
 
 ```
 throughput_ops = round(1,000,000 / mean_us)
@@ -240,7 +306,7 @@ throughput_ops = round(1,000,000 / mean_us)
 - `mean_us = 0`일 때 `throughput_ops = 0` (mock 백엔드 fast path)
 - **용도**: 힙 간 성능 비교 ("system: 50Kops/s vs reserved: 30Kops/s")
 
-### 5.2 95% 신뢰구간 (Confidence Interval)
+### 6.2 95% 신뢰구간 (Confidence Interval)
 
 ```
 ci95_us = ceil(1.96 × stddev / sqrt(n))
@@ -259,7 +325,7 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 | ci95 = avg × 5~20% | 보통 | `--iterations` 증가 고려 |
 | ci95 > avg × 20% | 부정확 | `--iterations` 증가 필수 또는 외부 간섭 확인 |
 
-### 5.3 테이블 예시
+### 6.3 테이블 예시
 
 ```
 [system]  perf::alloc_only (us)
@@ -271,9 +337,9 @@ ci95_us = ceil(1.96 × stddev / sqrt(n))
 
 ---
 
-## 6. Size-Latency 선형 회귀 분석
+## 7. Size-Latency 선형 회귀 분석
 
-### 6.1 알고리즘: Ordinary Least Squares (OLS)
+### 7.1 알고리즘: Ordinary Least Squares (OLS)
 
 `alloc_only` 벤치마크 종료 후, (size, avg_us) 쌍에 대해 선형 모델을 적합:
 
@@ -289,7 +355,7 @@ intercept = ȳ - slope × x̄
 R² = 1 - SS_res / SS_tot
 ```
 
-### 6.2 출력 필드
+### 7.2 출력 필드
 
 | 필드 | 의미 |
 |------|------|
@@ -297,7 +363,7 @@ R² = 1 - SS_res / SS_tot
 | `us/KB` | KB당 추가 비용 (slope × 1024) — 페이지 할당, zeroing 비용 |
 | `R²` | 결정계수 (0~1). 1에 가까울수록 사이즈-지연 관계가 선형적 |
 
-### 6.3 해석 가이드
+### 7.3 해석 가이드
 
 ```
 [system]  perf::alloc_model  base_us: 5.2  us/KB: 0.045  R²: 0.987
@@ -311,11 +377,11 @@ R² = 1 - SS_res / SS_tot
 
 ---
 
-## 7. Drift Detection (시간적 편향 감지)
+## 8. Drift Detection (시간적 편향 감지)
 
 측정 도중 지연시간이 체계적으로 변하는지 자동 감지한다.
 
-### 7.1 알고리즘
+### 8.1 알고리즘
 
 샘플 인덱스 `i`와 지연시간 `latency[i]`에 대해 선형 회귀:
 
@@ -326,7 +392,7 @@ drift_pct = slope × (n-1) / mean × 100
 
 추가로 전반부/후반부 평균을 비교하여 직관적 해석을 제공한다.
 
-### 7.2 출력 조건
+### 8.2 출력 조건
 
 `|drift_pct| > 10%`일 때만 경고를 출력한다:
 
@@ -340,7 +406,7 @@ drift_pct = slope × (n-1) / mean × 100
 | < -10% | 후반부가 빠름 (improving) | Warmup 부족, JIT/pool이 아직 안정화 안 됨 |
 | -10% ~ +10% | 안정 | 정상적 측정 |
 
-### 7.3 설계 결정
+### 8.3 설계 결정
 
 | 결정 | 근거 |
 |------|------|
@@ -351,9 +417,9 @@ drift_pct = slope × (n-1) / mean × 100
 
 ---
 
-## 8. 벤치마크별 상세
+## 9. 벤치마크별 상세
 
-### 8.1 `bench_alloc_only`
+### 9.1 `bench_alloc_only`
 
 커널 `DMA_HEAP_IOCTL_ALLOC` 호출의 순수 지연시간.
 
@@ -374,7 +440,7 @@ drift_pct = slope × (n-1) / mean × 100
              1M       4    4.8   4096
 ```
 
-### 8.2 `bench_full_pipeline`
+### 9.2 `bench_full_pipeline`
 
 실제 사용 시나리오: 할당 → 매핑 → 쓰기 → 읽기 → 해제.
 
@@ -402,7 +468,7 @@ drift_pct = slope × (n-1) / mean × 100
 - 타이머 오버헤드: `Instant::now()` 5회 × ~20ns = ~100ns/iter (<1% at µs scale)
 - `sync_w`에 `write_bytes`가 포함됨 — 캐시 flush와 메모리 쓰기가 결합된 실제 비용
 
-### 8.3 `bench_close`
+### 9.3 `bench_close`
 
 버퍼 해제 경로 지연시간.
 
@@ -422,7 +488,7 @@ drift_pct = slope × (n-1) / mean × 100
              1M    250    800   3.20  expensive
 ```
 
-### 8.4 `bench_order_boundary`
+### 9.4 `bench_order_boundary`
 
 커널 buddy allocator의 order 경계에서 할당 비용 변화 측정.
 
@@ -438,7 +504,14 @@ drift_pct = slope × (n-1) / mean × 100
 [system]  perf::order_step (order 4)  from: 48K  to: 64K   avg: 12→18us  +%: 50.0
 ```
 
-### 8.5 `bench_internal_frag`
+- **Inversion Detection**: 큰 사이즈가 오히려 빠른 역전 현상 감지 (>10% 감소)
+  - size-class 풀링이나 할당자 fast-path 최적화를 나타냄
+
+```
+[system]  perf::inversion  larger: 64K  smaller: 48K  avg: 20→10us  -%: 50.0
+```
+
+### 9.5 `bench_internal_frag`
 
 비정렬 요청 시 내부 단편화 비율.
 
@@ -447,7 +520,7 @@ drift_pct = slope × (n-1) / mean × 100
 - **출력**: `frag% = (actual - requested) / requested × 100`
 - **용도**: 힙의 할당 그래뉼래리티(보통 4K) 확인
 
-### 8.6 `bench_pool_warmup`
+### 9.6 `bench_pool_warmup`
 
 cold start vs warm state 할당 비용 비교.
 
@@ -466,7 +539,7 @@ cold start vs warm state 할당 비용 비교.
 [system]  perf::pool_effect  t: 8.32  d: 1.85  sig: ***  effect: large
 ```
 
-### 8.7 `bench_size_switch`
+### 9.7 `bench_size_switch`
 
 사이즈 전환이 할당 지연에 미치는 영향.
 
@@ -489,9 +562,9 @@ cold start vs warm state 할당 비용 비교.
 
 ---
 
-## 9. JSON 출력 형식
+## 10. JSON 출력 형식
 
-`LatencyStats` 구조체가 그대로 직렬화된다:
+### 10.1 `LatencyStats`
 
 ```json
 {
@@ -508,17 +581,41 @@ cold start vs warm state 할당 비용 비교.
   "trimmed_avg_us": 9,
   "outlier_count": 3,
   "throughput_ops": 83333,
-  "ci95_us": 2
+  "ci95_us": 2,
+  "mad_us": 5
+}
+```
+
+### 10.2 `PerfAnalysis` (alloc_only 분석 결과)
+
+`--output` 사용 시 `stages[0].details.analysis`에 포함:
+
+```json
+{
+  "stats": [
+    {"size": 4096, "latency": { /* LatencyStats */ }},
+    {"size": 65536, "latency": { /* LatencyStats */ }}
+  ],
+  "regression": {
+    "intercept_us": 5.2,
+    "slope_us_per_byte": 0.001,
+    "r_squared": 0.99
+  },
+  "quality_score": 90,
+  "quality_rating": "EXCELLENT",
+  "drift_pct": 0.0,
+  "autocorr_r": 0.05,
+  "ess": 95.2
 }
 ```
 
 ---
 
-## 10. Measurement Quality Scorecard
+## 11. Measurement Quality Scorecard
 
-`bench_alloc_only` 완료 후 4개 차원의 진단 신호를 종합한 품질 점수를 출력한다.
+`bench_alloc_only` 완료 후 5개 차원의 진단 신호를 종합한 품질 점수를 출력한다.
 
-### 10.1 채점 체계 (5차원 × 20점)
+### 11.1 채점 체계 (5차원 × 20점)
 
 | 차원 | 신호 | 20점 | 16점 | 8점 | 4점 | 0점 |
 |------|------|------|------|-----|-----|-----|
@@ -530,7 +627,7 @@ cold start vs warm state 할당 비용 비교.
 
 **등급**: >=90 EXCELLENT, >=75 GOOD, >=50 FAIR, <50 NOISY
 
-### 10.2 CI Convergence 분석
+### 11.2 CI Convergence 분석
 
 N/4, N/2, 3N/4, N 시점에서 CI 폭을 표시하여 수렴 속도를 시각화:
 
@@ -546,7 +643,7 @@ N/4, N/2, 3N/4, N 시점에서 CI 폭을 표시하여 수렴 속도를 시각화
 CI가 후반부에서 거의 줄지 않으면 (`±4 → ±3`) 반복 횟수 충분.
 여전히 빠르게 줄고 있으면 (`±8 → ±3`) `--iterations` 증가 권장.
 
-### 10.3 출력 예시
+### 11.3 출력 예시
 
 ```
 [system]  perf::quality  score: 90/100  rating: EXCELLENT
@@ -578,11 +675,22 @@ CI가 후반부에서 거의 줄지 않으면 (`±4 → ±3`) 반복 횟수 충�
 |------|-------------|-------------|
 | 수집 | O(n) | O(n) |
 | 정렬 | O(n log n) | O(1) in-place |
-| 합계/평균 | O(n) | O(1) |
-| 분산 (2nd pass) | O(n) | O(1) |
-| 백분위수 | O(1) per query | O(1) |
+| 합계/평균/분산 | O(n) | O(1) |
+| MAD (sort deviations) | O(n log n) | O(n) |
+| 백분위수 / percentile CI | O(1) per query | O(1) |
 | IQR trimmed mean | O(n) | O(1) |
+| Autocorrelation | O(n) | O(1) |
+| Drift detection | O(n) | O(1) |
+| Bimodal detection | O(n) | O(k) |
+| Skewness / kurtosis | O(n) | O(1) |
+| Shannon entropy | O(n) | O(k) |
+| Linear regression | O(m) | O(1) |
+| Order step / inversion | O(m) | O(m) |
+| Welch's t-test | O(n) | O(1) |
+| Warmup sufficiency | O(n) | O(1) |
+| CI convergence | O(n) | O(1) |
+| Quality scorecard | O(m) | O(1) |
 | **전체** | **O(n log n)** | **O(n)** |
 
-n = iterations (기본 100). 모든 통계 계산은 수집 + 정렬 이후 단일 패스로 완료 가능하며,
-현재 구현은 가독성을 위해 별도 패스를 사용한다 (성능 차이 무시 가능).
+n = iterations (기본 100), m = sizes (기본 3), k = histogram bins (Sturges).
+모든 통계 계산은 수집 + 정렬 이후 선형 시간에 완료된다.
