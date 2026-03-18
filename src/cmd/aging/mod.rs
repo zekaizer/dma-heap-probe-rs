@@ -428,9 +428,17 @@ impl AgingState {
             min_us: 0, // not tracked in running stats
             max_us,
             avg_us: avg,
+            stddev_us: 0,     // not tracked in running stats
             p50_us: avg,      // approximation
             p95_us: peak_p99, // approximation
             p99_us: peak_p99,
+            p99_9_us: peak_p99, // approximation
+            cv_pct: 0.0,        // not tracked in running stats
+            trimmed_avg_us: avg,
+            outlier_count: 0,
+            throughput_ops: if avg > 0 { 1_000_000 / avg } else { 0 },
+            ci95_us: 0,
+            mad_us: 0,
         })
     }
 
@@ -1364,9 +1372,17 @@ mod tests {
                 min_us: 10,
                 max_us: 500,
                 avg_us: 50,
+                stddev_us: 0,
                 p50_us: 45,
                 p95_us: 200,
                 p99_us: 400,
+                p99_9_us: 400,
+                cv_pct: 0.0,
+                trimmed_avg_us: 50,
+                outlier_count: 0,
+                throughput_ops: 20000,
+                ci95_us: 0,
+                mad_us: 0,
             }),
             baseline_avg_us: Some(40),
             final_interval_avg_us: Some(55),
@@ -1551,18 +1567,34 @@ mod tests {
             min_us: 5,
             max_us: 100,
             avg_us: 50,
+            stddev_us: 0,
             p50_us: 45,
             p95_us: 90,
             p99_us: 95,
+            p99_9_us: 95,
+            cv_pct: 0.0,
+            trimmed_avg_us: 50,
+            outlier_count: 0,
+            throughput_ops: 20000,
+            ci95_us: 0,
+            mad_us: 0,
         };
         let stats2 = LatencyStats {
             count: 20,
             min_us: 3,
             max_us: 200,
             avg_us: 60,
+            stddev_us: 0,
             p50_us: 55,
             p95_us: 180,
             p99_us: 190,
+            p99_9_us: 190,
+            cv_pct: 0.0,
+            trimmed_avg_us: 60,
+            outlier_count: 0,
+            throughput_ops: 16667,
+            ci95_us: 0,
+            mad_us: 0,
         };
         state.update_cumulative(&stats1);
         state.update_cumulative(&stats2);
