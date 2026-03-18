@@ -166,6 +166,103 @@ pub(crate) fn percentile_ci(sorted: &[u64], p: u32) -> (u64, u64) {
     (sorted[lower_rank - 1], sorted[upper_rank - 1])
 }
 
+/// Result of bimodal distribution detection.
+pub(crate) struct BimodalInfo {
+    /// Center of the lower mode (bucket midpoint).
+    pub mode1_center: u64,
+    /// Center of the upper mode (bucket midpoint).
+    pub mode2_center: u64,
+    /// Fraction of samples in the lower mode (0.0–1.0).
+    pub mode1_frac: f64,
+    /// Valley depth ratio: `valley_count / min(peak1, peak2)`. Lower = deeper split.
+    pub valley_ratio: f64,
+}
+
+/// Detect bimodal distribution in sorted latency samples.
+///
+/// Uses histogram peak detection: builds equal-width buckets, finds local
+/// maxima (peaks higher than both neighbors), and checks for a significant
+/// valley between the two highest peaks.
+///
+/// Returns `Some` if two distinct modes are found with a valley depth
+/// < 50% of the smaller peak. Requires >= 20 samples.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+pub(crate) fn detect_bimodal(sorted: &[u64]) -> Option<BimodalInfo> {
+    let n = sorted.len();
+    if n < 20 {
+        return None;
+    }
+
+    let min_val = sorted[0];
+    let max_val = sorted[n - 1];
+    if min_val == max_val {
+        return None; // uniform
+    }
+
+    // Sturges' rule for bucket count, minimum 8 for bimodal resolution.
+    let k = ((n as f64).log2().ceil() as usize + 1).max(8);
+    let range = max_val - min_val;
+    let width = (range / k as u64).max(1);
+
+    // Build histogram.
+    let mut counts = vec![0usize; k];
+    for &v in sorted {
+        let idx = ((v - min_val) / width) as usize;
+        counts[idx.min(k - 1)] += 1;
+    }
+
+    // Find local maxima (peaks): count[i] > count[i-1] AND count[i] > count[i+1].
+    let mut peaks: Vec<(usize, usize)> = Vec::new(); // (bucket_index, count)
+    for i in 0..k {
+        let left = if i > 0 { counts[i - 1] } else { 0 };
+        let right = if i + 1 < k { counts[i + 1] } else { 0 };
+        if counts[i] > left && counts[i] > right {
+            peaks.push((i, counts[i]));
+        }
+    }
+
+    if peaks.len() < 2 {
+        return None; // unimodal
+    }
+
+    // Sort peaks by count (descending) and take top 2.
+    peaks.sort_by(|a, b| b.1.cmp(&a.1));
+    let (idx1, cnt1) = peaks[0];
+    let (idx2, cnt2) = peaks[1];
+    let (lo_idx, hi_idx) = if idx1 < idx2 {
+        (idx1, idx2)
+    } else {
+        (idx2, idx1)
+    };
+
+    // Find the valley (minimum count) between the two peaks.
+    let valley_count = counts[lo_idx..=hi_idx].iter().copied().min().unwrap_or(0);
+    let smaller_peak = cnt1.min(cnt2);
+    if smaller_peak == 0 {
+        return None;
+    }
+
+    let valley_ratio = valley_count as f64 / smaller_peak as f64;
+    if valley_ratio >= 0.5 {
+        return None; // valley not deep enough
+    }
+
+    // Count samples in mode 1 (up to midpoint between peaks).
+    let split_idx = usize::midpoint(lo_idx, hi_idx);
+    let mode1_count: usize = counts[..=split_idx].iter().sum();
+
+    Some(BimodalInfo {
+        mode1_center: min_val + lo_idx as u64 * width + width / 2,
+        mode2_center: min_val + hi_idx as u64 * width + width / 2,
+        mode1_frac: mode1_count as f64 / n as f64,
+        valley_ratio: (valley_ratio * 100.0).round() / 100.0,
+    })
+}
+
 /// Compute trimmed mean by removing IQR outliers from a sorted slice.
 ///
 /// Uses Tukey's fence: outliers are values outside `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`.
@@ -652,6 +749,22 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             let mut sorted = samples.clone();
             sorted.sort_unstable();
             let (p99_lo, p99_hi) = percentile_ci(&sorted, 99);
+
+            // Bimodal detection (pool hit vs buddy alloc).
+            if let Some(bm) = detect_bimodal(&sorted) {
+                #[allow(clippy::cast_precision_loss)]
+                let pct1 = (bm.mode1_frac * 100.0).round();
+                crate::fmt::print_metric(
+                    heap_name,
+                    heap_w,
+                    &format!("perf::bimodal@{}", human_size(size)),
+                    &[
+                        ("fast", &format!("{}us ({pct1:.0}%)", bm.mode1_center)),
+                        ("slow", &format!("{}us", bm.mode2_center)),
+                        ("valley", &format!("{:.0}%", bm.valley_ratio * 100.0)),
+                    ],
+                );
+            }
 
             regression_points.push((size, stats.avg_us));
             all_stats.push(stats.clone());
@@ -1494,6 +1607,50 @@ mod tests {
             width50 >= width99,
             "p50 CI ({width50}) should be ≥ p99 CI ({width99})"
         );
+    }
+
+    // ── bimodal detection tests ──
+
+    #[test]
+    fn bimodal_too_few() {
+        let sorted: Vec<u64> = (1..=10).collect();
+        assert!(detect_bimodal(&sorted).is_none());
+    }
+
+    #[test]
+    fn bimodal_uniform() {
+        let sorted = vec![50u64; 30];
+        assert!(detect_bimodal(&sorted).is_none());
+    }
+
+    #[test]
+    fn bimodal_unimodal() {
+        // Normal-ish distribution: single peak.
+        let sorted: Vec<u64> = (1..=100).collect();
+        // Uniform distribution has no peaks — should be None or unimodal.
+        assert!(detect_bimodal(&sorted).is_none());
+    }
+
+    #[test]
+    fn bimodal_clear_two_modes() {
+        // 30 samples at ~10, 30 samples at ~100 — clear bimodal.
+        let mut sorted = vec![10u64; 30];
+        sorted.extend(vec![100u64; 30]);
+        sorted.sort_unstable();
+        let bm = detect_bimodal(&sorted);
+        assert!(bm.is_some(), "should detect bimodal distribution");
+        let bm = bm.unwrap();
+        assert!(
+            bm.mode1_center < 50,
+            "mode1 should be near 10: {}",
+            bm.mode1_center
+        );
+        assert!(
+            bm.mode2_center > 50,
+            "mode2 should be near 100: {}",
+            bm.mode2_center
+        );
+        assert!(bm.valley_ratio < 0.5, "valley should be deep");
     }
 
     // ── quality scorecard tests ──
