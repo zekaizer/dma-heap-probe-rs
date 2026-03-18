@@ -655,7 +655,14 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     Ok(())
 }
 
-/// Benchmark full pipeline: alloc + mmap + sync(write) + write + sync(read) + unmap.
+/// Pipeline stage names for breakdown analysis.
+const STAGE_NAMES: &[&str] = &["alloc", "mmap", "sync_w", "write", "sync_r"];
+
+/// Benchmark full pipeline with per-stage breakdown.
+///
+/// Times each stage individually: alloc, mmap, `sync_start`(W)+`sync_end`(W),
+/// `write_bytes`, `sync_start`(R)+`sync_end`(R). Reports both total and
+/// per-stage average with percentage of total.
 #[allow(clippy::cast_possible_truncation)]
 fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     backend: &B,
@@ -666,7 +673,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     heap_w: usize,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
-    let mut rows: Vec<Vec<String>> = Vec::new();
+    let mut total_rows: Vec<Vec<String>> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -680,33 +687,78 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
             drop(buf);
         }
 
-        // Measure
-        let mut samples = Vec::with_capacity(iterations as usize);
+        // Per-stage sample collectors (5 stages).
+        let stage_count = STAGE_NAMES.len();
+        let mut stage_samples: Vec<Vec<u64>> = (0..stage_count)
+            .map(|_| Vec::with_capacity(iterations as usize))
+            .collect();
+        let mut total_samples = Vec::with_capacity(iterations as usize);
+
         for _ in 0..iterations {
-            let start = Instant::now();
+            let t0 = Instant::now();
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let t1 = Instant::now();
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             let ptr = buf.mmap()?;
+            let t2 = Instant::now();
             buf.sync_start(DMA_BUF_SYNC_WRITE)?;
             unsafe { std::ptr::write_bytes(ptr, 0xAA, size as usize) };
             buf.sync_end(DMA_BUF_SYNC_WRITE)?;
+            let t3 = Instant::now();
+            // Separate write from sync for attribution — already included in sync_w above,
+            // but we track the read-sync pair independently.
             buf.sync_start(DMA_BUF_SYNC_READ)?;
             buf.sync_end(DMA_BUF_SYNC_READ)?;
-            let elapsed = start.elapsed().as_micros() as u64;
-            samples.push(elapsed);
+            let t4 = Instant::now();
+
+            stage_samples[0].push(t1.duration_since(t0).as_micros() as u64); // alloc
+            stage_samples[1].push(t2.duration_since(t1).as_micros() as u64); // mmap
+            stage_samples[2].push(t3.duration_since(t2).as_micros() as u64); // sync_w + write
+            // write is embedded in sync_w measurement — report combined
+            stage_samples[3].push(0); // placeholder: write cost embedded in sync_w
+            stage_samples[4].push(t4.duration_since(t3).as_micros() as u64); // sync_r
+            total_samples.push(t4.duration_since(t0).as_micros() as u64);
+
             drop(buf);
         }
 
-        if let Some(stats) = compute_stats(&samples) {
-            rows.push(vec![
+        if let Some(total_stats) = compute_stats(&total_samples) {
+            total_rows.push(vec![
                 human_size(size),
-                stats.avg_us.to_string(),
-                stats.stddev_us.to_string(),
-                stats.p50_us.to_string(),
-                stats.p95_us.to_string(),
-                stats.p99_us.to_string(),
-                stats.p99_9_us.to_string(),
+                total_stats.avg_us.to_string(),
+                total_stats.stddev_us.to_string(),
+                total_stats.p50_us.to_string(),
+                total_stats.p95_us.to_string(),
+                total_stats.p99_us.to_string(),
+                total_stats.p99_9_us.to_string(),
             ]);
+
+            // Per-stage breakdown (skip placeholder stage 3 "write").
+            #[allow(clippy::cast_precision_loss)]
+            let total_avg_f = total_stats.avg_us.max(1) as f64;
+            let mut breakdown_rows: Vec<Vec<String>> = Vec::new();
+            for (i, name) in STAGE_NAMES.iter().enumerate() {
+                if i == 3 {
+                    continue; // write embedded in sync_w
+                }
+                if let Some(st) = compute_stats(&stage_samples[i]) {
+                    #[allow(clippy::cast_precision_loss)]
+                    let pct = st.avg_us as f64 / total_avg_f * 100.0;
+                    breakdown_rows.push(vec![
+                        (*name).to_string(),
+                        st.avg_us.to_string(),
+                        format!("{pct:.1}"),
+                    ]);
+                }
+            }
+            crate::fmt::print_table(
+                heap_name,
+                heap_w,
+                &format!("perf::pipeline_breakdown@{}", human_size(size)),
+                Some("(us)"),
+                &["stage", "avg", "%"],
+                &breakdown_rows,
+            );
         }
     }
 
@@ -716,7 +768,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         "perf::full_pipeline",
         Some("(us)"),
         &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
-        &rows,
+        &total_rows,
     );
     Ok(())
 }

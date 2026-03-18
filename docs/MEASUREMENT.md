@@ -339,6 +339,26 @@ drift_pct = slope × (n-1) / mean × 100
 - **측정 구간**: alloc → mmap → sync_start(W) → memwrite → sync_end(W) → sync_start(R) → sync_end(R)
 - **memwrite**: `write_bytes(ptr, 0xAA, size)` — 전체 버퍼 쓰기
 - **용도**: 캐시 유지보수 비용 포함한 end-to-end 지연
+- **Stage Breakdown**: 사이즈별로 4개 단계의 개별 지연시간 + 비율 출력
+
+```
+[system]  perf::pipeline_breakdown@64K (us)
+            stage  avg     %
+            alloc   15  30.0
+             mmap    8  16.0
+           sync_w   22  44.0
+           sync_r    5  10.0
+```
+
+| 단계 | 측정 구간 | 포함 연산 |
+|------|-----------|-----------|
+| `alloc` | t0→t1 | `DMA_HEAP_IOCTL_ALLOC` |
+| `mmap` | t1→t2 | `mmap()` syscall |
+| `sync_w` | t2→t3 | `sync_start(W)` + `write_bytes` + `sync_end(W)` |
+| `sync_r` | t3→t4 | `sync_start(R)` + `sync_end(R)` |
+
+- 타이머 오버헤드: `Instant::now()` 5회 × ~20ns = ~100ns/iter (<1% at µs scale)
+- `sync_w`에 `write_bytes`가 포함됨 — 캐시 flush와 메모리 쓰기가 결합된 실제 비용
 
 ### 8.3 `bench_close`
 
