@@ -359,6 +359,64 @@ fn iqr_trimmed_mean(sorted: &[u64], raw_mean: f64) -> (u64, usize) {
     (trimmed_avg, n - kept)
 }
 
+/// Compute normalized Shannon entropy of the latency distribution.
+///
+/// Bins samples into a histogram, computes `H = -Σ p_i log2(p_i)`, then
+/// normalizes to `[0, 1]` by dividing by `log2(k)` where k = non-empty bins.
+///
+/// - 0.0 = perfectly deterministic (all identical values)
+/// - 1.0 = maximum unpredictability (uniform across all bins)
+/// - Useful for comparing allocator determinism across heaps/sizes.
+///
+/// Returns `None` if fewer than 4 samples.
+#[allow(
+    clippy::cast_precision_loss,
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss
+)]
+fn latency_entropy(sorted: &[u64]) -> Option<f64> {
+    let n = sorted.len();
+    if n < 4 {
+        return None;
+    }
+
+    let min_val = sorted[0];
+    let max_val = sorted[n - 1];
+    if min_val == max_val {
+        return Some(0.0); // perfectly deterministic
+    }
+
+    // Sturges' rule for bucket count.
+    let k = ((n as f64).log2().ceil() as usize + 1).max(4);
+    let width = ((max_val - min_val) / k as u64).max(1);
+
+    // Build histogram and compute entropy.
+    let mut counts = vec![0usize; k];
+    for &v in sorted {
+        let idx = ((v - min_val) / width) as usize;
+        counts[idx.min(k - 1)] += 1;
+    }
+
+    let n_f = n as f64;
+    let mut entropy = 0.0_f64;
+    let mut non_empty = 0_usize;
+    for &c in &counts {
+        if c > 0 {
+            let p = c as f64 / n_f;
+            entropy -= p * p.log2();
+            non_empty += 1;
+        }
+    }
+
+    if non_empty <= 1 {
+        return Some(0.0);
+    }
+
+    // Normalize to [0, 1].
+    let max_entropy = (non_empty as f64).log2();
+    Some((entropy / max_entropy * 100.0).round() / 100.0)
+}
+
 /// Compute skewness (3rd moment) and excess kurtosis (4th moment - 3).
 ///
 /// - Skewness > 0: right-tailed (common for latency). Higher = longer tail.
@@ -1069,6 +1127,25 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 ("kurtosis", &format!("{kurt:.2}")),
                 ("shape", &tail),
             ],
+        );
+    }
+
+    // Shannon entropy: predictability of latency distribution.
+    if let Some(entropy) = latency_entropy(&{
+        let mut s = last_samples.clone();
+        s.sort_unstable();
+        s
+    }) {
+        let label = match () {
+            () if entropy < 0.3 => "deterministic",
+            () if entropy < 0.7 => "moderate",
+            () => "unpredictable",
+        };
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::entropy",
+            &[("H", &format!("{entropy:.2}")), ("predict", &label)],
         );
     }
 
@@ -1970,6 +2047,32 @@ mod tests {
         let (r, ess) = autocorrelation(&samples).unwrap();
         assert!(r > 0.5, "monotonic should have high r: {r}");
         assert!(ess < 50.0, "ESS should be much less than N=100: {ess}");
+    }
+
+    // ── entropy tests ──
+
+    #[test]
+    fn entropy_deterministic() {
+        let sorted = vec![42; 50];
+        assert!((latency_entropy(&sorted).unwrap() - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn entropy_spread() {
+        // Wide uniform distribution: high entropy.
+        let sorted: Vec<u64> = (1..=100).collect();
+        let h = latency_entropy(&sorted).unwrap();
+        assert!(h > 0.8, "uniform should have high entropy: {h}");
+    }
+
+    #[test]
+    fn entropy_concentrated() {
+        // 95 values at 10, 5 at 100: mostly deterministic.
+        let mut sorted = vec![10u64; 95];
+        sorted.extend(vec![100u64; 5]);
+        sorted.sort_unstable();
+        let h = latency_entropy(&sorted).unwrap();
+        assert!(h < 0.5, "concentrated should have low entropy: {h}");
     }
 
     // ── distribution shape tests ──
