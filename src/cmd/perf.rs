@@ -10,6 +10,7 @@ use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
+use crate::probe::align_to;
 use crate::runner::{self, SubTestResult};
 
 /// Default sizes for performance measurement.
@@ -483,8 +484,6 @@ fn warmup_sufficient(samples: &[u64]) -> bool {
     // If Welch's test finds significant difference → warmup insufficient.
     welch_test(head, tail).is_none_or(|w| w.sig == "ns")
 }
-
-use crate::probe::align_to;
 
 /// Format throughput as Kops/s (thousands of operations per second).
 fn format_throughput(ops: u64) -> String {
@@ -1066,8 +1065,15 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         &rows,
     );
 
+    // Pre-compute expensive analyses once for reuse in display + JSON.
+    let regression = linear_regression(&regression_points);
+    let drift_info = detect_drift(&last_samples);
+    let ac_info = autocorrelation(&last_samples);
+    let mut last_sorted = last_samples.clone();
+    last_sorted.sort_unstable();
+
     // Size-latency regression: latency_us = base + slope * size_bytes
-    if let Some(fit) = linear_regression(&regression_points) {
+    if let Some(ref fit) = regression {
         crate::fmt::print_metric(
             heap_name,
             heap_w,
@@ -1130,12 +1136,8 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Shannon entropy: predictability of latency distribution.
-    if let Some(entropy) = latency_entropy(&{
-        let mut s = last_samples.clone();
-        s.sort_unstable();
-        s
-    }) {
+    // Shannon entropy: predictability of latency distribution (uses pre-sorted data).
+    if let Some(entropy) = latency_entropy(&last_sorted) {
         let label = match () {
             () if entropy < 0.3 => "deterministic",
             () if entropy < 0.7 => "moderate",
@@ -1150,7 +1152,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     }
 
     // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
-    if let Some(drift) = detect_drift(&last_samples).filter(|d| d.drift_pct.abs() > 10.0) {
+    if let Some(drift) = drift_info.as_ref().filter(|d| d.drift_pct.abs() > 10.0) {
         let direction = if drift.drift_pct > 0.0 {
             "degrading"
         } else {
@@ -1180,7 +1182,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     }
 
     // Autocorrelation check on last (largest) size — detects non-independence.
-    if let Some((r, ess)) = autocorrelation(&last_samples).filter(|&(r, _)| r.abs() > 0.1) {
+    if let Some((r, ess)) = ac_info.filter(|(r, _)| r.abs() > 0.1) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ess_int = ess.round() as u64;
         crate::fmt::print_metric(
@@ -1222,8 +1224,8 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
     }
 
-    // Quality scorecard: aggregate all diagnostic signals.
-    let drift_pct = detect_drift(&last_samples).map_or(0.0, |d| d.drift_pct);
+    // Quality scorecard: aggregate all diagnostic signals (reuse cached drift_info).
+    let drift_pct = drift_info.as_ref().map_or(0.0, |d| d.drift_pct);
     let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();
     let qc = quality_scorecard(&stat_refs, drift_pct, warmup_ok);
     crate::fmt::print_metric(
@@ -1255,13 +1257,11 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             latency: st.clone(),
         })
         .collect();
-    let regression = linear_regression(&regression_points);
-    let (ac_r, ac_ess) =
-        autocorrelation(&last_samples).map_or((None, None), |(r, e)| (Some(r), Some(e)));
+    let (ac_r, ac_ess) = ac_info.map_or((None, None), |(r, e)| (Some(r), Some(e)));
 
     Ok(PerfAnalysis {
         stats: size_stats,
-        regression,
+        regression: regression.clone(),
         quality_score: qc.total,
         quality_rating: qc.rating.to_string(),
         drift_pct,
