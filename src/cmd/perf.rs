@@ -317,6 +317,46 @@ fn detect_order_steps(points: &[(u64, u64)], threshold_pct: f64) -> Vec<OrderSte
     steps
 }
 
+/// Find the earliest index where a sliding window mean stabilizes within
+/// `tolerance_pct`% of the overall phase mean.
+///
+/// Returns the number of samples needed to converge, or `None` if the phase
+/// is stable from the start (window 0 already within tolerance).
+#[allow(clippy::cast_precision_loss)]
+fn convergence_index(samples: &[u64], window: usize, tolerance_pct: f64) -> Option<usize> {
+    if samples.len() < window {
+        return None;
+    }
+
+    let overall_mean: f64 = samples.iter().map(|&v| v as f64).sum::<f64>() / samples.len() as f64;
+    if overall_mean == 0.0 {
+        return None;
+    }
+
+    let threshold = overall_mean * tolerance_pct / 100.0;
+
+    // Check if first window is already converged — no transition cost.
+    let first_win_mean: f64 =
+        samples[..window].iter().map(|&v| v as f64).sum::<f64>() / window as f64;
+    if (first_win_mean - overall_mean).abs() <= threshold {
+        return None; // stable from the start
+    }
+
+    // Scan forward to find convergence point.
+    for start in 1..=samples.len().saturating_sub(window) {
+        let win_mean: f64 = samples[start..start + window]
+            .iter()
+            .map(|&v| v as f64)
+            .sum::<f64>()
+            / window as f64;
+        if (win_mean - overall_mean).abs() <= threshold {
+            return Some(start + window);
+        }
+    }
+
+    None // never converged
+}
+
 /// Result of Welch's t-test comparing two independent sample groups.
 struct WelchResult {
     /// Welch's t-statistic.
@@ -1035,6 +1075,44 @@ fn bench_size_switch<B: HeapBackend + DmaBufBackend>(
     }
     crate::fmt::print_table(heap_name, heap_w, "perf::size_switch", None, headers, &rows);
 
+    // Hysteresis: does phase 3 (back to size_a) recover to phase 1 level?
+    if let (Some(p1), Some(p3)) = (compute_stats(&phase1), compute_stats(&phase3)) {
+        #[allow(clippy::cast_precision_loss)]
+        if let Some(ratio) = (p1.avg_us > 0).then(|| p3.avg_us as f64 / p1.avg_us as f64) {
+            let ratio_str = format!("{ratio:.2}");
+            let verdict = if ratio > 1.1 {
+                "degraded"
+            } else if ratio < 0.9 {
+                "improved"
+            } else {
+                "recovered"
+            };
+            crate::fmt::print_metric(
+                heap_name,
+                heap_w,
+                "perf::hysteresis",
+                &[
+                    ("ph1_avg", &p1.avg_us),
+                    ("ph3_avg", &p3.avg_us),
+                    ("ratio", &ratio_str),
+                    ("verdict", &verdict),
+                ],
+            );
+        }
+    }
+
+    // Convergence: how many allocs until each phase stabilizes?
+    for (ph, samples) in [(2, &phase2), (3, &phase3)] {
+        if let Some(n) = convergence_index(samples, 10, 5.0) {
+            crate::fmt::print_metric(
+                heap_name,
+                heap_w,
+                &format!("perf::converge_ph{ph}"),
+                &[("after", &format!("{n} allocs"))],
+            );
+        }
+    }
+
     Ok(())
 }
 
@@ -1216,6 +1294,37 @@ mod tests {
         assert_eq!(human_size(4095), "4095");
         assert_eq!(human_size(49152), "48K");
         assert_eq!(human_size(1), "1");
+    }
+
+    // ── convergence tests ──
+
+    #[test]
+    fn convergence_too_short() {
+        assert!(convergence_index(&[1, 2, 3], 10, 5.0).is_none());
+    }
+
+    #[test]
+    fn convergence_already_stable() {
+        // Uniform data: first window already at overall mean.
+        let samples = vec![100; 50];
+        assert!(convergence_index(&samples, 10, 5.0).is_none());
+    }
+
+    #[test]
+    fn convergence_after_spike() {
+        // First 10 values high (200), rest normal (100). Should converge around index 20.
+        let mut samples = vec![200u64; 10];
+        samples.extend(vec![100u64; 90]);
+        let idx = convergence_index(&samples, 10, 5.0);
+        assert!(idx.is_some());
+        let n = idx.unwrap();
+        assert!(n > 10 && n <= 30, "should converge between 10-30, got {n}");
+    }
+
+    #[test]
+    fn convergence_zero_mean() {
+        let samples = vec![0u64; 50];
+        assert!(convergence_index(&samples, 10, 5.0).is_none());
     }
 
     // ── IQR outlier tests ──

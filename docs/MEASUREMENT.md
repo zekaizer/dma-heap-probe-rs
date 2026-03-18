@@ -419,6 +419,19 @@ cold start vs warm state 할당 비용 비교.
 - **3 phase**: 64K×500 → 4K×500 → 64K×500
 - **분석**: 각 phase의 처음 10회 vs 마지막 10회 p50 비교
 - **용도**: 사이즈별 pool이 분리되었는지, 전환 비용이 있는지 확인
+- **Hysteresis** (`perf::hysteresis`): phase 1 vs phase 3 (동일 사이즈) 평균 비교
+  - `ratio = ph3_avg / ph1_avg`. 1.0 = 완전 복귀
+  - `>1.1` degraded, `<0.9` improved, 나머지 recovered
+  - 비가역적 성능 저하가 있는지 (pool fragmentation 등) 감지
+- **Convergence** (`perf::converge_phN`): 사이즈 전환 후 안정화까지 필요한 alloc 수
+  - 10-sample sliding window가 overall mean의 ±5% 이내에 도달하는 최초 지점
+  - 이미 안정적이면 출력 안 함 (no transition cost)
+
+```
+[system]  perf::hysteresis  ph1_avg: 12  ph3_avg: 14  ratio: 1.17  verdict: degraded
+[system]  perf::converge_ph2  after: 35 allocs
+[system]  perf::converge_ph3  after: 22 allocs
+```
 
 ---
 
