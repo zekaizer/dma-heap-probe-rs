@@ -48,6 +48,9 @@ pub struct LatencyStats {
     /// 95% confidence interval half-width: 1.96 * stddev / sqrt(n).
     /// True mean lies within [avg - ci95, avg + ci95] with 95% probability.
     pub ci95_us: u64,
+    /// Median Absolute Deviation: `median(|x_i - median|)`.
+    /// Robust dispersion measure (breakdown point 50% vs stddev's 0%).
+    pub mad_us: u64,
 }
 
 /// Compute latency statistics from a slice of microsecond measurements.
@@ -103,6 +106,18 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
     // 95% CI half-width: 1.96 * stddev / sqrt(n)
     let ci95 = (1.96 * stddev / (count as f64).sqrt()).ceil() as u64;
 
+    // MAD: median(|x_i - median|)
+    let median = sorted[count / 2] as f64;
+    let mut abs_devs: Vec<u64> = sorted
+        .iter()
+        .map(|&x| {
+            let dev = (x as f64 - median).abs();
+            dev.round() as u64
+        })
+        .collect();
+    abs_devs.sort_unstable();
+    let mad = abs_devs[abs_devs.len() / 2];
+
     Some(LatencyStats {
         count,
         min_us: sorted[0],
@@ -118,6 +133,7 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
         outlier_count,
         throughput_ops: throughput,
         ci95_us: ci95,
+        mad_us: mad,
     })
 }
 
@@ -1664,6 +1680,7 @@ mod tests {
         assert_eq!(stats.throughput_ops, 23810);
         // ci95: 1.96 * 0 / 1 = 0
         assert_eq!(stats.ci95_us, 0);
+        assert_eq!(stats.mad_us, 0);
     }
 
     #[test]
@@ -1686,6 +1703,9 @@ mod tests {
         assert_eq!(stats.ci95_us, 6);
         // throughput: 1e6/50.5 ≈ 19802
         assert_eq!(stats.throughput_ops, 19802);
+        // MAD of 1..=100: median=50, |x-50| sorted → 0,1,1,2,2,...,49,50
+        // median of deviations = 25
+        assert_eq!(stats.mad_us, 25);
     }
 
     #[test]
@@ -1695,6 +1715,28 @@ mod tests {
         assert_eq!(stats.min_us, 1);
         assert_eq!(stats.max_us, 100);
         assert_eq!(stats.p50_us, 50);
+    }
+
+    // ── MAD tests ──
+
+    #[test]
+    fn mad_uniform_is_zero() {
+        let stats = compute_stats(&[50; 20]).unwrap();
+        assert_eq!(stats.mad_us, 0);
+    }
+
+    #[test]
+    fn mad_with_outlier_robust() {
+        // 19x value 10, 1x outlier 1000. Median=10, |x-10| for non-outlier=0.
+        // MAD should remain 0 (robust against single outlier).
+        let mut samples = vec![10u64; 19];
+        samples.push(1000);
+        let stats = compute_stats(&samples).unwrap();
+        assert_eq!(
+            stats.mad_us, 0,
+            "MAD should be robust against single outlier"
+        );
+        assert!(stats.stddev_us > 0, "stddev should be inflated by outlier");
     }
 
     #[test]
@@ -1845,6 +1887,7 @@ mod tests {
             outlier_count: 0,
             throughput_ops: 90909,
             ci95_us: 0,
+            mad_us: 0,
         };
         let qc = quality_scorecard(&[&stats], 0.0);
         assert_eq!(qc.rating, "EXCELLENT");
@@ -1870,6 +1913,7 @@ mod tests {
             outlier_count: 30,
             throughput_ops: 20000,
             ci95_us: 40,
+            mad_us: 100,
         };
         let qc = quality_scorecard(&[&stats], 50.0);
         assert_eq!(qc.rating, "NOISY");

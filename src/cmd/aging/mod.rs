@@ -438,6 +438,7 @@ impl AgingState {
             outlier_count: 0,
             throughput_ops: if avg > 0 { 1_000_000 / avg } else { 0 },
             ci95_us: 0,
+            mad_us: 0,
         })
     }
 
@@ -1381,6 +1382,7 @@ mod tests {
                 outlier_count: 0,
                 throughput_ops: 20000,
                 ci95_us: 0,
+            mad_us: 0,
             }),
             baseline_avg_us: Some(40),
             final_interval_avg_us: Some(55),
@@ -1575,6 +1577,7 @@ mod tests {
             outlier_count: 0,
             throughput_ops: 20000,
             ci95_us: 0,
+            mad_us: 0,
         };
         let stats2 = LatencyStats {
             count: 20,
@@ -1591,6 +1594,7 @@ mod tests {
             outlier_count: 0,
             throughput_ops: 16667,
             ci95_us: 0,
+            mad_us: 0,
         };
         state.update_cumulative(&stats1);
         state.update_cumulative(&stats2);
