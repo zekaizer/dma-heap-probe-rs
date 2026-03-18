@@ -263,6 +263,45 @@ pub(crate) fn detect_bimodal(sorted: &[u64]) -> Option<BimodalInfo> {
     })
 }
 
+/// Compute lag-1 autocorrelation and effective sample size from **time-ordered** samples.
+///
+/// Lag-1 autocorrelation `r = cov(x[i], x[i+1]) / var(x)` measures how much
+/// each sample predicts the next. High `r` (pool caching, thermal effects) means
+/// consecutive samples are not independent, inflating CI precision.
+///
+/// Effective sample size: `ESS = N × (1 - r) / (1 + r)` (Kish's formula).
+/// Returns `None` if fewer than 3 samples or zero variance.
+#[allow(clippy::cast_precision_loss)]
+fn autocorrelation(samples: &[u64]) -> Option<(f64, f64)> {
+    let n = samples.len();
+    if n < 3 {
+        return None;
+    }
+
+    let mean: f64 = samples.iter().map(|&v| v as f64).sum::<f64>() / n as f64;
+    let var: f64 = samples
+        .iter()
+        .map(|&v| (v as f64 - mean).powi(2))
+        .sum::<f64>();
+    if var == 0.0 {
+        return None;
+    }
+
+    // Lag-1 autocovariance (unnormalized).
+    let autocov: f64 = samples
+        .windows(2)
+        .map(|w| (w[0] as f64 - mean) * (w[1] as f64 - mean))
+        .sum();
+
+    let r = autocov / var; // normalized: autocov / var = autocorrelation
+    let r_clamped = r.clamp(-0.99, 0.99); // avoid division by zero in ESS
+
+    let ess = n as f64 * (1.0 - r_clamped) / (1.0 + r_clamped);
+    let r_rounded = (r * 1000.0).round() / 1000.0;
+
+    Some((r_rounded, ess.max(1.0)))
+}
+
 /// Compute trimmed mean by removing IQR outliers from a sorted slice.
 ///
 /// Uses Tukey's fence: outliers are values outside `[Q1 - 1.5*IQR, Q3 + 1.5*IQR]`.
@@ -867,6 +906,22 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
                 ("drift", &format!("{:+.1}%", drift.drift_pct)),
                 ("1st_half", &drift.first_half_avg_us),
                 ("2nd_half", &drift.second_half_avg_us),
+            ],
+        );
+    }
+
+    // Autocorrelation check on last (largest) size — detects non-independence.
+    if let Some((r, ess)) = autocorrelation(&last_samples).filter(|&(r, _)| r.abs() > 0.1) {
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let ess_int = ess.round() as u64;
+        crate::fmt::print_metric(
+            heap_name,
+            heap_w,
+            "perf::autocorr",
+            &[
+                ("lag1_r", &format!("{r:.3}")),
+                ("N", &last_samples.len()),
+                ("ESS", &ess_int),
             ],
         );
     }
@@ -1593,6 +1648,38 @@ mod tests {
         let json = serde_json::to_string(&stats).unwrap();
         let deserialized: LatencyStats = serde_json::from_str(&json).unwrap();
         assert_eq!(stats, deserialized);
+    }
+
+    // ── autocorrelation tests ──
+
+    #[test]
+    fn autocorr_too_few() {
+        assert!(autocorrelation(&[1, 2]).is_none());
+    }
+
+    #[test]
+    fn autocorr_zero_variance() {
+        assert!(autocorrelation(&[5, 5, 5, 5]).is_none());
+    }
+
+    #[test]
+    fn autocorr_independent_samples() {
+        // Alternating pattern: no positive autocorrelation.
+        let samples: Vec<u64> = [10, 20].iter().copied().cycle().take(100).collect();
+        let (r, ess) = autocorrelation(&samples).unwrap();
+        // Alternating → negative autocorrelation (r ≈ -1).
+        assert!(r < 0.0, "alternating should have negative r: {r}");
+        // ESS > N for negatively correlated samples.
+        assert!(ess > 100.0, "ESS should exceed N for negative r: {ess}");
+    }
+
+    #[test]
+    fn autocorr_strongly_correlated() {
+        // Monotonically increasing → strong positive autocorrelation.
+        let samples: Vec<u64> = (1..=100).collect();
+        let (r, ess) = autocorrelation(&samples).unwrap();
+        assert!(r > 0.5, "monotonic should have high r: {r}");
+        assert!(ess < 50.0, "ESS should be much less than N=100: {ess}");
     }
 
     // ── percentile CI tests ──

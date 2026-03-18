@@ -120,7 +120,21 @@ cv_pct = stddev / mean * 100.0
   - CV > 15%: 노이즈 높음, `--iterations` 증가 권장
   - CV > 30%: 외부 간섭 의심 (다른 프로세스, thermal throttling 등)
 
-### 3.5 백분위수 (Percentiles)
+### 3.5 자기상관 및 실효 샘플 수 (Autocorrelation & ESS)
+
+```
+r = cov(x[i], x[i+1]) / var(x)     // lag-1 autocorrelation
+ESS = N × (1 - r) / (1 + r)         // Kish's formula
+```
+
+- **r > 0**: 연속 샘플이 양의 상관 (pool caching, thermal drift)
+  - CI가 과소추정됨 — 실제 불확실성이 보고된 것보다 큼
+- **r ≈ 0**: 독립 샘플 (이상적)
+- **r < 0**: 교대 패턴 (alloc/free pool 진동)
+- **ESS**: 독립 샘플로 환산한 실효 수. `ESS << N`이면 CI에 `sqrt(N/ESS)` 보정 필요
+- `|r| > 0.1`일 때만 `perf::autocorr` 출력 (무의미한 노이즈 억제)
+
+### 3.6 백분위수 (Percentiles)
 
 ```rust
 // Nearest-rank method (inclusive, NIST R-2)
@@ -150,7 +164,7 @@ fn percentile_frac(sorted: &[u64], numer: u64, denom: u64) -> u64 {
 
 **제공 백분위수:** p50 (중앙값), p95, p99, p99.9
 
-### 3.6 백분위수 신뢰구간 (Percentile CI)
+### 3.7 백분위수 신뢰구간 (Percentile CI)
 
 p99에 대한 95% 비모수 신뢰구간 (binomial order statistics):
 
