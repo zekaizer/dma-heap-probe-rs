@@ -85,6 +85,7 @@ pub struct AgingResult {
     pub total_frees: u64,
     pub total_errors: u64,
     pub enomem_count: u64,
+    pub emfile_count: u64,
     pub total_merges: u64,
     pub total_merge_errors: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,6 +163,7 @@ pub struct HeapResult {
     pub frees: u64,
     pub errors: u64,
     pub enomem: u64,
+    pub emfile: u64,
     pub alloc_lat: OpResult,
     pub mmap_lat: OpResult,
     pub sync_lat: OpResult,
@@ -284,6 +286,7 @@ pub(crate) struct HeapCounters {
     pub frees: AtomicU64,
     pub errors: AtomicU64,
     pub enomem: AtomicU64,
+    pub emfile: AtomicU64,
     pub alloc_lat: OpLatency,
     pub mmap_lat: OpLatency,
     pub sync_lat: OpLatency,
@@ -298,6 +301,7 @@ impl HeapCounters {
             frees: AtomicU64::new(0),
             errors: AtomicU64::new(0),
             enomem: AtomicU64::new(0),
+            emfile: AtomicU64::new(0),
             alloc_lat: OpLatency::new(),
             mmap_lat: OpLatency::new(),
             sync_lat: OpLatency::new(),
@@ -316,6 +320,7 @@ pub(crate) struct AgingState {
     pub total_allocs: AtomicU64,
     pub total_frees: AtomicU64,
     pub total_enomem: AtomicU64,
+    pub total_emfile: AtomicU64,
     pub total_merges: AtomicU64,
     pub total_merge_errors: AtomicU64,
     pub held_bufs: AtomicU64,
@@ -344,6 +349,7 @@ impl AgingState {
             total_allocs: AtomicU64::new(0),
             total_frees: AtomicU64::new(0),
             total_enomem: AtomicU64::new(0),
+            total_emfile: AtomicU64::new(0),
             total_merges: AtomicU64::new(0),
             total_merge_errors: AtomicU64::new(0),
             held_bufs: AtomicU64::new(0),
@@ -702,6 +708,7 @@ pub(crate) fn reporter_loop(
             );
             crate::trace::counter("trend_x100", (trend * 100.0) as i64);
             crate::trace::counter("enomem_total", state.total_enomem.load(Relaxed) as i64);
+            crate::trace::counter("emfile_total", state.total_emfile.load(Relaxed) as i64);
         }
 
         let cur_allocs = state.total_allocs.load(Relaxed);
@@ -870,6 +877,7 @@ fn build_result(
             frees: hc.frees.load(Relaxed),
             errors: hc.errors.load(Relaxed),
             enomem: hc.enomem.load(Relaxed),
+            emfile: hc.emfile.load(Relaxed),
             alloc_lat: OpResult::from_op_latency(&hc.alloc_lat),
             mmap_lat: OpResult::from_op_latency(&hc.mmap_lat),
             sync_lat: OpResult::from_op_latency(&hc.sync_lat),
@@ -886,6 +894,7 @@ fn build_result(
         total_frees: state.total_frees.load(Relaxed),
         total_errors: state.total_errors.load(Relaxed),
         enomem_count: state.total_enomem.load(Relaxed),
+        emfile_count: state.total_emfile.load(Relaxed),
         total_merges: state.total_merges.load(Relaxed),
         total_merge_errors: state.total_merge_errors.load(Relaxed),
         throughput_iters_per_sec: throughput,
@@ -1010,7 +1019,7 @@ fn print_per_heap_table(result: &AgingResult) {
     }
     tee_println!("  Per-heap (lat normalized per 4K)");
     let headers = [
-        "heap", "alloc", "free", "ENOMEM", "alloc/4K", "mmap/4K", "sync/4K", "free/4K",
+        "heap", "alloc", "free", "ENOMEM", "EMFILE", "alloc/4K", "mmap/4K", "sync/4K", "free/4K",
     ];
     let rows: Vec<Vec<String>> = result
         .heap_results
@@ -1021,6 +1030,7 @@ fn print_per_heap_table(result: &AgingResult) {
                 fmt_num(h.allocs),
                 fmt_num(h.frees),
                 fmt_num(h.enomem),
+                fmt_num(h.emfile),
                 fmt_op_per_4k(&h.alloc_lat),
                 fmt_op_per_4k(&h.mmap_lat),
                 fmt_op_per_4k(&h.sync_lat),
@@ -1364,6 +1374,7 @@ mod tests {
             total_frees: 1000,
             total_errors: 0,
             enomem_count: 0,
+            emfile_count: 0,
             total_merges: 0,
             total_merge_errors: 0,
             throughput_iters_per_sec: Some(16.7),
