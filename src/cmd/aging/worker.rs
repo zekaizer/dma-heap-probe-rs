@@ -60,7 +60,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
             .heap_counters
             .iter()
             .position(|hc| hc.name == caps.name)
-            .unwrap_or(0);
+            .expect("heap name must exist in state.heap_counters");
         contexts.push(HeapContext {
             heap,
             caps,
@@ -115,7 +115,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     per_thread_max_bytes: u64,
     worker_id: u32,
 ) {
-    let mut local_index = worker_id as usize;
+    let mut local_index: usize = 0;
     let mut hold_pool: HoldPool<'_, B> = HoldPool::new(
         per_thread_max,
         per_thread_max_bytes,
@@ -183,7 +183,11 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
 
         // Hold every Nth buffer, free the rest immediately.
         if per_thread_max > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
-            hold_pool.push(buf);
+            if !hold_pool.push(buf) {
+                // Global cap rejected — record the free ourselves.
+                hc.frees.fetch_add(1, Relaxed);
+                state.total_frees.fetch_add(1, Relaxed);
+            }
         } else {
             let t_free = Instant::now();
             drop(buf);
