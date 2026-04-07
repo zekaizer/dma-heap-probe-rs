@@ -42,6 +42,23 @@ fn perf_defaults() {
 }
 
 #[test]
+fn perf_pool_bypass() {
+    dhp()
+        .args([
+            "perf",
+            "--iterations",
+            "3",
+            "--warmup",
+            "1",
+            "--pool-bypass",
+            "--drain-count",
+            "32",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
 fn pressure_defaults() {
     dhp()
         .args(["pressure", "--alloc-size", "4096"])
