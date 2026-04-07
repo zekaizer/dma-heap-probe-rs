@@ -414,7 +414,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
             .heap_counters
             .iter()
             .position(|hc| hc.name == caps.name)
-            .unwrap_or(0);
+            .expect("heap name must exist in state.heap_counters");
         contexts.push(FuzzHeapContext {
             heap,
             caps,
