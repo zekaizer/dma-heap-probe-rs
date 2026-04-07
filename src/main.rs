@@ -175,14 +175,22 @@ fn dispatch_command<
             sizes,
             iterations,
             warmup,
-            pool_bypass: _,
-            drain_count: _,
+            pool_bypass,
+            drain_count,
         } => {
             let start = Instant::now();
             let perf_analysis = std::cell::RefCell::new(None);
             let (sub, err) = run_per_heap(heaps, |h| {
-                let (s, e, a) =
-                    cmd::perf::run(backend, h, sizes.as_deref(), *iterations, *warmup, heap_w);
+                let (s, e, a) = cmd::perf::run(
+                    backend,
+                    h,
+                    sizes.as_deref(),
+                    *iterations,
+                    *warmup,
+                    heap_w,
+                    *pool_bypass,
+                    *drain_count,
+                );
                 if perf_analysis.borrow().is_none() {
                     *perf_analysis.borrow_mut() = a;
                 }
@@ -411,7 +419,7 @@ fn run_all<
             stage_result(cmd::negative::run(backend, heap, heap_w))
         });
         runner::run_stage(&mut results, "perf", heap, heap_w, || {
-            let (s, e, _) = cmd::perf::run(backend, heap, None, 10, 2, heap_w);
+            let (s, e, _) = cmd::perf::run(backend, heap, None, 10, 2, heap_w, false, None);
             stage_result((s, e))
         });
         runner::run_stage(&mut results, "pressure", heap, heap_w, || {

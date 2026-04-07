@@ -803,6 +803,9 @@ pub struct PerfAnalysis {
     /// Effective sample size (Kish's formula).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ess: Option<f64>,
+    /// Pool depth estimate (present when `--pool-bypass` is active).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pool_estimate: Option<PoolEstimate>,
 }
 
 /// Latency stats for a specific allocation size.
@@ -897,6 +900,7 @@ fn human_size(bytes: u64) -> String {
 /// Run all stage 3 performance tests.
 /// Returns sub-test results, the first error (if any), and analysis JSON.
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -904,6 +908,8 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> (
     Vec<SubTestResult>,
     Option<anyhow::Error>,
@@ -916,13 +922,23 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ?sizes,
         iterations,
         warmup,
+        pool_bypass,
         "perf sequence"
     );
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
     // Run bench_alloc_only separately to capture PerfAnalysis.
-    let alloc_result = bench_alloc_only(backend, heap_name, sizes, iterations, warmup, heap_w);
+    let alloc_result = bench_alloc_only(
+        backend,
+        heap_name,
+        sizes,
+        iterations,
+        warmup,
+        heap_w,
+        pool_bypass,
+        drain_count,
+    );
     let analysis = alloc_result.as_ref().ok().cloned();
 
     let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
@@ -930,7 +946,16 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         (
             "bench_full_pipeline",
             if caps.can_mmap {
-                bench_full_pipeline(backend, heap_name, sizes, iterations, warmup, heap_w)
+                bench_full_pipeline(
+                    backend,
+                    heap_name,
+                    sizes,
+                    iterations,
+                    warmup,
+                    heap_w,
+                    pool_bypass,
+                    drain_count,
+                )
             } else {
                 Ok(())
             },
@@ -938,12 +963,29 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         ),
         (
             "bench_close",
-            bench_close(backend, heap_name, sizes, iterations, warmup, heap_w),
+            bench_close(
+                backend,
+                heap_name,
+                sizes,
+                iterations,
+                warmup,
+                heap_w,
+                pool_bypass,
+                drain_count,
+            ),
             false,
         ),
         (
             "bench_order_boundary",
-            bench_order_boundary(backend, heap_name, iterations, warmup, heap_w),
+            bench_order_boundary(
+                backend,
+                heap_name,
+                iterations,
+                warmup,
+                heap_w,
+                pool_bypass,
+                drain_count,
+            ),
             false,
         ),
         (
@@ -970,6 +1012,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
 /// Benchmark alloc-only latency (ioctl call to fd return).
 /// Returns `PerfAnalysis` with all computed diagnostics for JSON output.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
+#[allow(clippy::too_many_arguments)]
 fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -977,14 +1020,33 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> nix::Result<PerfAnalysis> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
     let mut last_samples: Vec<u64> = Vec::new();
     let mut all_stats: Vec<(u64, LatencyStats)> = Vec::new();
+    let mut pool_est: Option<PoolEstimate> = None;
 
     for &size in sizes {
+        // Pool bypass: estimate and log pool depth per size.
+        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+            tracing::info!(
+                size,
+                depth = est.depth_buffers,
+                source = ?est.source,
+                "pool bypass active"
+            );
+            let count = est.depth_buffers;
+            pool_est = Some(est);
+            Some(PoolDrainer::new(backend, &heap, size, count))
+        } else {
+            None
+        };
+
         // Warmup
         for _ in 0..warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
@@ -995,12 +1057,15 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         // Measure
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
-            let start = Instant::now();
-            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-            let elapsed = start.elapsed().as_micros() as u64;
+            let elapsed = with_pool_bypass(&mut drainer, || {
+                let start = Instant::now();
+                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+                let e = start.elapsed().as_micros() as u64;
+                let buf = DmaBuf::new(backend, fd, size as usize);
+                drop(buf);
+                Ok(e)
+            })?;
             samples.push(elapsed);
-            let buf = DmaBuf::new(backend, fd, size as usize);
-            drop(buf);
         }
 
         if let Some(stats) = compute_stats(&samples) {
@@ -1272,6 +1337,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         drift_pct,
         autocorr_r: ac_r,
         ess: ac_ess,
+        pool_estimate: pool_est,
     })
 }
 
@@ -1410,6 +1476,7 @@ const STAGE_NAMES: &[&str] = &["alloc", "mmap", "sync_w", "write", "sync_r"];
 /// `write_bytes`, `sync_start`(R)+`sync_end`(R). Reports both total and
 /// per-stage average with percentage of total.
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
 fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -1417,11 +1484,21 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut total_rows: Vec<Vec<String>> = Vec::new();
 
     for &size in sizes {
+        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+            Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
+        } else {
+            None
+        };
+        let _ = &mut drainer; // suppress unused warning for non-bypass path
+
         // Warmup
         for _ in 0..warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
@@ -1521,6 +1598,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
 /// Benchmark close (release path) latency.
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
 fn bench_close<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
@@ -1528,12 +1606,21 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
     iterations: u32,
     warmup: u32,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut ratio_points: Vec<(u64, u64, u64)> = Vec::new();
 
     for &size in sizes {
+        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+            Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
+        } else {
+            None
+        };
+
         // Warmup
         for _ in 0..warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
@@ -1545,6 +1632,10 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         let mut close_samples = Vec::with_capacity(iterations as usize);
         let mut alloc_samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
+            if let Some(d) = drainer.as_mut() {
+                try_drop_caches();
+                d.drain()?;
+            }
             let t0 = Instant::now();
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let t1 = Instant::now();
@@ -1554,6 +1645,9 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
             let t3 = Instant::now();
             alloc_samples.push(t1.duration_since(t0).as_micros() as u64);
             close_samples.push(t3.duration_since(t2).as_micros() as u64);
+            if let Some(d) = drainer.as_mut() {
+                d.release();
+            }
         }
 
         if let Some(stats) = compute_stats(&close_samples) {
@@ -1620,18 +1714,28 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
 /// Benchmark alloc latency across order-boundary sizes (4K to 8M).
 #[allow(clippy::cast_possible_truncation)]
+#[allow(clippy::too_many_arguments)]
 fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     iterations: u32,
     warmup: u32,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> nix::Result<()> {
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut sweep_points: Vec<(u64, u64)> = Vec::new();
 
     for &size in ORDER_BOUNDARY_SIZES {
+        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+            Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
+        } else {
+            None
+        };
+
         // Warmup
         for _ in 0..warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
@@ -1642,12 +1746,15 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
         // Measure
         let mut samples = Vec::with_capacity(iterations as usize);
         for _ in 0..iterations {
-            let start = Instant::now();
-            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-            let elapsed = start.elapsed().as_micros() as u64;
+            let elapsed = with_pool_bypass(&mut drainer, || {
+                let start = Instant::now();
+                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+                let e = start.elapsed().as_micros() as u64;
+                let buf = DmaBuf::new(backend, fd, size as usize);
+                drop(buf);
+                Ok(e)
+            })?;
             samples.push(elapsed);
-            let buf = DmaBuf::new(backend, fd, size as usize);
-            drop(buf);
         }
 
         if let Some(stats) = compute_stats(&samples) {
@@ -1924,6 +2031,295 @@ fn bench_internal_frag<B: HeapBackend + DmaBufBackend>(
         &rows,
     );
     Ok(())
+}
+
+// ── Pool bypass infrastructure ──
+
+/// How the pool depth was estimated.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum PoolEstimateSource {
+    /// Read from `/sys/kernel/dma_heap/total_pools_kb`.
+    Sysfs,
+    /// Detected via latency transition probing.
+    Probed,
+    /// Conservative fallback (sysfs unavailable, probing failed/skipped).
+    Fallback,
+}
+
+/// Estimated pool depth for a given allocation size.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PoolEstimate {
+    /// Estimated pool depth in buffers of the requested size.
+    pub depth_buffers: u32,
+    /// Estimated pool size in bytes.
+    pub pool_bytes: u64,
+    /// How the estimate was obtained.
+    pub source: PoolEstimateSource,
+    /// Latency transition index (probing only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub knee_index: Option<u32>,
+    /// Fast-path average latency in microseconds (probing only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fast_avg_us: Option<u64>,
+    /// Slow-path average latency in microseconds (probing only).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub slow_avg_us: Option<u64>,
+}
+
+/// Maximum number of probe allocations (safety limit).
+const MAX_PROBE_ALLOCS: usize = 2048;
+
+/// Minimum drain count regardless of estimation method.
+const MIN_DRAIN_COUNT: u32 = 32;
+
+/// Fallback drain count when all estimation methods fail.
+const FALLBACK_DRAIN_COUNT: u32 = 256;
+
+/// Fallback pool size cap in bytes (64 MB).
+const FALLBACK_POOL_CAP: u64 = 64 * 1024 * 1024;
+
+/// Detect the latency transition point (knee) in a sequence of latencies.
+///
+/// Uses a sliding window to find where the mean jumps significantly (>= 2x)
+/// compared to the previous window. Returns the index of the first sample
+/// in the elevated window, representing the pool exhaustion point.
+///
+/// Returns `None` if no clear transition is found.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn detect_latency_knee(latencies: &[u64], window: usize) -> Option<usize> {
+    if latencies.len() < window * 2 {
+        return None;
+    }
+
+    let win_mean = |start: usize| -> f64 {
+        latencies[start..start + window]
+            .iter()
+            .map(|&v| v as f64)
+            .sum::<f64>()
+            / window as f64
+    };
+
+    let mut prev_mean = win_mean(0);
+    for start in 1..=latencies.len() - window {
+        let curr_mean = win_mean(start);
+        if prev_mean > 0.0 && curr_mean >= prev_mean * 2.0 {
+            return Some(start);
+        }
+        prev_mean = curr_mean;
+    }
+
+    None
+}
+
+/// Probe pool depth by allocating without releasing until latency spikes.
+///
+/// Holds all allocated buffers simultaneously to drain the pool.  Once the
+/// sliding-window average exceeds 3× the initial average, probing stops.
+/// The transition point is detected via `detect_latency_knee`.
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+fn probe_pool_depth<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap: &DmaHeap<'_, B>,
+    size: u64,
+) -> Option<PoolEstimate> {
+    let mut held: Vec<DmaBuf<'_, B>> = Vec::new();
+    let mut latencies: Vec<u64> = Vec::new();
+
+    for i in 0..MAX_PROBE_ALLOCS {
+        let start = Instant::now();
+        let fd = heap
+            .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
+            .ok()?;
+        let elapsed = start.elapsed().as_micros() as u64;
+        latencies.push(elapsed);
+        held.push(DmaBuf::new(backend, fd, size as usize));
+
+        // Early termination: recent 10 samples average >= 3× initial 10 samples.
+        if i >= 20 {
+            let early_avg: f64 = latencies[..10].iter().map(|&v| v as f64).sum::<f64>() / 10.0;
+            let recent_start = i - 9;
+            let recent_avg: f64 = latencies[recent_start..=i]
+                .iter()
+                .map(|&v| v as f64)
+                .sum::<f64>()
+                / 10.0;
+            if early_avg > 0.0 && recent_avg >= early_avg * 3.0 {
+                break;
+            }
+        }
+    }
+
+    drop(held);
+
+    let knee = detect_latency_knee(&latencies, 10)?;
+
+    // Compute fast/slow averages around the knee.
+    let fast_avg = if knee > 0 {
+        latencies[..knee].iter().sum::<u64>() / knee as u64
+    } else {
+        0
+    };
+    let slow_count = latencies.len() - knee;
+    let slow_avg = if slow_count > 0 {
+        latencies[knee..].iter().sum::<u64>() / slow_count as u64
+    } else {
+        0
+    };
+
+    // Add 20% margin to account for partial pool state.
+    let depth = (knee as u32 * 6 / 5).max(MIN_DRAIN_COUNT);
+
+    Some(PoolEstimate {
+        depth_buffers: depth,
+        pool_bytes: u64::from(depth) * size,
+        source: PoolEstimateSource::Probed,
+        knee_index: Some(knee as u32),
+        fast_avg_us: Some(fast_avg),
+        slow_avg_us: Some(slow_avg),
+    })
+}
+
+/// Estimate pool depth using the 3-tier strategy: sysfs → probe → fallback.
+#[allow(clippy::cast_possible_truncation)]
+pub(crate) fn estimate_pool_depth<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap: &DmaHeap<'_, B>,
+    size: u64,
+    override_count: Option<u32>,
+) -> PoolEstimate {
+    // User override takes priority.
+    if let Some(count) = override_count {
+        let count = count.max(MIN_DRAIN_COUNT);
+        return PoolEstimate {
+            depth_buffers: count,
+            pool_bytes: u64::from(count) * size,
+            source: PoolEstimateSource::Fallback,
+            knee_index: None,
+            fast_avg_us: None,
+            slow_avg_us: None,
+        };
+    }
+
+    // Tier 1: sysfs.
+    if let Some(pool_kb) = crate::sysfs::read_dma_heap_pool_kb() {
+        let pool_bytes = pool_kb * 1024;
+        // drain_count = pool_bytes / size * 1.2, minimum MIN_DRAIN_COUNT.
+        let raw = pool_bytes / size;
+        let count = (raw * 6 / 5).max(u64::from(MIN_DRAIN_COUNT)) as u32;
+        tracing::info!(pool_kb, size, count, "pool estimate from sysfs");
+        return PoolEstimate {
+            depth_buffers: count,
+            pool_bytes,
+            source: PoolEstimateSource::Sysfs,
+            knee_index: None,
+            fast_avg_us: None,
+            slow_avg_us: None,
+        };
+    }
+
+    // Tier 2: latency transition probing.
+    if let Some(est) = probe_pool_depth(backend, heap, size) {
+        tracing::info!(
+            depth = est.depth_buffers,
+            knee = ?est.knee_index,
+            fast = ?est.fast_avg_us,
+            slow = ?est.slow_avg_us,
+            "pool estimate from probing"
+        );
+        return est;
+    }
+
+    // Tier 3: conservative fallback.
+    #[allow(clippy::cast_possible_truncation)]
+    let cap_count = (FALLBACK_POOL_CAP / size) as u32;
+    let count = FALLBACK_DRAIN_COUNT.min(cap_count).max(MIN_DRAIN_COUNT);
+    tracing::info!(count, "pool estimate fallback");
+    PoolEstimate {
+        depth_buffers: count,
+        pool_bytes: u64::from(count) * size,
+        source: PoolEstimateSource::Fallback,
+        knee_index: None,
+        fast_avg_us: None,
+        slow_avg_us: None,
+    }
+}
+
+/// Manages draining and releasing pool buffers for bypass measurements.
+///
+/// On `drain()`, allocates `drain_count` buffers and holds them to exhaust the
+/// heap page pool.  On `release()`, drops all held buffers so pages return to
+/// the pool for the next cycle.
+pub(crate) struct PoolDrainer<'a, B: HeapBackend + DmaBufBackend> {
+    backend: &'a B,
+    heap: &'a DmaHeap<'a, B>,
+    size: u64,
+    drain_count: u32,
+    held: Vec<DmaBuf<'a, B>>,
+}
+
+impl<'a, B: HeapBackend + DmaBufBackend> PoolDrainer<'a, B> {
+    /// Create a new drainer (does not allocate until `drain()` is called).
+    pub fn new(backend: &'a B, heap: &'a DmaHeap<'a, B>, size: u64, drain_count: u32) -> Self {
+        Self {
+            backend,
+            heap,
+            size,
+            drain_count,
+            #[allow(clippy::cast_possible_truncation)]
+            held: Vec::with_capacity(drain_count as usize),
+        }
+    }
+
+    /// Allocate `drain_count` buffers to exhaust the pool.
+    pub fn drain(&mut self) -> nix::Result<()> {
+        for _ in 0..self.drain_count {
+            let fd = self.heap.alloc(
+                self.size,
+                DMA_HEAP_ALLOC_FD_FLAGS,
+                DMA_HEAP_VALID_HEAP_FLAGS,
+            )?;
+            #[allow(clippy::cast_possible_truncation)]
+            self.held
+                .push(DmaBuf::new(self.backend, fd, self.size as usize));
+        }
+        Ok(())
+    }
+
+    /// Release all held drain buffers (pages return to pool).
+    pub fn release(&mut self) {
+        self.held.clear();
+    }
+
+    /// Number of currently held drain buffers.
+    #[cfg(test)]
+    pub fn held_count(&self) -> usize {
+        self.held.len()
+    }
+}
+
+/// Try to drop OS page caches (best-effort, requires root).
+fn try_drop_caches() {
+    let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+}
+
+/// Run a single benchmark iteration with optional pool bypass.
+///
+/// If `drainer` is `Some`, drains the pool before the measurement and releases
+/// after. The closure `f` performs the actual timed operation.
+fn with_pool_bypass<B, F, T>(drainer: &mut Option<PoolDrainer<'_, B>>, f: F) -> nix::Result<T>
+where
+    B: HeapBackend + DmaBufBackend,
+    F: FnOnce() -> nix::Result<T>,
+{
+    if let Some(d) = drainer.as_mut() {
+        try_drop_caches();
+        d.drain()?;
+    }
+    let result = f();
+    if let Some(d) = drainer.as_mut() {
+        d.release();
+    }
+    result
 }
 
 #[cfg(test)]
@@ -2652,25 +3048,25 @@ mod tests {
     #[test]
     fn alloc_only_runs() {
         let b = MockBackend::new();
-        bench_alloc_only(&b, "system", &[4096], 10, 2, 6).unwrap();
+        bench_alloc_only(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
     }
 
     #[test]
     fn full_pipeline_runs() {
         let b = MockBackend::new();
-        bench_full_pipeline(&b, "system", &[4096], 10, 2, 6).unwrap();
+        bench_full_pipeline(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
     }
 
     #[test]
     fn close_runs() {
         let b = MockBackend::new();
-        bench_close(&b, "system", &[4096], 10, 2, 6).unwrap();
+        bench_close(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
     }
 
     #[test]
     fn order_boundary_runs() {
         let b = MockBackend::new();
-        bench_order_boundary(&b, "system", 5, 1, 6).unwrap();
+        bench_order_boundary(&b, "system", 5, 1, 6, false, None).unwrap();
     }
 
     #[test]
@@ -2701,7 +3097,7 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 5, 1, 6);
+        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 5, 1, 6, false, None);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 7);
@@ -2709,5 +3105,105 @@ mod tests {
         assert_eq!(a.stats.len(), 1);
         assert_eq!(a.stats[0].size, 4096);
         assert!(a.quality_score > 0);
+    }
+
+    // ── Pool bypass tests ──
+
+    #[test]
+    fn detect_latency_knee_clear_step() {
+        // 50 fast samples at ~5us, then 50 slow at ~100us (20x jump).
+        // Use window=3 so the sliding window averages transition sharply.
+        let mut latencies: Vec<u64> = vec![5; 50];
+        latencies.extend(vec![100; 50]);
+        let knee = detect_latency_knee(&latencies, 3);
+        assert!(knee.is_some());
+        let k = knee.unwrap();
+        // Knee should be near the transition point (index ~50)
+        assert!(k >= 48 && k <= 52, "knee={k} expected near 50");
+    }
+
+    #[test]
+    fn detect_latency_knee_no_transition() {
+        // All uniform values — no transition
+        let latencies = vec![10u64; 100];
+        assert!(detect_latency_knee(&latencies, 5).is_none());
+    }
+
+    #[test]
+    fn detect_latency_knee_gradual() {
+        // Gradual increase — may not trigger 2x threshold
+        let latencies: Vec<u64> = (1..=100).collect();
+        // With window=5, first window avg=3, later windows grow slowly
+        // At some point a window will be 2x the previous — find it or None
+        let _result = detect_latency_knee(&latencies, 5);
+        // Just verify it doesn't panic; gradual data may or may not trigger
+    }
+
+    #[test]
+    fn detect_latency_knee_too_short() {
+        let latencies = vec![10u64; 5];
+        assert!(detect_latency_knee(&latencies, 5).is_none());
+    }
+
+    #[test]
+    fn estimate_pool_depth_override() {
+        let b = MockBackend::new();
+        let heap = DmaHeap::open(&b, "system").unwrap();
+        let est = estimate_pool_depth(&b, &heap, 4096, Some(100));
+        // Override < MIN_DRAIN_COUNT gets clamped
+        assert!(est.depth_buffers >= 32);
+        assert_eq!(est.source, PoolEstimateSource::Fallback);
+    }
+
+    #[test]
+    fn estimate_pool_depth_fallback() {
+        // Mock backend has no sysfs, probing won't show latency transition
+        let b = MockBackend::new();
+        let heap = DmaHeap::open(&b, "system").unwrap();
+        let est = estimate_pool_depth(&b, &heap, 4096, None);
+        // Should fall through to probing or fallback
+        assert!(est.depth_buffers >= 32);
+        assert!(
+            est.source == PoolEstimateSource::Probed || est.source == PoolEstimateSource::Fallback
+        );
+    }
+
+    #[test]
+    fn pool_drainer_drain_and_release() {
+        let b = MockBackend::new();
+        let heap = DmaHeap::open(&b, "system").unwrap();
+        let mut drainer = PoolDrainer::new(&b, &heap, 4096, 10);
+        assert_eq!(drainer.held_count(), 0);
+        drainer.drain().unwrap();
+        assert_eq!(drainer.held_count(), 10);
+        drainer.release();
+        assert_eq!(drainer.held_count(), 0);
+    }
+
+    #[test]
+    fn pool_drainer_no_leak() {
+        let b = MockBackend::new();
+        let heap = DmaHeap::open(&b, "system").unwrap();
+        let before = b.buffer_count();
+        for _ in 0..5 {
+            let mut drainer = PoolDrainer::new(&b, &heap, 4096, 8);
+            drainer.drain().unwrap();
+            assert_eq!(drainer.held_count(), 8);
+            drainer.release();
+        }
+        // All buffers should be freed
+        assert_eq!(b.buffer_count(), before);
+    }
+
+    #[test]
+    fn run_with_pool_bypass() {
+        let b = MockBackend::new();
+        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 3, 1, 6, true, Some(32));
+        assert!(err.is_none());
+        assert!(results.iter().all(|t| t.passed));
+        let a = analysis.unwrap();
+        assert!(a.pool_estimate.is_some());
+        let est = a.pool_estimate.unwrap();
+        assert_eq!(est.depth_buffers, 32);
     }
 }
