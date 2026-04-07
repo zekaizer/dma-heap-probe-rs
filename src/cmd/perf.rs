@@ -1117,7 +1117,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
     }
 
-    // Distribution shape of last (largest) size.
+    // Distribution shape of last measured size.
     if let Some((skew, kurt)) = distribution_shape(&last_samples) {
         let tail = match () {
             () if skew > 2.0 => "heavy right tail",
@@ -1152,7 +1152,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
+    // Drift detection on the last measured size — most sensitive to thermal/pressure effects.
     if let Some(drift) = drift_info.as_ref().filter(|d| d.drift_pct.abs() > 10.0) {
         let direction = if drift.drift_pct > 0.0 {
             "degrading"
@@ -1182,7 +1182,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Autocorrelation check on last (largest) size — detects non-independence.
+    // Autocorrelation check on last measured size — detects non-independence.
     if let Some((r, ess)) = ac_info.filter(|(r, _)| r.abs() > 0.1) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ess_int = ess.round() as u64;
