@@ -490,7 +490,9 @@ fn format_throughput(ops: u64) -> String {
     if ops >= 1000 {
         format!("{}", ops / 1000)
     } else {
-        format!("0.{}", ops / 100)
+        #[allow(clippy::cast_precision_loss)]
+        let v = ops as f64 / 1000.0;
+        format!("{v:.1}")
     }
 }
 
@@ -2487,7 +2489,11 @@ mod tests {
     fn format_throughput_kops() {
         assert_eq!(format_throughput(100_000), "100");
         assert_eq!(format_throughput(23810), "23");
+        assert_eq!(format_throughput(1000), "1");
         assert_eq!(format_throughput(500), "0.5");
+        assert_eq!(format_throughput(150), "0.1");
+        assert_eq!(format_throughput(50), "0.1");
+        assert_eq!(format_throughput(0), "0.0");
     }
 
     // ── drift detection tests ──
