@@ -338,6 +338,7 @@ pub(crate) struct AgingState {
     pub peak_p99: AtomicU64,
     pub baseline_sum: AtomicU64,
     pub baseline_count: AtomicU64,
+    pub baseline_intervals: AtomicU64,
     pub baseline_ready: AtomicBool,
     pub final_interval_avg: AtomicU64,
 }
@@ -370,6 +371,7 @@ impl AgingState {
             peak_p99: AtomicU64::new(0),
             baseline_sum: AtomicU64::new(0),
             baseline_count: AtomicU64::new(0),
+            baseline_intervals: AtomicU64::new(0),
             baseline_ready: AtomicBool::new(false),
             final_interval_avg: AtomicU64::new(0),
         }
@@ -403,16 +405,24 @@ impl AgingState {
                 Err(actual) => cur_p99 = actual,
             }
         }
-        // Accumulate baseline from first BASELINE_INTERVALS intervals.
+        // Accumulate sample-weighted baseline from first BASELINE_INTERVALS intervals.
         if !self.baseline_ready.load(Relaxed) {
-            self.baseline_sum.fetch_add(stats.avg_us, Relaxed);
-            let count = self.baseline_count.fetch_add(1, Relaxed) + 1;
-            if count >= BASELINE_INTERVALS {
+            self.baseline_sum
+                .fetch_add(stats.avg_us * stats.count as u64, Relaxed);
+            self.baseline_count.fetch_add(stats.count as u64, Relaxed);
+            let tick = self.baseline_intervals.fetch_add(1, Relaxed) + 1;
+            if tick >= BASELINE_INTERVALS {
                 self.baseline_ready.store(true, Relaxed);
-                let avg = self.baseline_sum.load(Relaxed) / count;
+                let sample_count = self.baseline_count.load(Relaxed);
+                let avg = if sample_count > 0 {
+                    self.baseline_sum.load(Relaxed) / sample_count
+                } else {
+                    0
+                };
                 tracing::info!(
                     baseline_avg_us = avg,
-                    intervals = count,
+                    intervals = tick,
+                    samples = sample_count,
                     "trend baseline established"
                 );
             }
@@ -1521,8 +1531,13 @@ mod tests {
         state.update_cumulative(&stats);
 
         assert!(!state.baseline_ready.load(Relaxed)); // need 5 intervals
-        assert_eq!(state.baseline_count.load(Relaxed), 1);
-        assert_eq!(state.baseline_sum.load(Relaxed), stats.avg_us);
+        assert_eq!(state.baseline_intervals.load(Relaxed), 1);
+        // Weighted: avg_us * count
+        assert_eq!(
+            state.baseline_sum.load(Relaxed),
+            stats.avg_us * stats.count as u64
+        );
+        assert_eq!(state.baseline_count.load(Relaxed), stats.count as u64);
         assert_eq!(state.peak_p99.load(Relaxed), stats.p99_us);
 
         // Second interval with higher p99
@@ -1534,10 +1549,10 @@ mod tests {
         let stats2 = perf::compute_stats(&latencies2).unwrap();
         state.update_cumulative(&stats2);
 
-        // baseline_sum should accumulate both intervals
+        // baseline_sum should accumulate weighted sums from both intervals
         assert_eq!(
             state.baseline_sum.load(Relaxed),
-            stats.avg_us + stats2.avg_us
+            stats.avg_us * stats.count as u64 + stats2.avg_us * stats2.count as u64
         );
         // final_interval_avg should be updated
         assert_eq!(state.final_interval_avg.load(Relaxed), stats2.avg_us);
@@ -1620,7 +1635,9 @@ mod tests {
         assert_eq!(cum.avg_us, 56);
         assert_eq!(cum.max_us, 200);
         assert_eq!(cum.p99_us, 190); // peak p99
-        assert_eq!(state.baseline_sum.load(Relaxed), 50 + 60); // 2 intervals
+        // Weighted: 50*10 + 60*20 = 1700, count = 30 samples
+        assert_eq!(state.baseline_sum.load(Relaxed), 1700);
+        assert_eq!(state.baseline_count.load(Relaxed), 30);
         assert_eq!(state.final_interval_avg.load(Relaxed), 60);
     }
 
