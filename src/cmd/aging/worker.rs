@@ -115,7 +115,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     per_thread_max_bytes: u64,
     worker_id: u32,
 ) {
-    let mut local_index = worker_id as usize;
+    let mut local_index: usize = 0;
     let mut hold_pool: HoldPool<'_, B> = HoldPool::new(
         per_thread_max,
         per_thread_max_bytes,
