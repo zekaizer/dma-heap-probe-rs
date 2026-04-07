@@ -175,6 +175,8 @@ fn dispatch_command<
             sizes,
             iterations,
             warmup,
+            pool_bypass: _,
+            drain_count: _,
         } => {
             let start = Instant::now();
             let perf_analysis = std::cell::RefCell::new(None);
@@ -305,6 +307,8 @@ fn dispatch_command<
             warmup,
             mode,
             buckets,
+            pool_bypass: _,
+            drain_count: _,
         } => {
             let start = Instant::now();
             let (sub, err) = cmd::histogram::run(
