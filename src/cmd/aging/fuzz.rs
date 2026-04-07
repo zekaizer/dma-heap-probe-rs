@@ -214,6 +214,8 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.state.total_frees.fetch_add(actual as u64, Relaxed);
             self.state.held_bufs.fetch_sub(actual as u64, Relaxed);
             self.state.held_bytes.fetch_sub(freed_bytes, Relaxed);
+            self.state.drain_bufs.fetch_add(actual as u64, Relaxed);
+            self.state.drain_bytes.fetch_add(freed_bytes, Relaxed);
             if crate::trace::enabled() {
                 crate::trace::instant("drain");
             }

@@ -325,6 +325,8 @@ pub(crate) struct AgingState {
     pub total_merge_errors: AtomicU64,
     pub held_bufs: AtomicU64,
     pub held_bytes: AtomicU64,
+    pub drain_bufs: AtomicU64,
+    pub drain_bytes: AtomicU64,
     pub hold_limit: HoldLimit,
     pub interval_latencies: Mutex<Vec<u64>>,
     pub heap_counters: Vec<HeapCounters>,
@@ -354,6 +356,8 @@ impl AgingState {
             total_merge_errors: AtomicU64::new(0),
             held_bufs: AtomicU64::new(0),
             held_bytes: AtomicU64::new(0),
+            drain_bufs: AtomicU64::new(0),
+            drain_bytes: AtomicU64::new(0),
             hold_limit,
             interval_latencies: Mutex::new(Vec::new()),
             heap_counters: heap_names
@@ -920,8 +924,8 @@ fn build_result(
             final_snap.high_order_free,
         ),
         heap_results,
-        drain_bufs: 0,
-        drain_bytes: 0,
+        drain_bufs: state.drain_bufs.load(Relaxed),
+        drain_bytes: state.drain_bytes.load(Relaxed),
         warnings: Vec::new(),
     }
 }
