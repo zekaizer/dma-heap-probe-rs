@@ -79,6 +79,14 @@ pub enum Command {
         /// Warmup iterations.
         #[arg(long, default_value_t = 10)]
         warmup: u32,
+
+        /// Drain heap page pool before each measurement to bypass pool fast-path.
+        #[arg(long)]
+        pool_bypass: bool,
+
+        /// Explicit drain buffer count for pool bypass (auto-estimated if omitted).
+        #[arg(long)]
+        drain_count: Option<u32>,
     },
 
     /// Memory pressure tests.
@@ -151,6 +159,14 @@ pub enum Command {
         /// Number of histogram buckets (0 = auto via Sturges' rule).
         #[arg(long, default_value_t = 0)]
         buckets: usize,
+
+        /// Drain heap page pool before each measurement to bypass pool fast-path.
+        #[arg(long)]
+        pool_bypass: bool,
+
+        /// Explicit drain buffer count for pool bypass (auto-estimated if omitted).
+        #[arg(long)]
+        drain_count: Option<u32>,
     },
 
     /// Samsung dma-buf container tests (merge, mask, cross-heap).
@@ -401,6 +417,54 @@ mod tests {
                 assert_eq!(interval, 2);
             }
             _ => panic!("expected Info"),
+        }
+    }
+
+    #[test]
+    fn perf_pool_bypass_defaults() {
+        let cli = parse(&["dhp", "perf"]);
+        match cli.command {
+            Command::Perf {
+                pool_bypass,
+                drain_count,
+                ..
+            } => {
+                assert!(!pool_bypass);
+                assert!(drain_count.is_none());
+            }
+            _ => panic!("expected Perf"),
+        }
+    }
+
+    #[test]
+    fn perf_pool_bypass_enabled() {
+        let cli = parse(&["dhp", "perf", "--pool-bypass", "--drain-count", "512"]);
+        match cli.command {
+            Command::Perf {
+                pool_bypass,
+                drain_count,
+                ..
+            } => {
+                assert!(pool_bypass);
+                assert_eq!(drain_count, Some(512));
+            }
+            _ => panic!("expected Perf"),
+        }
+    }
+
+    #[test]
+    fn histogram_pool_bypass() {
+        let cli = parse(&["dhp", "histogram", "--pool-bypass"]);
+        match cli.command {
+            Command::Histogram {
+                pool_bypass,
+                drain_count,
+                ..
+            } => {
+                assert!(pool_bypass);
+                assert!(drain_count.is_none());
+            }
+            _ => panic!("expected Histogram"),
         }
     }
 
