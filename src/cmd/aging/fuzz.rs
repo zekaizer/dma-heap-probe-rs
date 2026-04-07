@@ -539,7 +539,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
         .scan(0u64, |acc, &s| {
             let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
             let log2 = (s.max(2) as f64).log2() as u64;
-            *acc += base / (log2 * log2).max(1);
+            *acc += (base / (log2 * log2).max(1)).max(1);
             Some(*acc)
         })
         .collect();
@@ -899,6 +899,8 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
                 // No container device — fallback to simple alloc/close.
                 let buf = DmaBuf::new(backend, fd, size_usize);
                 drop(buf);
+                state.total_frees.fetch_add(1, Relaxed);
+                hc.frees.fetch_add(1, Relaxed);
                 return false;
             };
 
@@ -1411,5 +1413,41 @@ mod tests {
         assert_eq!(state.total_emfile.load(Relaxed), 3);
         assert_eq!(state.total_enomem.load(Relaxed), 0);
         assert_eq!(state.total_errors.load(Relaxed), 0);
+    }
+
+    /// All `FUZZ_SIZES` entries must produce non-zero weight so every size is
+    /// reachable by the random selector.
+    #[test]
+    fn all_fuzz_sizes_have_nonzero_weight() {
+        use super::FUZZ_SIZES;
+        for &s in FUZZ_SIZES {
+            let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
+            let log2 = (s.max(2) as f64).log2() as u64;
+            let weight = (base / (log2 * log2).max(1)).max(1);
+            assert!(
+                weight > 0,
+                "FUZZ_SIZES entry {s} has zero weight — unreachable by random selector"
+            );
+        }
+    }
+
+    /// MergeAndOperate fallback (no container device) must still balance
+    /// alloc/free counters.
+    #[test]
+    fn merge_fallback_counts_free() {
+        let b = MockBackend::new();
+        let heaps = vec!["system".to_string()];
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        // run_workers with 1 thread, few iterations — mock has no container
+        // device, so every MergeAndOperate falls through to the fallback path.
+        super::run_workers(&b, &heaps, 1, &state, None, Some(200), 8, 0, Some(42), None);
+        assert_eq!(
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+            "allocs ({}) must equal frees ({}) after drain — MergeAndOperate fallback \
+             may be leaking free counts",
+            state.total_allocs.load(Relaxed),
+            state.total_frees.load(Relaxed),
+        );
     }
 }
