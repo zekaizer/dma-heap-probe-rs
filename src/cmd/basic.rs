@@ -436,8 +436,16 @@ mod tests {
     // ── align_to helper ──
 
     #[test]
-    fn align_to_zero() {
+    fn align_to_zero_size() {
         assert_eq!(align_to(0, 4096), 0);
+    }
+
+    #[test]
+    fn align_to_zero_granularity() {
+        // Zero granularity must not panic; returns size unchanged.
+        assert_eq!(align_to(4096, 0), 4096);
+        assert_eq!(align_to(0, 0), 0);
+        assert_eq!(align_to(1, 0), 1);
     }
 
     #[test]
