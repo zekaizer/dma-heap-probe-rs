@@ -186,7 +186,7 @@ checksum = "6184e33543162437515c2e2b48714794e37845ec9851711914eec9d308f6ebe8"
 
 [[package]]
 name = "dma-heap-probe-rs"
-version = "2.5.1"
+version = "2.6.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
