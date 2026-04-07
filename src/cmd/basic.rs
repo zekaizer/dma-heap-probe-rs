@@ -615,4 +615,42 @@ mod tests {
         assert!(err.is_some());
         assert!(results.iter().any(|r| !r.passed));
     }
+
+    #[test]
+    fn run_restricted_heap_skips_mmap_tests() {
+        use crate::backend::mock::HeapProfile;
+        use std::collections::HashMap;
+
+        let mut configs = HashMap::new();
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        let backend = MockBackend::with_heaps(configs);
+
+        let (results, err) = run(&backend, "restricted", &[4096], 10, 4, 10);
+        assert!(err.is_none(), "restricted heap run should not error");
+
+        // mmap-dependent tests must be skipped
+        let mmap_tests = [
+            "write_read_verify",
+            "zero_on_alloc",
+            "concurrent_write_verify",
+        ];
+        for name in &mmap_tests {
+            let r = results.iter().find(|r| r.name.ends_with(name)).unwrap();
+            assert!(r.skipped, "{name} should be skipped on restricted heap");
+            assert!(r.passed, "{name} should still pass (skipped = ok)");
+        }
+
+        // Non-mmap tests must run (not skipped)
+        let non_mmap_tests = [
+            "alloc_close",
+            "alloc_free_loop",
+            "llseek_size",
+            "dup_survives_close",
+        ];
+        for name in &non_mmap_tests {
+            let r = results.iter().find(|r| r.name.ends_with(name)).unwrap();
+            assert!(!r.skipped, "{name} should run on restricted heap");
+            assert!(r.passed, "{name} should pass on restricted heap");
+        }
+    }
 }
