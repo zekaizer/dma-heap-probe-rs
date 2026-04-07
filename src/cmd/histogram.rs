@@ -5,7 +5,7 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cli::HistMode;
-use crate::cmd::perf::{self, percentile, percentile_frac};
+use crate::cmd::perf::{self, PoolDrainer, estimate_pool_depth, percentile, percentile_frac};
 use crate::dmabuf::DmaBuf;
 use crate::fmt;
 use crate::heap::DmaHeap;
@@ -25,6 +25,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
     mode: HistMode,
     buckets: usize,
     heap_w: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> (Vec<SubTestResult>, Option<anyhow::Error>) {
     let bucket_count = if buckets == 0 {
         auto_buckets(samples as usize)
@@ -86,6 +88,8 @@ pub fn run<B: HeapBackend + DmaBufBackend + Send + Sync>(
                 warmup,
                 mode,
                 bucket_count,
+                pool_bypass,
+                drain_count,
             ) {
                 Ok(()) => {
                     fmt::print_pass(heap_name, heap_w, &format!("histogram::{test_name}"));
@@ -130,16 +134,33 @@ fn collect_and_print<B: HeapBackend + DmaBufBackend>(
     warmup: u32,
     mode: HistMode,
     bucket_count: usize,
+    pool_bypass: bool,
+    drain_count: Option<u32>,
 ) -> nix::Result<()> {
     // Warmup
     for _ in 0..warmup {
         run_alloc_pipeline(backend, heap, size, mode)?;
     }
 
+    // Pool bypass: estimate drain count per size.
+    let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
+        let est = estimate_pool_depth(backend, heap, size, drain_count);
+        tracing::info!(
+            heap = heap_name,
+            size,
+            depth = est.depth_buffers,
+            source = ?est.source,
+            "histogram pool bypass active"
+        );
+        Some(PoolDrainer::new(backend, heap, size, est.depth_buffers))
+    } else {
+        None
+    };
+
     // Collect
     let latencies = match mode {
-        HistMode::CloseOnly => collect_close_only(backend, heap, size, samples)?,
-        _ => collect_timed(backend, heap, size, samples, mode)?,
+        HistMode::CloseOnly => collect_close_only(backend, heap, size, samples, &mut drainer)?,
+        _ => collect_timed(backend, heap, size, samples, mode, &mut drainer)?,
     };
 
     print_histogram(heap_name, size, mode, &latencies, bucket_count);
@@ -154,13 +175,20 @@ fn collect_timed<B: HeapBackend + DmaBufBackend>(
     size: u64,
     samples: u32,
     mode: HistMode,
+    drainer: &mut Option<PoolDrainer<'_, B>>,
 ) -> nix::Result<Vec<u64>> {
     let mut latencies = Vec::with_capacity(samples as usize);
     for _ in 0..samples {
+        if let Some(d) = drainer.as_mut() {
+            d.drain()?;
+        }
         let start = Instant::now();
         run_alloc_pipeline(backend, heap, size, mode)?;
         let elapsed = start.elapsed().as_micros() as u64;
         latencies.push(elapsed);
+        if let Some(d) = drainer.as_mut() {
+            d.release();
+        }
     }
     Ok(latencies)
 }
@@ -172,15 +200,22 @@ fn collect_close_only<B: HeapBackend + DmaBufBackend>(
     heap: &DmaHeap<'_, B>,
     size: u64,
     samples: u32,
+    drainer: &mut Option<PoolDrainer<'_, B>>,
 ) -> nix::Result<Vec<u64>> {
     let mut latencies = Vec::with_capacity(samples as usize);
     for _ in 0..samples {
+        if let Some(d) = drainer.as_mut() {
+            d.drain()?;
+        }
         let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
         let buf = DmaBuf::new(backend, fd, size as usize);
         let start = Instant::now();
         drop(buf);
         let elapsed = start.elapsed().as_micros() as u64;
         latencies.push(elapsed);
+        if let Some(d) = drainer.as_mut() {
+            d.release();
+        }
     }
     Ok(latencies)
 }
@@ -431,7 +466,18 @@ mod tests {
     fn run_alloc_only() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 100, 10, HistMode::AllocOnly, 0, 6);
+        let (results, err) = run(
+            &b,
+            &heaps,
+            &[4096],
+            100,
+            10,
+            HistMode::AllocOnly,
+            0,
+            6,
+            false,
+            None,
+        );
         assert!(err.is_none());
         assert_eq!(results.len(), 1);
         assert!(results[0].passed);
@@ -442,7 +488,18 @@ mod tests {
     fn run_full_pipeline() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::FullPipeline, 5, 6);
+        let (results, err) = run(
+            &b,
+            &heaps,
+            &[4096],
+            50,
+            5,
+            HistMode::FullPipeline,
+            5,
+            6,
+            false,
+            None,
+        );
         assert!(err.is_none());
         assert!(results[0].passed);
     }
@@ -451,7 +508,18 @@ mod tests {
     fn run_close_only() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 50, 5, HistMode::CloseOnly, 0, 6);
+        let (results, err) = run(
+            &b,
+            &heaps,
+            &[4096],
+            50,
+            5,
+            HistMode::CloseOnly,
+            0,
+            6,
+            false,
+            None,
+        );
         assert!(err.is_none());
         assert!(results[0].passed);
     }
@@ -461,7 +529,18 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let sizes = [4096, 65536, 1_048_576];
-        let (results, err) = run(&b, &heaps, &sizes, 20, 5, HistMode::AllocOnly, 0, 6);
+        let (results, err) = run(
+            &b,
+            &heaps,
+            &sizes,
+            20,
+            5,
+            HistMode::AllocOnly,
+            0,
+            6,
+            false,
+            None,
+        );
         assert!(err.is_none());
         assert_eq!(results.len(), 3);
         assert!(results.iter().all(|r| r.passed));
@@ -471,7 +550,18 @@ mod tests {
     fn run_multi_heap() {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string(), "reserved".to_string()];
-        let (results, err) = run(&b, &heaps, &[4096], 20, 5, HistMode::AllocOnly, 0, 8);
+        let (results, err) = run(
+            &b,
+            &heaps,
+            &[4096],
+            20,
+            5,
+            HistMode::AllocOnly,
+            0,
+            8,
+            false,
+            None,
+        );
         assert!(err.is_none());
         assert_eq!(results.len(), 2);
     }

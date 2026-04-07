@@ -315,12 +315,21 @@ fn dispatch_command<
             warmup,
             mode,
             buckets,
-            pool_bypass: _,
-            drain_count: _,
+            pool_bypass,
+            drain_count,
         } => {
             let start = Instant::now();
             let (sub, err) = cmd::histogram::run(
-                backend, heaps, sizes, *samples, *warmup, *mode, *buckets, heap_w,
+                backend,
+                heaps,
+                sizes,
+                *samples,
+                *warmup,
+                *mode,
+                *buckets,
+                heap_w,
+                *pool_bypass,
+                *drain_count,
             );
             Ok(Some(build_single_stage_result(
                 "histogram",
