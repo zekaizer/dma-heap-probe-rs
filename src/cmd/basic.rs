@@ -305,6 +305,7 @@ fn test_export_sync_file<B: HeapBackend + DmaBufBackend>(
             tracing::error!(flags, sync_fd, "invalid sync_file fd");
             return Err(Errno::EIO);
         }
+        backend.close(sync_fd)?;
     }
 
     Ok(())
@@ -326,6 +327,8 @@ fn test_import_sync_file<B: HeapBackend + DmaBufBackend>(
 
     buf.import_sync_file(DMA_BUF_SYNC_READ as u32, sync_fd)?;
     tracing::debug!(sync_fd, "imported sync_file");
+
+    backend.close(sync_fd)?;
 
     Ok(())
 }
