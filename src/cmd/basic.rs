@@ -1,7 +1,7 @@
 // Basic deterministic tests: alloc, mmap, sync, llseek, zeroed, repeated,
 // sync_file export/import, concurrent alloc, dup.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use nix::errno::Errno;
 
@@ -342,8 +342,8 @@ fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     threads: u32,
 ) -> nix::Result<()> {
-    let fail_count = AtomicUsize::new(0);
-    let fail_ref = &fail_count;
+    let first_err: Mutex<Option<(u32, Errno)>> = Mutex::new(None);
+    let err_ref = &first_err;
 
     std::thread::scope(|s| {
         for tid in 0..threads {
@@ -379,17 +379,19 @@ fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     Ok(())
                 })();
 
-                if result.is_err() {
-                    fail_ref.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = result {
+                    let mut guard = err_ref.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some((tid, e));
+                    }
                 }
             });
         }
     });
 
-    let failures = fail_count.load(Ordering::Relaxed);
-    if failures > 0 {
-        tracing::error!(failures, threads, "concurrent alloc failures");
-        return Err(Errno::EIO);
+    if let Some((tid, errno)) = first_err.into_inner().unwrap() {
+        tracing::error!(%errno, tid, threads, "concurrent alloc failure");
+        return Err(errno);
     }
 
     tracing::debug!(threads, "all concurrent threads passed");
