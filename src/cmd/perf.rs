@@ -108,7 +108,7 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
     let ci95 = (1.96 * stddev / (count as f64).sqrt()).ceil() as u64;
 
     // MAD: median(|x_i - median|)
-    let median = sorted[count / 2] as f64;
+    let median = percentile(&sorted, 50) as f64;
     let mut abs_devs: Vec<u64> = sorted
         .iter()
         .map(|&x| {
@@ -490,7 +490,9 @@ fn format_throughput(ops: u64) -> String {
     if ops >= 1000 {
         format!("{}", ops / 1000)
     } else {
-        format!("0.{}", ops / 100)
+        #[allow(clippy::cast_precision_loss)]
+        let v = ops as f64 / 1000.0;
+        format!("{v:.1}")
     }
 }
 
@@ -980,7 +982,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
     let mut last_samples: Vec<u64> = Vec::new();
-    let mut all_stats: Vec<LatencyStats> = Vec::new();
+    let mut all_stats: Vec<(u64, LatencyStats)> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -1024,7 +1026,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             }
 
             regression_points.push((size, stats.avg_us));
-            all_stats.push(stats.clone());
+            all_stats.push((size, stats.clone()));
             last_samples = samples;
             rows.push(vec![
                 human_size(size),
@@ -1067,10 +1069,15 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Pre-compute expensive analyses once for reuse in display + JSON.
     let regression = linear_regression(&regression_points);
-    let drift_info = detect_drift(&last_samples);
-    let ac_info = autocorrelation(&last_samples);
-    let mut last_sorted = last_samples.clone();
-    last_sorted.sort_unstable();
+    let (drift_info, ac_info, last_sorted) = if last_samples.is_empty() {
+        (None, None, Vec::new())
+    } else {
+        let drift = detect_drift(&last_samples);
+        let ac = autocorrelation(&last_samples);
+        let mut sorted = last_samples.clone();
+        sorted.sort_unstable();
+        (drift, ac, sorted)
+    };
 
     // Size-latency regression: latency_us = base + slope * size_bytes
     if let Some(ref fit) = regression {
@@ -1088,13 +1095,12 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Throughput scaling efficiency: how well does throughput hold as size grows?
     if all_stats.len() >= 2 {
-        let base_tp = all_stats[0].throughput_ops;
+        let base_tp = all_stats[0].1.throughput_ops;
         if base_tp > 0 {
             let mut scaling_rows: Vec<Vec<String>> = Vec::new();
-            for (i, stats) in all_stats.iter().enumerate() {
+            for &(size, ref stats) in &all_stats {
                 #[allow(clippy::cast_precision_loss)]
                 let efficiency = stats.throughput_ops as f64 / base_tp as f64 * 100.0;
-                let size = sizes[i];
                 // Bandwidth: throughput * size = bytes/sec.
                 #[allow(clippy::cast_precision_loss)]
                 let bw_mb = stats.throughput_ops as f64 * size as f64 / 1_048_576.0;
@@ -1116,7 +1122,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         }
     }
 
-    // Distribution shape of last (largest) size.
+    // Distribution shape of last measured size.
     if let Some((skew, kurt)) = distribution_shape(&last_samples) {
         let tail = match () {
             () if skew > 2.0 => "heavy right tail",
@@ -1151,7 +1157,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Drift detection on the last (largest) size — most sensitive to thermal/pressure effects.
+    // Drift detection on the last measured size — most sensitive to thermal/pressure effects.
     if let Some(drift) = drift_info.as_ref().filter(|d| d.drift_pct.abs() > 10.0) {
         let direction = if drift.drift_pct > 0.0 {
             "degrading"
@@ -1181,7 +1187,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
         );
     }
 
-    // Autocorrelation check on last (largest) size — detects non-independence.
+    // Autocorrelation check on last measured size — detects non-independence.
     if let Some((r, ess)) = ac_info.filter(|(r, _)| r.abs() > 0.1) {
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let ess_int = ess.round() as u64;
@@ -1226,7 +1232,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Quality scorecard: aggregate all diagnostic signals (reuse cached drift_info).
     let drift_pct = drift_info.as_ref().map_or(0.0, |d| d.drift_pct);
-    let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();
+    let stat_refs: Vec<&LatencyStats> = all_stats.iter().map(|(_, s)| s).collect();
     let qc = quality_scorecard(&stat_refs, drift_pct, warmup_ok);
     crate::fmt::print_metric(
         heap_name,
@@ -1249,11 +1255,10 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     }
 
     // Build PerfAnalysis for JSON output.
-    let size_stats: Vec<SizeStats> = sizes
+    let size_stats: Vec<SizeStats> = all_stats
         .iter()
-        .zip(all_stats.iter())
-        .map(|(&s, st)| SizeStats {
-            size: s,
+        .map(|(size, st)| SizeStats {
+            size: *size,
             latency: st.clone(),
         })
         .collect();
@@ -2487,7 +2492,11 @@ mod tests {
     fn format_throughput_kops() {
         assert_eq!(format_throughput(100_000), "100");
         assert_eq!(format_throughput(23810), "23");
+        assert_eq!(format_throughput(1000), "1");
         assert_eq!(format_throughput(500), "0.5");
+        assert_eq!(format_throughput(150), "0.1");
+        assert_eq!(format_throughput(50), "0.1");
+        assert_eq!(format_throughput(0), "0.0");
     }
 
     // ── drift detection tests ──
