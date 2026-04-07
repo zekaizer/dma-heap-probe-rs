@@ -5,8 +5,6 @@
 use std::sync::atomic::Ordering::Relaxed;
 use std::time::{Duration, Instant};
 
-use nix::errno::Errno;
-
 use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
@@ -144,33 +142,8 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
         {
             Ok(fd) => fd,
-            Err(Errno::ENOMEM) => {
-                state.total_enomem.fetch_add(1, Relaxed);
-                hc.enomem.fetch_add(1, Relaxed);
-                hold_pool.notify_enomem(worker_id);
-                if crate::trace::enabled() {
-                    crate::trace::instant("enomem");
-                }
-                tracing::debug!(
-                    worker_id,
-                    heap = ctx.caps.name.as_str(),
-                    size,
-                    "alloc ENOMEM, backing off"
-                );
-                std::thread::sleep(Duration::from_millis(10));
-                continue;
-            }
             Err(e) => {
-                tracing::info!(
-                    worker_id,
-                    heap = ctx.caps.name.as_str(),
-                    size,
-                    errno = %e,
-                    "alloc error"
-                );
-                state.total_errors.fetch_add(1, Relaxed);
-                hc.errors.fetch_add(1, Relaxed);
-                hold_pool.notify_pressure(worker_id);
+                super::fuzz::handle_alloc_error(e, worker_id, state, hc, &mut hold_pool);
                 continue;
             }
         };

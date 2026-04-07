@@ -463,6 +463,45 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     }
 }
 
+/// Handle alloc error in fuzz/worker loops.
+/// Returns `true` if the caller should `continue` (skip this iteration).
+pub(super) fn handle_alloc_error<B: HeapBackend + DmaBufBackend>(
+    err: Errno,
+    worker_id: u32,
+    state: &AgingState,
+    hc: &super::HeapCounters,
+    hold_pool: &mut HoldPool<'_, B>,
+) -> bool {
+    match err {
+        Errno::ENOMEM => {
+            state.total_enomem.fetch_add(1, Relaxed);
+            hc.enomem.fetch_add(1, Relaxed);
+            hold_pool.notify_enomem(worker_id);
+            if crate::trace::enabled() {
+                crate::trace::instant("enomem");
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        Errno::EMFILE | Errno::ENFILE => {
+            state.total_emfile.fetch_add(1, Relaxed);
+            hc.emfile.fetch_add(1, Relaxed);
+            hold_pool.notify_enomem(worker_id);
+            if crate::trace::enabled() {
+                crate::trace::instant("emfile");
+            }
+            tracing::info!(worker_id, "alloc EMFILE/ENFILE, shrinking hold pool");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        e => {
+            tracing::info!(worker_id, errno = %e, "alloc error");
+            state.total_errors.fetch_add(1, Relaxed);
+            hc.errors.fetch_add(1, Relaxed);
+            hold_pool.notify_pressure(worker_id);
+        }
+    }
+    true
+}
+
 /// Single fuzz worker loop.
 #[allow(clippy::too_many_arguments, clippy::cast_possible_truncation)]
 fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
@@ -533,21 +572,8 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
             .alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)
         {
             Ok(fd) => fd,
-            Err(Errno::ENOMEM) => {
-                state.total_enomem.fetch_add(1, Relaxed);
-                hc.enomem.fetch_add(1, Relaxed);
-                hold_pool.notify_enomem(worker_id);
-                if crate::trace::enabled() {
-                    crate::trace::instant("enomem");
-                }
-                std::thread::sleep(Duration::from_millis(10));
-                continue;
-            }
             Err(e) => {
-                tracing::info!(worker_id, errno = %e, "alloc error");
-                state.total_errors.fetch_add(1, Relaxed);
-                hc.errors.fetch_add(1, Relaxed);
-                hold_pool.notify_pressure(worker_id);
+                handle_alloc_error(e, worker_id, state, hc, &mut hold_pool);
                 continue;
             }
         };
@@ -1333,5 +1359,57 @@ mod tests {
             pool.max_bytes,
             super::MIN_HOLD_BYTES
         );
+    }
+
+    /// EMFILE/ENFILE should trigger the same adaptive shrink as ENOMEM
+    /// via `notify_enomem()`, reducing `max_size` after threshold hits.
+    #[test]
+    fn emfile_triggers_adaptive_shrink() {
+        let heaps = test_heaps();
+        let b = MockBackend::new();
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        for _ in 0..16 {
+            pool.push(make_buf(&b));
+        }
+        assert_eq!(pool.max_size, 16);
+        // Simulate EMFILE handling: same path as ENOMEM (notify_enomem).
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, 8, "EMFILE path should shrink max_size");
+        // Verify pool was drained to fit new limit.
+        assert!(pool.bufs.len() <= 8);
+    }
+
+    /// After EMFILE-triggered shrink, recovery should grow back to initial limit.
+    #[test]
+    fn emfile_recovery_after_shrink() {
+        let heaps = test_heaps();
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        // Trigger shrink.
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        assert_eq!(pool.max_size, 8);
+        // Recover via RECOVERY_THRESHOLD consecutive successes.
+        for _ in 0..RECOVERY_THRESHOLD {
+            pool.notify_success(0);
+        }
+        assert_eq!(pool.max_size, 16, "should recover to initial max_size");
+    }
+
+    /// Verify that `total_emfile` counter increments independently from
+    /// `total_enomem` and `total_errors`.
+    #[test]
+    fn emfile_counter_independent() {
+        let heaps = test_heaps();
+        let state = AgingState::new(HoldLimit::Count(1000), &heaps);
+        assert_eq!(state.total_emfile.load(Relaxed), 0);
+        state.total_emfile.fetch_add(3, Relaxed);
+        assert_eq!(state.total_emfile.load(Relaxed), 3);
+        assert_eq!(state.total_enomem.load(Relaxed), 0);
+        assert_eq!(state.total_errors.load(Relaxed), 0);
     }
 }
