@@ -1069,10 +1069,15 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Pre-compute expensive analyses once for reuse in display + JSON.
     let regression = linear_regression(&regression_points);
-    let drift_info = detect_drift(&last_samples);
-    let ac_info = autocorrelation(&last_samples);
-    let mut last_sorted = last_samples.clone();
-    last_sorted.sort_unstable();
+    let (drift_info, ac_info, last_sorted) = if last_samples.is_empty() {
+        (None, None, Vec::new())
+    } else {
+        let drift = detect_drift(&last_samples);
+        let ac = autocorrelation(&last_samples);
+        let mut sorted = last_samples.clone();
+        sorted.sort_unstable();
+        (drift, ac, sorted)
+    };
 
     // Size-latency regression: latency_us = base + slope * size_bytes
     if let Some(ref fit) = regression {
