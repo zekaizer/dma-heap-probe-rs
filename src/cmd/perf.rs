@@ -3119,7 +3119,7 @@ mod tests {
         assert!(knee.is_some());
         let k = knee.unwrap();
         // Knee should be near the transition point (index ~50)
-        assert!(k >= 48 && k <= 52, "knee={k} expected near 50");
+        assert!((48..=52).contains(&k), "knee={k} expected near 50");
     }
 
     #[test]
