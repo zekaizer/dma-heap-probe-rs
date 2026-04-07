@@ -14,7 +14,12 @@ use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS}
 pub(crate) const DEFAULT_GRANULARITY: u64 = 4096;
 
 /// Round `size` up to the nearest multiple of `granularity`.
+/// Returns `size` unchanged when `granularity` is zero (avoids panic in
+/// `next_multiple_of`).
 pub(crate) fn align_to(size: u64, granularity: u64) -> u64 {
+    if granularity == 0 {
+        return size;
+    }
     size.next_multiple_of(granularity)
 }
 

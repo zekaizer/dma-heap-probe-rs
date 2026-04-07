@@ -1,7 +1,7 @@
 // Basic deterministic tests: alloc, mmap, sync, llseek, zeroed, repeated,
 // sync_file export/import, concurrent alloc, dup.
 
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 
 use nix::errno::Errno;
 
@@ -305,6 +305,7 @@ fn test_export_sync_file<B: HeapBackend + DmaBufBackend>(
             tracing::error!(flags, sync_fd, "invalid sync_file fd");
             return Err(Errno::EIO);
         }
+        backend.close(sync_fd)?;
     }
 
     Ok(())
@@ -327,6 +328,8 @@ fn test_import_sync_file<B: HeapBackend + DmaBufBackend>(
     buf.import_sync_file(DMA_BUF_SYNC_READ as u32, sync_fd)?;
     tracing::debug!(sync_fd, "imported sync_file");
 
+    backend.close(sync_fd)?;
+
     Ok(())
 }
 
@@ -339,8 +342,8 @@ fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
     heap_name: &str,
     threads: u32,
 ) -> nix::Result<()> {
-    let fail_count = AtomicUsize::new(0);
-    let fail_ref = &fail_count;
+    let first_err: Mutex<Option<(u32, Errno)>> = Mutex::new(None);
+    let err_ref = &first_err;
 
     std::thread::scope(|s| {
         for tid in 0..threads {
@@ -376,17 +379,19 @@ fn test_concurrent_write_verify<B: HeapBackend + DmaBufBackend + Send + Sync>(
                     Ok(())
                 })();
 
-                if result.is_err() {
-                    fail_ref.fetch_add(1, Ordering::Relaxed);
+                if let Err(e) = result {
+                    let mut guard = err_ref.lock().unwrap();
+                    if guard.is_none() {
+                        *guard = Some((tid, e));
+                    }
                 }
             });
         }
     });
 
-    let failures = fail_count.load(Ordering::Relaxed);
-    if failures > 0 {
-        tracing::error!(failures, threads, "concurrent alloc failures");
-        return Err(Errno::EIO);
+    if let Some((tid, errno)) = first_err.into_inner().unwrap() {
+        tracing::error!(%errno, tid, threads, "concurrent alloc failure");
+        return Err(errno);
     }
 
     tracing::debug!(threads, "all concurrent threads passed");
@@ -436,8 +441,16 @@ mod tests {
     // ── align_to helper ──
 
     #[test]
-    fn align_to_zero() {
+    fn align_to_zero_size() {
         assert_eq!(align_to(0, 4096), 0);
+    }
+
+    #[test]
+    fn align_to_zero_granularity() {
+        // Zero granularity must not panic; returns size unchanged.
+        assert_eq!(align_to(4096, 0), 4096);
+        assert_eq!(align_to(0, 0), 0);
+        assert_eq!(align_to(1, 0), 1);
     }
 
     #[test]
@@ -601,5 +614,43 @@ mod tests {
         let (results, err) = run(&backend, "", &[4096], 10, 10, 6);
         assert!(err.is_some());
         assert!(results.iter().any(|r| !r.passed));
+    }
+
+    #[test]
+    fn run_restricted_heap_skips_mmap_tests() {
+        use crate::backend::mock::HeapProfile;
+        use std::collections::HashMap;
+
+        let mut configs = HashMap::new();
+        configs.insert("restricted".to_string(), HeapProfile::restricted());
+        let backend = MockBackend::with_heaps(configs);
+
+        let (results, err) = run(&backend, "restricted", &[4096], 10, 4, 10);
+        assert!(err.is_none(), "restricted heap run should not error");
+
+        // mmap-dependent tests must be skipped
+        let mmap_tests = [
+            "write_read_verify",
+            "zero_on_alloc",
+            "concurrent_write_verify",
+        ];
+        for name in &mmap_tests {
+            let r = results.iter().find(|r| r.name.ends_with(name)).unwrap();
+            assert!(r.skipped, "{name} should be skipped on restricted heap");
+            assert!(r.passed, "{name} should still pass (skipped = ok)");
+        }
+
+        // Non-mmap tests must run (not skipped)
+        let non_mmap_tests = [
+            "alloc_close",
+            "alloc_free_loop",
+            "llseek_size",
+            "dup_survives_close",
+        ];
+        for name in &non_mmap_tests {
+            let r = results.iter().find(|r| r.name.ends_with(name)).unwrap();
+            assert!(!r.skipped, "{name} should run on restricted heap");
+            assert!(r.passed, "{name} should pass on restricted heap");
+        }
     }
 }
