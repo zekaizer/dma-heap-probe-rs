@@ -982,7 +982,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
     let mut last_samples: Vec<u64> = Vec::new();
-    let mut all_stats: Vec<LatencyStats> = Vec::new();
+    let mut all_stats: Vec<(u64, LatencyStats)> = Vec::new();
 
     for &size in sizes {
         // Warmup
@@ -1026,7 +1026,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
             }
 
             regression_points.push((size, stats.avg_us));
-            all_stats.push(stats.clone());
+            all_stats.push((size, stats.clone()));
             last_samples = samples;
             rows.push(vec![
                 human_size(size),
@@ -1090,13 +1090,12 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Throughput scaling efficiency: how well does throughput hold as size grows?
     if all_stats.len() >= 2 {
-        let base_tp = all_stats[0].throughput_ops;
+        let base_tp = all_stats[0].1.throughput_ops;
         if base_tp > 0 {
             let mut scaling_rows: Vec<Vec<String>> = Vec::new();
-            for (i, stats) in all_stats.iter().enumerate() {
+            for &(size, ref stats) in &all_stats {
                 #[allow(clippy::cast_precision_loss)]
                 let efficiency = stats.throughput_ops as f64 / base_tp as f64 * 100.0;
-                let size = sizes[i];
                 // Bandwidth: throughput * size = bytes/sec.
                 #[allow(clippy::cast_precision_loss)]
                 let bw_mb = stats.throughput_ops as f64 * size as f64 / 1_048_576.0;
@@ -1228,7 +1227,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
 
     // Quality scorecard: aggregate all diagnostic signals (reuse cached drift_info).
     let drift_pct = drift_info.as_ref().map_or(0.0, |d| d.drift_pct);
-    let stat_refs: Vec<&LatencyStats> = all_stats.iter().collect();
+    let stat_refs: Vec<&LatencyStats> = all_stats.iter().map(|(_, s)| s).collect();
     let qc = quality_scorecard(&stat_refs, drift_pct, warmup_ok);
     crate::fmt::print_metric(
         heap_name,
@@ -1251,11 +1250,10 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     }
 
     // Build PerfAnalysis for JSON output.
-    let size_stats: Vec<SizeStats> = sizes
+    let size_stats: Vec<SizeStats> = all_stats
         .iter()
-        .zip(all_stats.iter())
-        .map(|(&s, st)| SizeStats {
-            size: s,
+        .map(|(size, st)| SizeStats {
+            size: *size,
             latency: st.clone(),
         })
         .collect();
