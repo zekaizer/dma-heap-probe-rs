@@ -220,7 +220,9 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         }
     }
 
-    pub(super) fn push(&mut self, mut buf: DmaBuf<'a, B>) {
+    /// Push a buffer into the hold pool. Returns `true` if held, `false` if
+    /// rejected by the global cap (caller must record the free).
+    pub(super) fn push(&mut self, mut buf: DmaBuf<'a, B>) -> bool {
         // 1. Large drain: ~1% when pool is at per-thread capacity.
         //    Must run before global cap check so cap-saturated pools can oscillate.
         if self.is_full() && self.rng.random_ratio(1, 100) {
@@ -236,15 +238,14 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.drain_n(burst.min(self.bufs.len()));
         }
 
-        // 3. Global cap check: after drain, if still at limit, free immediately.
+        // 3. Global cap check: after drain, if still at limit, reject.
         let at_limit = match self.state.hold_limit {
             HoldLimit::Disabled => false,
             HoldLimit::Count(max) => self.state.held_bufs.load(Relaxed) >= max,
             HoldLimit::Bytes(max) => self.state.held_bytes.load(Relaxed) >= max,
         };
         if at_limit {
-            self.state.total_frees.fetch_add(1, Relaxed);
-            return;
+            return false;
         }
 
         // 4. 10% chance: unmap before holding (fd-only hold).
@@ -257,6 +258,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         self.state.held_bytes.fetch_add(buf_bytes, Relaxed);
         self.bufs.push_back(buf);
         self.state.held_bufs.fetch_add(1, Relaxed);
+        true
     }
 
     /// Handle `ENOMEM`: drain half the pool and shrink limits if repeated.
@@ -890,7 +892,10 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
         Pipeline::AllocHold => {
             let buf = DmaBuf::new(backend, fd, size_usize);
-            hold_pool.push(buf);
+            if !hold_pool.push(buf) {
+                hc.frees.fetch_add(1, Relaxed);
+                state.total_frees.fetch_add(1, Relaxed);
+            }
             false
         }
 
@@ -957,7 +962,10 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
                 // 50% hold, 50% immediate close.
                 if rng.random_bool(0.5) {
-                    hold_pool.push(buf);
+                    if !hold_pool.push(buf) {
+                        hc.frees.fetch_add(1, Relaxed);
+                        state.total_frees.fetch_add(1, Relaxed);
+                    }
                 } else {
                     drop(buf);
                     state.total_frees.fetch_add(1, Relaxed);
@@ -1156,13 +1164,18 @@ mod tests {
         // Global cap = 3 buffers, per-thread pool max = 16
         let state = AgingState::new(HoldLimit::Count(3), &heaps);
         let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
-        // Push 5 buffers — only 3 should be held, rest freed at global cap
+        // Push 5 buffers — only 3 should be held, rest rejected at global cap
+        let mut rejected = 0u64;
         for _ in 0..5 {
-            pool.push(make_buf(&b));
+            if !pool.push(make_buf(&b)) {
+                rejected += 1;
+                state.total_frees.fetch_add(1, Relaxed);
+            }
         }
         assert_eq!(state.held_bufs.load(Relaxed), 3);
         assert_eq!(pool.bufs.len(), 3);
-        // total_frees should count the 2 that hit the global cap
+        // Caller records frees for the 2 rejected buffers.
+        assert_eq!(rejected, 2);
         assert_eq!(state.total_frees.load(Relaxed), 2);
         pool.drain_all();
         assert_eq!(state.held_bufs.load(Relaxed), 0);
@@ -1173,15 +1186,22 @@ mod tests {
     fn held_bytes_global_cap() {
         let heaps = test_heaps();
         let b = MockBackend::new();
-        // Global cap = 8192 bytes (2 x 4096-byte buffers)
+        // Global cap = 8192 bytes (2 x 4096-byte buffers).
+        // Per-thread limit is much larger so that global cap is the binding constraint.
         let state = AgingState::new(HoldLimit::Bytes(8192), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(usize::MAX, 8192, &state, 42);
-        // Push 4 buffers — only 2 fit within 8192 byte limit (per-thread)
+        let mut pool: HoldPool<'_, MockBackend> =
+            HoldPool::new(usize::MAX, 1024 * 1024, &state, 42);
+        // Push 4 buffers — only 2 fit within 8192 global byte limit
+        let mut rejected = 0u64;
         for _ in 0..4 {
-            pool.push(make_buf(&b));
+            if !pool.push(make_buf(&b)) {
+                rejected += 1;
+                state.total_frees.fetch_add(1, Relaxed);
+            }
         }
         assert_eq!(state.held_bufs.load(Relaxed), 2);
         assert_eq!(state.held_bytes.load(Relaxed), 2 * 4096);
+        assert_eq!(rejected, 2);
         assert_eq!(state.total_frees.load(Relaxed), 2);
         pool.drain_all();
         assert_eq!(state.held_bytes.load(Relaxed), 0);

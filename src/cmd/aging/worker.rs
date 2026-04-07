@@ -183,7 +183,11 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
 
         // Hold every Nth buffer, free the rest immediately.
         if per_thread_max > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
-            hold_pool.push(buf);
+            if !hold_pool.push(buf) {
+                // Global cap rejected — record the free ourselves.
+                hc.frees.fetch_add(1, Relaxed);
+                state.total_frees.fetch_add(1, Relaxed);
+            }
         } else {
             let t_free = Instant::now();
             drop(buf);
