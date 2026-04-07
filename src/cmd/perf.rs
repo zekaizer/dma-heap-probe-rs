@@ -108,7 +108,7 @@ pub fn compute_stats(samples: &[u64]) -> Option<LatencyStats> {
     let ci95 = (1.96 * stddev / (count as f64).sqrt()).ceil() as u64;
 
     // MAD: median(|x_i - median|)
-    let median = sorted[count / 2] as f64;
+    let median = percentile(&sorted, 50) as f64;
     let mut abs_devs: Vec<u64> = sorted
         .iter()
         .map(|&x| {
