@@ -274,11 +274,7 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     cfg: &BenchConfig<'_>,
 ) -> nix::Result<PerfAnalysis> {
     let sizes = cfg.sizes;
-    let iterations = cfg.iterations;
-    let warmup = cfg.warmup;
     let heap_w = cfg.heap_w;
-    let pool_bypass = cfg.pool_bypass;
-    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
@@ -287,41 +283,15 @@ fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     let mut pool_est: Option<PoolEstimate> = None;
 
     for &size in sizes {
-        // Pool bypass: estimate and log pool depth per size.
-        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
-            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+        let (samples, est) = sample_alloc_latency(backend, &heap, size, cfg)?;
+        if let Some(est) = est {
             tracing::info!(
                 size,
                 depth = est.depth_buffers,
                 source = ?est.source,
                 "pool bypass active"
             );
-            let count = est.depth_buffers;
             pool_est = Some(est);
-            Some(PoolDrainer::new(backend, &heap, size, count))
-        } else {
-            None
-        };
-
-        // Warmup
-        for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-            let buf = DmaBuf::new(backend, fd, size as usize);
-            drop(buf);
-        }
-
-        // Measure
-        let mut samples = Vec::with_capacity(iterations as usize);
-        for _ in 0..iterations {
-            let elapsed = with_pool_bypass(&mut drainer, || {
-                let start = Instant::now();
-                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-                let e = start.elapsed().as_micros() as u64;
-                let buf = DmaBuf::new(backend, fd, size as usize);
-                drop(buf);
-                Ok(e)
-            })?;
-            samples.push(elapsed);
         }
 
         if let Some(stats) = compute_stats(&samples) {
@@ -975,43 +945,13 @@ fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
-    let iterations = cfg.iterations;
-    let warmup = cfg.warmup;
     let heap_w = cfg.heap_w;
-    let pool_bypass = cfg.pool_bypass;
-    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut sweep_points: Vec<(u64, u64)> = Vec::new();
 
     for &size in ORDER_BOUNDARY_SIZES {
-        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
-            let est = estimate_pool_depth(backend, &heap, size, drain_count);
-            Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
-        } else {
-            None
-        };
-
-        // Warmup
-        for _ in 0..warmup {
-            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-            let buf = DmaBuf::new(backend, fd, size as usize);
-            drop(buf);
-        }
-
-        // Measure
-        let mut samples = Vec::with_capacity(iterations as usize);
-        for _ in 0..iterations {
-            let elapsed = with_pool_bypass(&mut drainer, || {
-                let start = Instant::now();
-                let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
-                let e = start.elapsed().as_micros() as u64;
-                let buf = DmaBuf::new(backend, fd, size as usize);
-                drop(buf);
-                Ok(e)
-            })?;
-            samples.push(elapsed);
-        }
+        let (samples, _) = sample_alloc_latency(backend, &heap, size, cfg)?;
 
         if let Some(stats) = compute_stats(&samples) {
             sweep_points.push((size, stats.avg_us));
@@ -1523,6 +1463,52 @@ impl<'a, B: HeapBackend + DmaBufBackend> PoolDrainer<'a, B> {
 /// Try to drop OS page caches (best-effort, requires root).
 fn try_drop_caches() {
     let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+}
+
+/// Warmup + measure alloc-only latency for a single size with optional pool bypass.
+///
+/// Sets up the pool drainer, runs warmup iterations, then collects timed
+/// samples. Returns `(samples, Option<PoolEstimate>)`.
+#[allow(clippy::cast_possible_truncation)]
+fn sample_alloc_latency<B: HeapBackend + DmaBufBackend>(
+    backend: &B,
+    heap: &DmaHeap<'_, B>,
+    size: u64,
+    cfg: &BenchConfig<'_>,
+) -> nix::Result<(Vec<u64>, Option<PoolEstimate>)> {
+    let (mut drainer, pool_est) = if cfg.pool_bypass {
+        let est = estimate_pool_depth(backend, heap, size, cfg.drain_count);
+        let count = est.depth_buffers;
+        (
+            Some(PoolDrainer::new(backend, heap, size, count)),
+            Some(est),
+        )
+    } else {
+        (None, None)
+    };
+
+    // Warmup
+    for _ in 0..cfg.warmup {
+        let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+        let buf = DmaBuf::new(backend, fd, size as usize);
+        drop(buf);
+    }
+
+    // Measure
+    let mut samples = Vec::with_capacity(cfg.iterations as usize);
+    for _ in 0..cfg.iterations {
+        let elapsed = with_pool_bypass(&mut drainer, || {
+            let start = Instant::now();
+            let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
+            let e = start.elapsed().as_micros() as u64;
+            let buf = DmaBuf::new(backend, fd, size as usize);
+            drop(buf);
+            Ok(e)
+        })?;
+        samples.push(elapsed);
+    }
+
+    Ok((samples, pool_est))
 }
 
 /// Run a single benchmark iteration with optional pool bypass.
