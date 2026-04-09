@@ -17,9 +17,9 @@ use rand::rngs::SmallRng;
 use serde::{Deserialize, Serialize};
 
 use crate::backend::{ContainerBackend, DmaBufBackend, HeapBackend};
-use crate::cmd::perf::{self, LatencyStats};
 use crate::procfs;
 use crate::runner::{self, SubTestResult};
+use crate::stats::{self, LatencyStats};
 use crate::tee_println;
 
 // ── Hold limit ─────────────────────────────────────────────────────────────
@@ -701,7 +701,7 @@ pub(crate) fn reporter_loop(
 
         tracing::trace!("reporter wakeup");
         let latencies = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
-        let lat_stats = perf::compute_stats(&latencies);
+        let lat_stats = stats::compute_stats(&latencies);
 
         // Update cumulative running stats.
         if let Some(ref stats) = lat_stats {
@@ -818,7 +818,7 @@ where
 
     // Process any remaining interval latencies into cumulative stats.
     let remaining = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
-    if let Some(stats) = perf::compute_stats(&remaining) {
+    if let Some(stats) = stats::compute_stats(&remaining) {
         state.update_cumulative(&stats);
     }
 
@@ -1527,7 +1527,7 @@ mod tests {
             lat.extend_from_slice(&[10, 20, 30, 40, 50]);
         }
         let latencies = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
-        let stats = perf::compute_stats(&latencies).unwrap();
+        let stats = stats::compute_stats(&latencies).unwrap();
         state.update_cumulative(&stats);
 
         assert!(!state.baseline_ready.load(Relaxed)); // need 5 intervals
@@ -1546,7 +1546,7 @@ mod tests {
             lat.extend_from_slice(&[100, 200, 300, 400, 500]);
         }
         let latencies2 = std::mem::take(&mut *state.interval_latencies.lock().unwrap());
-        let stats2 = perf::compute_stats(&latencies2).unwrap();
+        let stats2 = stats::compute_stats(&latencies2).unwrap();
         state.update_cumulative(&stats2);
 
         // baseline_sum should accumulate weighted sums from both intervals

@@ -18,6 +18,7 @@ mod probe;
 #[allow(dead_code)]
 mod procfs;
 mod runner;
+mod stats;
 #[allow(dead_code)]
 mod sysfs;
 mod trace;
