@@ -182,16 +182,15 @@ fn dispatch_command<
             let start = Instant::now();
             let perf_analysis = std::cell::RefCell::new(None);
             let (sub, err) = run_per_heap(heaps, |h| {
-                let (s, e, a) = cmd::perf::run(
-                    backend,
-                    h,
-                    sizes.as_deref(),
-                    *iterations,
-                    *warmup,
+                let cfg = cmd::perf::BenchConfig {
+                    sizes: sizes.as_deref().unwrap_or(&[4096, 65536, 1_048_576]),
+                    iterations: *iterations,
+                    warmup: *warmup,
                     heap_w,
-                    *pool_bypass,
-                    *drain_count,
-                );
+                    pool_bypass: *pool_bypass,
+                    drain_count: *drain_count,
+                };
+                let (s, e, a) = cmd::perf::run(backend, h, &cfg);
                 if perf_analysis.borrow().is_none() {
                     *perf_analysis.borrow_mut() = a;
                 }
@@ -429,7 +428,15 @@ fn run_all<
             stage_result(cmd::negative::run(backend, heap, heap_w))
         });
         runner::run_stage(&mut results, "perf", heap, heap_w, || {
-            let (s, e, _) = cmd::perf::run(backend, heap, None, 10, 2, heap_w, false, None);
+            let cfg = cmd::perf::BenchConfig {
+                sizes: &[4096, 65536, 1_048_576],
+                iterations: 10,
+                warmup: 2,
+                heap_w,
+                pool_bypass: false,
+                drain_count: None,
+            };
+            let (s, e, _) = cmd::perf::run(backend, heap, &cfg);
             stage_result((s, e))
         });
         runner::run_stage(&mut results, "pressure", heap, heap_w, || {

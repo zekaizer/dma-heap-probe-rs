@@ -18,9 +18,6 @@ use crate::stats::{
     percentile_ci, warmup_sufficient, welch_test,
 };
 
-/// Default sizes for performance measurement.
-const DEFAULT_SIZES: &[u64] = &[4096, 65536, 1_048_576];
-
 /// Sizes for order boundary sweep (around 64K boundary).
 const ORDER_BOUNDARY_SIZES: &[u64] = &[
     4096, 8192, 16384, 32768, 49152, 61440, 65536, 69632, 131_072, 262_144, 524_288, 1_048_576,
@@ -29,6 +26,22 @@ const ORDER_BOUNDARY_SIZES: &[u64] = &[
 
 /// Sizes for internal fragmentation measurement.
 const FRAG_SIZES: &[u64] = &[1, 4095, 4097, 65535, 65537, 100_000];
+
+/// Benchmark configuration shared across all measurement functions.
+pub struct BenchConfig<'a> {
+    /// Allocation sizes to measure.
+    pub sizes: &'a [u64],
+    /// Number of timed iterations per size.
+    pub iterations: u32,
+    /// Number of warmup iterations (not measured).
+    pub warmup: u32,
+    /// Column width for heap name formatting.
+    pub heap_w: usize,
+    /// Whether to drain the page pool before each measurement.
+    pub pool_bypass: bool,
+    /// Override pool drain count (None = auto-detect).
+    pub drain_count: Option<u32>,
+}
 
 /// Format throughput as Kops/s (thousands of operations per second).
 fn format_throughput(ops: u64) -> String {
@@ -190,45 +203,28 @@ fn human_size(bytes: u64) -> String {
 /// Run all stage 3 performance tests.
 /// Returns sub-test results, the first error (if any), and analysis JSON.
 #[allow(clippy::cast_possible_truncation)]
-#[allow(clippy::too_many_arguments)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-    sizes: Option<&[u64]>,
-    iterations: u32,
-    warmup: u32,
-    heap_w: usize,
-    pool_bypass: bool,
-    drain_count: Option<u32>,
+    cfg: &BenchConfig<'_>,
 ) -> (
     Vec<SubTestResult>,
     Option<anyhow::Error>,
     Option<PerfAnalysis>,
 ) {
-    let sizes = sizes.unwrap_or(DEFAULT_SIZES);
-
     tracing::debug!(
         heap = heap_name,
-        ?sizes,
-        iterations,
-        warmup,
-        pool_bypass,
+        ?cfg.sizes,
+        cfg.iterations,
+        cfg.warmup,
+        cfg.pool_bypass,
         "perf sequence"
     );
 
     let caps = crate::probe::probe_heap(backend, heap_name);
 
     // Run bench_alloc_only separately to capture PerfAnalysis.
-    let alloc_result = bench_alloc_only(
-        backend,
-        heap_name,
-        sizes,
-        iterations,
-        warmup,
-        heap_w,
-        pool_bypass,
-        drain_count,
-    );
+    let alloc_result = bench_alloc_only(backend, heap_name, cfg);
     let analysis = alloc_result.as_ref().ok().cloned();
 
     let tests: Vec<(&str, nix::Result<()>, bool)> = vec![
@@ -236,83 +232,53 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         (
             "bench_full_pipeline",
             if caps.can_mmap {
-                bench_full_pipeline(
-                    backend,
-                    heap_name,
-                    sizes,
-                    iterations,
-                    warmup,
-                    heap_w,
-                    pool_bypass,
-                    drain_count,
-                )
+                bench_full_pipeline(backend, heap_name, cfg)
             } else {
                 Ok(())
             },
             !caps.can_mmap,
         ),
-        (
-            "bench_close",
-            bench_close(
-                backend,
-                heap_name,
-                sizes,
-                iterations,
-                warmup,
-                heap_w,
-                pool_bypass,
-                drain_count,
-            ),
-            false,
-        ),
+        ("bench_close", bench_close(backend, heap_name, cfg), false),
         (
             "bench_order_boundary",
-            bench_order_boundary(
-                backend,
-                heap_name,
-                iterations,
-                warmup,
-                heap_w,
-                pool_bypass,
-                drain_count,
-            ),
+            bench_order_boundary(backend, heap_name, cfg),
             false,
         ),
         (
             "bench_internal_frag",
-            bench_internal_frag(backend, heap_name, heap_w, caps.alloc_granularity),
+            bench_internal_frag(backend, heap_name, cfg.heap_w, caps.alloc_granularity),
             false,
         ),
         (
             "bench_pool_warmup",
-            bench_pool_warmup(backend, heap_name, heap_w),
+            bench_pool_warmup(backend, heap_name, cfg.heap_w),
             false,
         ),
         (
             "bench_size_switch",
-            bench_size_switch(backend, heap_name, heap_w),
+            bench_size_switch(backend, heap_name, cfg.heap_w),
             false,
         ),
     ];
 
-    let (sub, err) = runner::collect_test_results("perf", heap_name, heap_w, &tests);
+    let (sub, err) = runner::collect_test_results("perf", heap_name, cfg.heap_w, &tests);
     (sub, err, analysis)
 }
 
 /// Benchmark alloc-only latency (ioctl call to fd return).
 /// Returns `PerfAnalysis` with all computed diagnostics for JSON output.
 #[allow(clippy::cast_possible_truncation, clippy::too_many_lines)]
-#[allow(clippy::too_many_arguments)]
 fn bench_alloc_only<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-    sizes: &[u64],
-    iterations: u32,
-    warmup: u32,
-    heap_w: usize,
-    pool_bypass: bool,
-    drain_count: Option<u32>,
+    cfg: &BenchConfig<'_>,
 ) -> nix::Result<PerfAnalysis> {
+    let sizes = cfg.sizes;
+    let iterations = cfg.iterations;
+    let warmup = cfg.warmup;
+    let heap_w = cfg.heap_w;
+    let pool_bypass = cfg.pool_bypass;
+    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut regression_points: Vec<(u64, u64)> = Vec::new();
@@ -766,17 +732,17 @@ const STAGE_NAMES: &[&str] = &["alloc", "mmap", "sync_w", "write", "sync_r"];
 /// `write_bytes`, `sync_start`(R)+`sync_end`(R). Reports both total and
 /// per-stage average with percentage of total.
 #[allow(clippy::cast_possible_truncation)]
-#[allow(clippy::too_many_arguments)]
 fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-    sizes: &[u64],
-    iterations: u32,
-    warmup: u32,
-    heap_w: usize,
-    pool_bypass: bool,
-    drain_count: Option<u32>,
+    cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
+    let sizes = cfg.sizes;
+    let iterations = cfg.iterations;
+    let warmup = cfg.warmup;
+    let heap_w = cfg.heap_w;
+    let pool_bypass = cfg.pool_bypass;
+    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut total_rows: Vec<Vec<String>> = Vec::new();
 
@@ -888,17 +854,17 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
 /// Benchmark close (release path) latency.
 #[allow(clippy::cast_possible_truncation)]
-#[allow(clippy::too_many_arguments)]
 fn bench_close<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-    sizes: &[u64],
-    iterations: u32,
-    warmup: u32,
-    heap_w: usize,
-    pool_bypass: bool,
-    drain_count: Option<u32>,
+    cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
+    let sizes = cfg.sizes;
+    let iterations = cfg.iterations;
+    let warmup = cfg.warmup;
+    let heap_w = cfg.heap_w;
+    let pool_bypass = cfg.pool_bypass;
+    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut ratio_points: Vec<(u64, u64, u64)> = Vec::new();
@@ -1004,16 +970,16 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
 /// Benchmark alloc latency across order-boundary sizes (4K to 8M).
 #[allow(clippy::cast_possible_truncation)]
-#[allow(clippy::too_many_arguments)]
 fn bench_order_boundary<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
-    iterations: u32,
-    warmup: u32,
-    heap_w: usize,
-    pool_bypass: bool,
-    drain_count: Option<u32>,
+    cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
+    let iterations = cfg.iterations;
+    let warmup = cfg.warmup;
+    let heap_w = cfg.heap_w;
+    let pool_bypass = cfg.pool_bypass;
+    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut sweep_points: Vec<(u64, u64)> = Vec::new();
@@ -1753,28 +1719,44 @@ mod tests {
 
     // ── bench function tests ──
 
+    fn test_cfg(sizes: &[u64]) -> BenchConfig<'_> {
+        BenchConfig {
+            sizes,
+            iterations: 10,
+            warmup: 2,
+            heap_w: 6,
+            pool_bypass: false,
+            drain_count: None,
+        }
+    }
+
     #[test]
     fn alloc_only_runs() {
         let b = MockBackend::new();
-        bench_alloc_only(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
+        bench_alloc_only(&b, "system", &test_cfg(&[4096])).unwrap();
     }
 
     #[test]
     fn full_pipeline_runs() {
         let b = MockBackend::new();
-        bench_full_pipeline(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
+        bench_full_pipeline(&b, "system", &test_cfg(&[4096])).unwrap();
     }
 
     #[test]
     fn close_runs() {
         let b = MockBackend::new();
-        bench_close(&b, "system", &[4096], 10, 2, 6, false, None).unwrap();
+        bench_close(&b, "system", &test_cfg(&[4096])).unwrap();
     }
 
     #[test]
     fn order_boundary_runs() {
         let b = MockBackend::new();
-        bench_order_boundary(&b, "system", 5, 1, 6, false, None).unwrap();
+        let cfg = BenchConfig {
+            iterations: 5,
+            warmup: 1,
+            ..test_cfg(&[])
+        };
+        bench_order_boundary(&b, "system", &cfg).unwrap();
     }
 
     #[test]
@@ -1805,7 +1787,12 @@ mod tests {
     #[test]
     fn run_passes() {
         let b = MockBackend::new();
-        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 5, 1, 6, false, None);
+        let cfg = BenchConfig {
+            iterations: 5,
+            warmup: 1,
+            ..test_cfg(&[4096])
+        };
+        let (results, err, analysis) = run(&b, "system", &cfg);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         assert_eq!(results.len(), 7);
@@ -1870,7 +1857,14 @@ mod tests {
     #[test]
     fn run_with_pool_bypass() {
         let b = MockBackend::new();
-        let (results, err, analysis) = run(&b, "system", Some(&[4096]), 3, 1, 6, true, Some(32));
+        let cfg = BenchConfig {
+            iterations: 3,
+            warmup: 1,
+            pool_bypass: true,
+            drain_count: Some(32),
+            ..test_cfg(&[4096])
+        };
+        let (results, err, analysis) = run(&b, "system", &cfg);
         assert!(err.is_none());
         assert!(results.iter().all(|t| t.passed));
         let a = analysis.unwrap();
