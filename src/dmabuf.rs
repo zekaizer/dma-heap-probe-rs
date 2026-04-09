@@ -284,6 +284,7 @@ mod tests {
         let sync_fd = buf.export_sync_file(flags).unwrap();
         assert!(sync_fd >= 1000);
         buf.import_sync_file(flags, sync_fd).unwrap();
+        let _ = backend.close(sync_fd);
     }
 
     #[test]

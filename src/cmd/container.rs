@@ -147,6 +147,8 @@ fn merge_two_bufs<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     let cfd = container.merge(&[fd1, fd2])?;
     assert!(cfd >= 0);
     container.close(cfd)?;
+    let _ = backend.close(fd1);
+    let _ = backend.close(fd2);
     Ok(())
 }
 
@@ -159,6 +161,7 @@ fn merge_single_buf<B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
     let cfd = container.merge(&[fd1])?;
     container.close(cfd)?;
+    let _ = backend.close(fd1);
     Ok(())
 }
 
@@ -181,8 +184,10 @@ fn merge_close_lifecycle<B: HeapBackend + DmaBufBackend + ContainerBackend>(
             got = size,
             "source buf size mismatch"
         );
+        let _ = backend.close(fd1);
         return Err(Errno::EIO);
     }
+    let _ = backend.close(fd1);
     Ok(())
 }
 
@@ -211,6 +216,9 @@ fn merge_flatten_container<B: HeapBackend + DmaBufBackend + ContainerBackend>(
 
     container.close(outer)?;
     container.close(inner)?;
+    let _ = backend.close(fd1);
+    let _ = backend.close(fd2);
+    let _ = backend.close(fd3);
     Ok(())
 }
 
@@ -244,6 +252,8 @@ fn merge_mmap_read_write<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     }
 
     container.close(cfd)?;
+    let _ = backend.close(fd1);
+    let _ = backend.close(fd2);
     Ok(())
 }
 
@@ -263,6 +273,8 @@ fn merge_llseek_combined_size<B: HeapBackend + DmaBufBackend + ContainerBackend>
     }
 
     container.close(cfd)?;
+    let _ = backend.close(fd1);
+    let _ = backend.close(fd2);
     Ok(())
 }
 
@@ -278,6 +290,7 @@ fn merge_sync<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     backend.sync(cfd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ)?;
 
     container.close(cfd)?;
+    let _ = backend.close(fd1);
     Ok(())
 }
 
@@ -302,6 +315,9 @@ fn set_get_mask_roundtrip<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     }
 
     container.close(cfd)?;
+    let _ = backend.close(fd1);
+    let _ = backend.close(fd2);
+    let _ = backend.close(fd3);
     Ok(())
 }
 
@@ -325,6 +341,8 @@ fn cross_heap_merge<B: HeapBackend + DmaBufBackend + ContainerBackend>(
         return Err(Errno::EIO);
     }
     container.close(cfd)?;
+    let _ = backend.close(fda);
+    let _ = backend.close(fdb);
     Ok(())
 }
 
@@ -351,7 +369,11 @@ fn neg_merge_over_max<B: HeapBackend + DmaBufBackend + ContainerBackend>(
         )?;
         fds.push(fd);
     }
-    expect_errno(container.merge(&fds), Errno::EINVAL, "merge over max")
+    let result = expect_errno(container.merge(&fds), Errno::EINVAL, "merge over max");
+    for fd in fds {
+        let _ = backend.close(fd);
+    }
+    result
 }
 
 fn neg_merge_invalid_fd<B: ContainerBackend>(backend: &B) -> nix::Result<()> {
@@ -380,11 +402,13 @@ fn neg_ops_after_close<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     let cfd = container.merge(&[fd1])?;
     container.close(cfd)?;
 
-    expect_errno(
+    let result = expect_errno(
         backend.llseek(cfd, 0, libc::SEEK_END),
         Errno::EBADF,
         "llseek after close",
-    )
+    );
+    let _ = backend.close(fd1);
+    result
 }
 
 #[cfg(test)]

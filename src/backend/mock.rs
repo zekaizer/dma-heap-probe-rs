@@ -1259,6 +1259,7 @@ mod tests {
             fd: export_data.fd,
         };
         b.import_sync_file(buf_fd, import_data).unwrap();
+        b.close(export_data.fd).unwrap();
     }
 
     #[test]
@@ -1277,6 +1278,7 @@ mod tests {
             fd: export_data.fd,
         };
         assert_eq!(b.import_sync_file(buf_fd, import_data), Err(Errno::EINVAL));
+        b.close(export_data.fd).unwrap();
     }
 
     #[test]

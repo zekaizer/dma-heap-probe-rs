@@ -567,6 +567,7 @@ mod tests {
             let buf = DmaBuf::new(&backend, fd, size as usize);
             let sync_fd = buf.export_sync_file(DMA_BUF_SYNC_RW as u32).unwrap();
             assert!(sync_fd >= 0);
+            let _ = backend.close(sync_fd);
         }
     }
 

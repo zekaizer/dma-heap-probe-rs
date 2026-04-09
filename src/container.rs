@@ -118,6 +118,7 @@ mod tests {
             ..Default::default()
         };
         backend.alloc(heap_fd, &mut data).unwrap();
+        backend.close_heap(heap_fd).unwrap();
         #[allow(clippy::cast_possible_wrap)]
         let fd = data.fd as RawFd;
         fd
@@ -141,6 +142,8 @@ mod tests {
         let cfd = container.merge(&[fd1, fd2]).unwrap();
         assert!(cfd >= 1000);
         container.close(cfd).unwrap();
+        b.close(fd1).unwrap();
+        b.close(fd2).unwrap();
     }
 
     #[test]
@@ -157,6 +160,9 @@ mod tests {
         assert_eq!(container.get_mask(cfd).unwrap(), 0b101);
 
         container.close(cfd).unwrap();
+        b.close(fd1).unwrap();
+        b.close(fd2).unwrap();
+        b.close(fd3).unwrap();
     }
 
     #[test]
@@ -169,6 +175,7 @@ mod tests {
         assert_eq!(container.get_mask(cfd).unwrap(), 0);
 
         container.close(cfd).unwrap();
+        b.close(fd1).unwrap();
     }
 
     #[test]
@@ -198,6 +205,8 @@ mod tests {
         assert_eq!(size, 4096 + 8192);
 
         container.close(cfd).unwrap();
+        b.close(fd1).unwrap();
+        b.close(fd2).unwrap();
     }
 
     #[test]
@@ -211,6 +220,7 @@ mod tests {
         // Source buffer should still work.
         let size = b.llseek(fd1, 0, libc::SEEK_END).unwrap();
         assert_eq!(size, 4096);
+        b.close(fd1).unwrap();
     }
 
     #[test]
@@ -227,5 +237,6 @@ mod tests {
         );
 
         container.close(cfd).unwrap();
+        b.close(fd1).unwrap();
     }
 }
