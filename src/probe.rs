@@ -156,7 +156,12 @@ pub(crate) fn probe_heap<B: HeapBackend + DmaBufBackend>(backend: &B, heap_name:
 
     #[allow(clippy::cast_possible_truncation)]
     {
-        caps.can_sync_file = buf.export_sync_file(DMA_BUF_SYNC_WRITE as u32).is_ok();
+        caps.can_sync_file = if let Ok(sync_fd) = buf.export_sync_file(DMA_BUF_SYNC_WRITE as u32) {
+            let _ = backend.close(sync_fd);
+            true
+        } else {
+            false
+        };
     }
     tracing::trace!(
         heap = heap_name,

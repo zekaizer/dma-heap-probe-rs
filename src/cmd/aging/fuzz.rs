@@ -884,6 +884,7 @@ fn execute_pipeline<'a, B: HeapBackend + DmaBufBackend + ContainerBackend>(
             #[allow(clippy::cast_possible_truncation)]
             if let Ok(sync_fd) = buf.export_sync_file(DMA_BUF_SYNC_READ as u32) {
                 let _ = buf.import_sync_file(DMA_BUF_SYNC_READ as u32, sync_fd);
+                let _ = backend.close(sync_fd);
             }
             let t_free = Instant::now();
             drop(buf);
