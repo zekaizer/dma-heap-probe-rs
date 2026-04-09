@@ -183,7 +183,7 @@ fn dispatch_command<
             let perf_analysis = std::cell::RefCell::new(None);
             let (sub, err) = run_per_heap(heaps, |h| {
                 let cfg = cmd::perf::BenchConfig {
-                    sizes: sizes.as_deref().unwrap_or(&[4096, 65536, 1_048_576]),
+                    sizes: sizes.as_deref().unwrap_or(cmd::perf::DEFAULT_SIZES),
                     iterations: *iterations,
                     warmup: *warmup,
                     heap_w,
@@ -429,7 +429,7 @@ fn run_all<
         });
         runner::run_stage(&mut results, "perf", heap, heap_w, || {
             let cfg = cmd::perf::BenchConfig {
-                sizes: &[4096, 65536, 1_048_576],
+                sizes: cmd::perf::DEFAULT_SIZES,
                 iterations: 10,
                 warmup: 2,
                 heap_w,

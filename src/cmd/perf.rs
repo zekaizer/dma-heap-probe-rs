@@ -18,6 +18,9 @@ use crate::stats::{
     percentile_ci, warmup_sufficient, welch_test,
 };
 
+/// Default allocation sizes for performance measurement.
+pub(crate) const DEFAULT_SIZES: &[u64] = &[4096, 65536, 1_048_576];
+
 /// Sizes for order boundary sweep (around 64K boundary).
 const ORDER_BOUNDARY_SIZES: &[u64] = &[
     4096, 8192, 16384, 32768, 49152, 61440, 65536, 69632, 131_072, 262_144, 524_288, 1_048_576,
@@ -28,19 +31,13 @@ const ORDER_BOUNDARY_SIZES: &[u64] = &[
 const FRAG_SIZES: &[u64] = &[1, 4095, 4097, 65535, 65537, 100_000];
 
 /// Benchmark configuration shared across all measurement functions.
-pub struct BenchConfig<'a> {
-    /// Allocation sizes to measure.
-    pub sizes: &'a [u64],
-    /// Number of timed iterations per size.
-    pub iterations: u32,
-    /// Number of warmup iterations (not measured).
-    pub warmup: u32,
-    /// Column width for heap name formatting.
-    pub heap_w: usize,
-    /// Whether to drain the page pool before each measurement.
-    pub pool_bypass: bool,
-    /// Override pool drain count (None = auto-detect).
-    pub drain_count: Option<u32>,
+pub(crate) struct BenchConfig<'a> {
+    pub(crate) sizes: &'a [u64],
+    pub(crate) iterations: u32,
+    pub(crate) warmup: u32,
+    pub(crate) heap_w: usize,
+    pub(crate) pool_bypass: bool,
+    pub(crate) drain_count: Option<u32>,
 }
 
 /// Format throughput as Kops/s (thousands of operations per second).
@@ -707,18 +704,12 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
-    let sizes = cfg.sizes;
-    let iterations = cfg.iterations;
-    let warmup = cfg.warmup;
-    let heap_w = cfg.heap_w;
-    let pool_bypass = cfg.pool_bypass;
-    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut total_rows: Vec<Vec<String>> = Vec::new();
 
-    for &size in sizes {
-        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
-            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+    for &size in cfg.sizes {
+        let mut drainer: Option<PoolDrainer<'_, B>> = if cfg.pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, cfg.drain_count);
             Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
         } else {
             None
@@ -726,7 +717,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         let _ = &mut drainer; // suppress unused warning for non-bypass path
 
         // Warmup
-        for _ in 0..warmup {
+        for _ in 0..cfg.warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let mut buf = DmaBuf::new(backend, fd, size as usize);
             let ptr = buf.mmap()?;
@@ -739,11 +730,11 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
         // Per-stage sample collectors (5 stages).
         let stage_count = STAGE_NAMES.len();
         let mut stage_samples: Vec<Vec<u64>> = (0..stage_count)
-            .map(|_| Vec::with_capacity(iterations as usize))
+            .map(|_| Vec::with_capacity(cfg.iterations as usize))
             .collect();
-        let mut total_samples = Vec::with_capacity(iterations as usize);
+        let mut total_samples = Vec::with_capacity(cfg.iterations as usize);
 
-        for _ in 0..iterations {
+        for _ in 0..cfg.iterations {
             let t0 = Instant::now();
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let t1 = Instant::now();
@@ -802,7 +793,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
             }
             crate::fmt::print_table(
                 heap_name,
-                heap_w,
+                cfg.heap_w,
                 &format!("perf::pipeline_breakdown@{}", human_size(size)),
                 Some("(us)"),
                 &["stage", "avg", "%"],
@@ -813,7 +804,7 @@ fn bench_full_pipeline<B: HeapBackend + DmaBufBackend>(
 
     crate::fmt::print_table(
         heap_name,
-        heap_w,
+        cfg.heap_w,
         "perf::full_pipeline",
         Some("(us)"),
         &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
@@ -829,35 +820,29 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
     heap_name: &str,
     cfg: &BenchConfig<'_>,
 ) -> nix::Result<()> {
-    let sizes = cfg.sizes;
-    let iterations = cfg.iterations;
-    let warmup = cfg.warmup;
-    let heap_w = cfg.heap_w;
-    let pool_bypass = cfg.pool_bypass;
-    let drain_count = cfg.drain_count;
     let heap = DmaHeap::open(backend, heap_name)?;
     let mut rows: Vec<Vec<String>> = Vec::new();
     let mut ratio_points: Vec<(u64, u64, u64)> = Vec::new();
 
-    for &size in sizes {
-        let mut drainer: Option<PoolDrainer<'_, B>> = if pool_bypass {
-            let est = estimate_pool_depth(backend, &heap, size, drain_count);
+    for &size in cfg.sizes {
+        let mut drainer: Option<PoolDrainer<'_, B>> = if cfg.pool_bypass {
+            let est = estimate_pool_depth(backend, &heap, size, cfg.drain_count);
             Some(PoolDrainer::new(backend, &heap, size, est.depth_buffers))
         } else {
             None
         };
 
         // Warmup
-        for _ in 0..warmup {
+        for _ in 0..cfg.warmup {
             let fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
             let buf = DmaBuf::new(backend, fd, size as usize);
             drop(buf);
         }
 
         // Paired alloc + close measurement for efficiency ratio.
-        let mut close_samples = Vec::with_capacity(iterations as usize);
-        let mut alloc_samples = Vec::with_capacity(iterations as usize);
-        for _ in 0..iterations {
+        let mut close_samples = Vec::with_capacity(cfg.iterations as usize);
+        let mut alloc_samples = Vec::with_capacity(cfg.iterations as usize);
+        for _ in 0..cfg.iterations {
             if let Some(d) = drainer.as_mut() {
                 try_drop_caches();
                 d.drain()?;
@@ -893,7 +878,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
 
     crate::fmt::print_table(
         heap_name,
-        heap_w,
+        cfg.heap_w,
         "perf::close",
         Some("(us)"),
         &["size", "avg", "sd", "p50", "p95", "p99", "p99.9"],
@@ -927,7 +912,7 @@ fn bench_close<B: HeapBackend + DmaBufBackend>(
         }
         crate::fmt::print_table(
             heap_name,
-            heap_w,
+            cfg.heap_w,
             "perf::close_ratio",
             None,
             &["size", "alloc", "close", "ratio", "verdict"],
