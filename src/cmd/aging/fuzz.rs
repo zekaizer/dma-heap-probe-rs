@@ -164,8 +164,8 @@ pub(super) const RECOVERY_THRESHOLD: u32 = 100;
 pub(super) struct HoldPool<'a, B: DmaBufBackend> {
     bufs: VecDeque<DmaBuf<'a, B>>,
     state: &'a AgingState,
-    max_size: usize,
-    initial_max_size: usize,
+    max_size: Option<usize>,
+    initial_max_size: Option<usize>,
     /// Per-thread byte limit (0 = use `max_size` count-based limit).
     max_bytes: u64,
     initial_max_bytes: u64,
@@ -176,7 +176,12 @@ pub(super) struct HoldPool<'a, B: DmaBufBackend> {
 }
 
 impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
-    pub(super) fn new(max_size: usize, max_bytes: u64, state: &'a AgingState, seed: u64) -> Self {
+    pub(super) fn new(
+        max_size: Option<usize>,
+        max_bytes: u64,
+        state: &'a AgingState,
+        seed: u64,
+    ) -> Self {
         Self {
             bufs: VecDeque::new(),
             state,
@@ -196,7 +201,7 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         if self.max_bytes > 0 {
             self.local_bytes >= self.max_bytes
         } else {
-            self.bufs.len() >= self.max_size
+            self.max_size.is_some_and(|m| self.bufs.len() >= m)
         }
     }
 
@@ -272,15 +277,20 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
         self.success_since_shrink = 0;
 
         if self.consecutive_enomem >= ENOMEM_SHRINK_THRESHOLD {
+            // Shrink count limit if active.
             let old_max = self.max_size;
-            self.max_size = (self.max_size / 2).max(MIN_HOLD_SIZE);
+            if let Some(ref mut max) = self.max_size {
+                *max = (*max / 2).max(MIN_HOLD_SIZE);
+            }
             // Also shrink byte limit if active.
             if self.max_bytes > 0 {
                 self.max_bytes = (self.max_bytes / 2).max(MIN_HOLD_BYTES);
             }
             // Trim pool to new count limit.
-            if self.bufs.len() > self.max_size {
-                self.drain_n(self.bufs.len() - self.max_size);
+            if let Some(max) = self.max_size
+                && self.bufs.len() > max
+            {
+                self.drain_n(self.bufs.len() - max);
             }
             // Trim pool to new byte limit.
             #[allow(clippy::cast_possible_truncation)]
@@ -293,8 +303,8 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
             self.consecutive_enomem = 0;
             tracing::info!(
                 worker_id,
-                old_max,
-                new_max = self.max_size,
+                ?old_max,
+                new_max = ?self.max_size,
                 max_bytes = self.max_bytes,
                 pool_len = self.bufs.len(),
                 "adaptive hold pool shrink"
@@ -328,21 +338,26 @@ impl<'a, B: DmaBufBackend> HoldPool<'a, B> {
     /// Handle successful alloc: reset ENOMEM counter, attempt grow-back.
     pub(super) fn notify_success(&mut self, worker_id: u32) {
         self.consecutive_enomem = 0;
-        if self.max_size < self.initial_max_size
-            || (self.initial_max_bytes > 0 && self.max_bytes < self.initial_max_bytes)
-        {
+        let count_shrunk = match (self.max_size, self.initial_max_size) {
+            (Some(cur), Some(init)) => cur < init,
+            _ => false,
+        };
+        let bytes_shrunk = self.initial_max_bytes > 0 && self.max_bytes < self.initial_max_bytes;
+        if count_shrunk || bytes_shrunk {
             self.success_since_shrink += 1;
             if self.success_since_shrink >= RECOVERY_THRESHOLD {
                 let old_max = self.max_size;
-                self.max_size = (self.max_size * 2).min(self.initial_max_size);
+                if let (Some(cur), Some(init)) = (&mut self.max_size, self.initial_max_size) {
+                    *cur = (*cur * 2).min(init);
+                }
                 if self.initial_max_bytes > 0 {
                     self.max_bytes = (self.max_bytes * 2).min(self.initial_max_bytes);
                 }
                 self.success_since_shrink = 0;
                 tracing::debug!(
                     worker_id,
-                    old_max,
-                    new_max = self.max_size,
+                    ?old_max,
+                    new_max = ?self.max_size,
                     max_bytes = self.max_bytes,
                     "adaptive hold pool recovery"
                 );
@@ -377,7 +392,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     state: &AgingState,
     duration: Option<Duration>,
     iterations: Option<u64>,
-    per_thread_max: usize,
+    per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
     seed: Option<u64>,
     max_size: Option<u64>,
@@ -514,7 +529,7 @@ fn fuzz_worker_loop<B: HeapBackend + DmaBufBackend + ContainerBackend>(
     state: &AgingState,
     deadline: Option<Instant>,
     max_iters: Option<u64>,
-    per_thread_max: usize,
+    per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
     seed: u64,
     worker_id: u32,
@@ -1009,17 +1024,17 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         // Fill pool
         for _ in 0..16 {
             pool.push(make_buf(&b));
         }
-        assert_eq!(pool.max_size, 16);
+        assert_eq!(pool.max_size, Some(16));
         // Trigger shrink: ENOMEM_SHRINK_THRESHOLD consecutive ENOMEMs
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, 8);
+        assert_eq!(pool.max_size, Some(8));
     }
 
     #[test]
@@ -1027,12 +1042,12 @@ mod tests {
         let heaps = test_heaps();
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(MIN_HOLD_SIZE, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(MIN_HOLD_SIZE), 0, &state, 42);
         // Even after repeated shrinks, should not go below MIN_HOLD_SIZE
         for _ in 0..ENOMEM_SHRINK_THRESHOLD * 3 {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, MIN_HOLD_SIZE);
+        assert_eq!(pool.max_size, Some(MIN_HOLD_SIZE));
     }
 
     #[test]
@@ -1040,17 +1055,17 @@ mod tests {
         let heaps = test_heaps();
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         // Shrink first
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, 8);
+        assert_eq!(pool.max_size, Some(8));
         // Recover after RECOVERY_THRESHOLD successes
         for _ in 0..RECOVERY_THRESHOLD {
             pool.notify_success(0);
         }
-        assert_eq!(pool.max_size, 16);
+        assert_eq!(pool.max_size, Some(16));
     }
 
     #[test]
@@ -1058,22 +1073,22 @@ mod tests {
         let heaps = test_heaps();
         let _b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(8, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(8), 0, &state, 42);
         // Shrink to 4
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, 4);
+        assert_eq!(pool.max_size, Some(4));
         // Recover to 8 (ceiling)
         for _ in 0..RECOVERY_THRESHOLD {
             pool.notify_success(0);
         }
-        assert_eq!(pool.max_size, 8);
+        assert_eq!(pool.max_size, Some(8));
         // Further successes should not exceed initial_max_size
         for _ in 0..RECOVERY_THRESHOLD {
             pool.notify_success(0);
         }
-        assert_eq!(pool.max_size, 8);
+        assert_eq!(pool.max_size, Some(8));
     }
 
     #[test]
@@ -1081,7 +1096,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         for _ in 0..10 {
             pool.push(make_buf(&b));
         }
@@ -1096,7 +1111,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         for i in 1..=5 {
             pool.push(make_buf(&b));
             assert_eq!(state.held_bufs.load(Relaxed), i);
@@ -1110,7 +1125,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(4, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(4), 0, &state, 42);
         // Fill to capacity
         for _ in 0..4 {
             pool.push(make_buf(&b));
@@ -1130,7 +1145,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         for _ in 0..10 {
             pool.push(make_buf(&b));
         }
@@ -1147,7 +1162,18 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(50),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         assert_eq!(
             state.held_bufs.load(Relaxed),
             0,
@@ -1166,7 +1192,7 @@ mod tests {
         let b = MockBackend::new();
         // Global cap = 3 buffers, per-thread pool max = 16
         let state = AgingState::new(HoldLimit::Count(3), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         // Push 5 buffers — only 3 should be held, rest rejected at global cap
         let mut rejected = 0u64;
         for _ in 0..5 {
@@ -1192,8 +1218,7 @@ mod tests {
         // Global cap = 8192 bytes (2 x 4096-byte buffers).
         // Per-thread limit is much larger so that global cap is the binding constraint.
         let state = AgingState::new(HoldLimit::Bytes(8192), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> =
-            HoldPool::new(usize::MAX, 1024 * 1024, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(None, 1024 * 1024, &state, 42);
         // Push 4 buffers — only 2 fit within 8192 global byte limit
         let mut rejected = 0u64;
         for _ in 0..4 {
@@ -1215,7 +1240,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         // Each mock buf is 4096 bytes
         for _ in 0..3 {
             pool.push(make_buf(&b));
@@ -1230,7 +1255,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(2, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(2), 0, &state, 42);
         // Push 3 → burst eviction, held should be ≤ 2 bufs
         for _ in 0..3 {
             pool.push(make_buf(&b));
@@ -1247,7 +1272,18 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(50), 8, 0, Some(42), None);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(50),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
@@ -1260,12 +1296,34 @@ mod tests {
         let heaps = vec!["system".to_string()];
         let b1 = MockBackend::new();
         let s1 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b1, &heaps, 1, &s1, None, Some(20), 8, 0, Some(42), None);
+        super::run_workers(
+            &b1,
+            &heaps,
+            1,
+            &s1,
+            None,
+            Some(20),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         let iters1 = s1.total_iters.load(Relaxed);
 
         let b2 = MockBackend::new();
         let s2 = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b2, &heaps, 1, &s2, None, Some(20), 8, 0, Some(42), None);
+        super::run_workers(
+            &b2,
+            &heaps,
+            1,
+            &s2,
+            None,
+            Some(20),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         let iters2 = s2.total_iters.load(Relaxed);
 
         assert_eq!(iters1, iters2, "same seed should produce same iterations");
@@ -1276,7 +1334,18 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 1, &state, None, Some(20), 4, 0, Some(42), None);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(20),
+            Some(4),
+            0,
+            Some(42),
+            None,
+        );
         assert_eq!(
             b.buffer_count(),
             0,
@@ -1294,7 +1363,18 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 2, &state, None, Some(30), 8, 0, Some(42), None);
+        super::run_workers(
+            &b,
+            &heaps,
+            2,
+            &state,
+            None,
+            Some(30),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         assert_eq!(
             state.total_allocs.load(Relaxed),
@@ -1315,7 +1395,7 @@ mod tests {
             &state,
             None,
             Some(50),
-            8,
+            Some(8),
             0,
             Some(42),
             Some(65536),
@@ -1332,7 +1412,7 @@ mod tests {
     fn notify_pressure_empty_pool_is_noop() {
         let heaps = test_heaps();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         pool.notify_pressure(0);
         assert_eq!(state.held_bufs.load(Relaxed), 0);
         assert_eq!(state.held_bytes.load(Relaxed), 0);
@@ -1343,7 +1423,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         for _ in 0..8 {
             pool.push(make_buf(&b));
         }
@@ -1358,7 +1438,7 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Bytes(65536), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(usize::MAX, 65536, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(None, 65536, &state, 42);
         for _ in 0..4 {
             pool.push(make_buf(&b));
         }
@@ -1373,7 +1453,7 @@ mod tests {
     fn max_bytes_does_not_shrink_below_floor() {
         let heaps = test_heaps();
         let state = AgingState::new(HoldLimit::Bytes(8192), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(usize::MAX, 8192, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(None, 8192, &state, 42);
         // Shrink many times: 8192 → 4096 → 4096 (floor).
         for _ in 0..20 {
             pool.notify_enomem(0);
@@ -1386,6 +1466,34 @@ mod tests {
         );
     }
 
+    /// In byte-only mode (`max_size = None`), count-based shrink is skipped
+    /// and `max_size` remains `None` throughout the shrink/recovery cycle.
+    #[test]
+    fn byte_only_mode_skips_count_shrink() {
+        let heaps = test_heaps();
+        let b = MockBackend::new();
+        let state = AgingState::new(HoldLimit::Bytes(65536), &heaps);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(None, 65536, &state, 42);
+        for _ in 0..4 {
+            pool.push(make_buf(&b));
+        }
+        assert_eq!(pool.max_size, None);
+        // Trigger adaptive shrink.
+        for _ in 0..ENOMEM_SHRINK_THRESHOLD {
+            pool.notify_enomem(0);
+        }
+        // max_size must stay None (no sentinel arithmetic).
+        assert_eq!(pool.max_size, None);
+        // Byte limit should have shrunk.
+        assert_eq!(pool.max_bytes, 65536 / 2);
+        // Recovery should not affect max_size either.
+        for _ in 0..RECOVERY_THRESHOLD {
+            pool.notify_success(0);
+        }
+        assert_eq!(pool.max_size, None);
+        assert_eq!(pool.max_bytes, 65536);
+    }
+
     /// EMFILE/ENFILE should trigger the same adaptive shrink as ENOMEM
     /// via `notify_enomem()`, reducing `max_size` after threshold hits.
     #[test]
@@ -1393,16 +1501,16 @@ mod tests {
         let heaps = test_heaps();
         let b = MockBackend::new();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         for _ in 0..16 {
             pool.push(make_buf(&b));
         }
-        assert_eq!(pool.max_size, 16);
+        assert_eq!(pool.max_size, Some(16));
         // Simulate EMFILE handling: same path as ENOMEM (notify_enomem).
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, 8, "EMFILE path should shrink max_size");
+        assert_eq!(pool.max_size, Some(8), "EMFILE path should shrink max_size");
         // Verify pool was drained to fit new limit.
         assert!(pool.bufs.len() <= 8);
     }
@@ -1412,17 +1520,21 @@ mod tests {
     fn emfile_recovery_after_shrink() {
         let heaps = test_heaps();
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(16, 0, &state, 42);
+        let mut pool: HoldPool<'_, MockBackend> = HoldPool::new(Some(16), 0, &state, 42);
         // Trigger shrink.
         for _ in 0..ENOMEM_SHRINK_THRESHOLD {
             pool.notify_enomem(0);
         }
-        assert_eq!(pool.max_size, 8);
+        assert_eq!(pool.max_size, Some(8));
         // Recover via RECOVERY_THRESHOLD consecutive successes.
         for _ in 0..RECOVERY_THRESHOLD {
             pool.notify_success(0);
         }
-        assert_eq!(pool.max_size, 16, "should recover to initial max_size");
+        assert_eq!(
+            pool.max_size,
+            Some(16),
+            "should recover to initial max_size"
+        );
     }
 
     /// Verify that `total_emfile` counter increments independently from
@@ -1463,7 +1575,18 @@ mod tests {
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
         // run_workers with 1 thread, few iterations — mock has no container
         // device, so every MergeAndOperate falls through to the fallback path.
-        super::run_workers(&b, &heaps, 1, &state, None, Some(200), 8, 0, Some(42), None);
+        super::run_workers(
+            &b,
+            &heaps,
+            1,
+            &state,
+            None,
+            Some(200),
+            Some(8),
+            0,
+            Some(42),
+            None,
+        );
         assert_eq!(
             state.total_allocs.load(Relaxed),
             state.total_frees.load(Relaxed),
