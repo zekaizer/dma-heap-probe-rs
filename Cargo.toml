@@ -1,6 +1,6 @@
 [package]
 name = "dma-heap-probe-rs"
-version = "2.6.1"
+version = "2.6.2"
 edition = "2024"
 description = "Comprehensive DMA-Heap userspace test tool for Android 16+ (kernel 6.12+)"
 license = "MIT"
