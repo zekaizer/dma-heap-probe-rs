@@ -5,13 +5,14 @@ use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
 use crate::cli::HistMode;
-use crate::cmd::perf::{self, PoolDrainer, estimate_pool_depth, percentile, percentile_frac};
+use crate::cmd::perf::{PoolDrainer, estimate_pool_depth};
 use crate::dmabuf::DmaBuf;
 use crate::fmt;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{DMA_BUF_SYNC_READ, DMA_BUF_SYNC_WRITE};
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::SubTestResult;
+use crate::stats::{self, percentile, percentile_frac};
 use crate::tee_println;
 
 /// Run histogram analysis across all (heap, size) combinations.
@@ -347,7 +348,7 @@ fn print_histogram(
     );
 
     // Summary
-    if let Some(stats) = perf::compute_stats(samples) {
+    if let Some(stats) = stats::compute_stats(samples) {
         tee_println!(
             "  summary: count={} min={} avg={} max={}",
             stats.count,
