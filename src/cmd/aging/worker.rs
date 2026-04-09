@@ -36,7 +36,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     state: &AgingState,
     duration: Option<Duration>,
     iterations: Option<u64>,
-    per_thread_max: usize,
+    per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
 ) {
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
@@ -111,7 +111,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     state: &AgingState,
     deadline: Option<Instant>,
     max_iters: Option<u64>,
-    per_thread_max: usize,
+    per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
     worker_id: u32,
 ) {
@@ -122,7 +122,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         state,
         u64::from(worker_id),
     );
-    tracing::debug!(worker_id, per_thread_max, "worker started");
+    tracing::debug!(worker_id, ?per_thread_max, "worker started");
 
     loop {
         if should_stop(state, deadline, max_iters) {
@@ -182,7 +182,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
         }
 
         // Hold every Nth buffer, free the rest immediately.
-        if per_thread_max > 0 && local_index.is_multiple_of(HOLD_EVERY_NTH) {
+        if per_thread_max.is_some_and(|m| m > 0) && local_index.is_multiple_of(HOLD_EVERY_NTH) {
             if !hold_pool.push(buf) {
                 // Global cap rejected — record the free ourselves.
                 hc.frees.fetch_add(1, Relaxed);
@@ -225,7 +225,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 8, 0);
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(8), 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
@@ -237,7 +237,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), 8, 0);
+        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), Some(8), 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
 
@@ -254,7 +254,7 @@ mod tests {
             &state,
             Some(Duration::from_millis(100)),
             None,
-            8,
+            Some(8),
             0,
         );
         assert_eq!(b.buffer_count(), 0);
@@ -266,7 +266,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), 0, 0);
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(0), 0);
         assert_eq!(b.buffer_count(), 0);
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);

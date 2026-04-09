@@ -515,11 +515,11 @@ pub(crate) fn reset_sigint() {
 /// - Bytes mode: `(usize::MAX, bytes/threads)` — byte-based eviction.
 /// - Disabled: `(0, 0)`.
 #[allow(clippy::cast_possible_truncation)]
-fn per_thread_pool_limits(limit: HoldLimit, threads: u32) -> (usize, u64) {
+fn per_thread_pool_limits(limit: HoldLimit, threads: u32) -> (Option<usize>, u64) {
     match limit {
-        HoldLimit::Disabled => (0, 0),
-        HoldLimit::Count(n) => ((n as usize / threads as usize).max(1), 0),
-        HoldLimit::Bytes(max) => (usize::MAX, max / u64::from(threads)),
+        HoldLimit::Disabled => (Some(0), 0),
+        HoldLimit::Count(n) => (Some((n as usize / threads as usize).max(1)), 0),
+        HoldLimit::Bytes(max) => (None, max / u64::from(threads)),
     }
 }
 
