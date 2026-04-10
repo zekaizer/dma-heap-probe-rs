@@ -9,6 +9,7 @@ use crate::ioctl::dma_buf::{DMA_BUF_SYNC_END, DMA_BUF_SYNC_READ, DMA_BUF_SYNC_ST
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::ioctl::dmabuf_container::MAX_BUFCON_SRC_BUFS;
 use crate::runner::{self, SubTestResult};
+use crate::testing::expect_errno;
 
 /// Allocation size for container tests.
 const ALLOC_SIZE: u64 = 4096;
@@ -117,21 +118,6 @@ fn alloc_buf<'a, B: HeapBackend + DmaBufBackend>(
     let heap = DmaHeap::open(backend, heap_name)?;
     let buf_fd = heap.alloc(size, DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS)?;
     Ok((heap, buf_fd))
-}
-
-#[allow(clippy::needless_pass_by_value)]
-fn expect_errno<T>(result: nix::Result<T>, expected: Errno, context: &str) -> nix::Result<()> {
-    match result {
-        Err(e) if e == expected => Ok(()),
-        Err(e) => {
-            tracing::error!(context, expected = %expected, got = %e, "wrong errno");
-            Err(Errno::EIO)
-        }
-        Ok(_) => {
-            tracing::error!(context, expected = %expected, "expected error, got Ok");
-            Err(Errno::EIO)
-        }
-    }
 }
 
 // ── Positive: merge & lifecycle ──

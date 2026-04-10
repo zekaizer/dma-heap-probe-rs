@@ -21,6 +21,7 @@ mod runner;
 mod stats;
 #[allow(dead_code)]
 mod sysfs;
+mod testing;
 mod trace;
 
 use std::time::Instant;

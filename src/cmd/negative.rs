@@ -13,6 +13,7 @@ use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::DMA_BUF_SYNC_READ;
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::{self, SubTestResult};
+use crate::testing::{expect_errno, expect_errno_one_of};
 
 /// Allocation size for negative tests.
 const NEG_ALLOC_SIZE: u64 = 4096;
@@ -393,44 +394,6 @@ fn neg_concurrent_close_same_fd<B: HeapBackend + DmaBufBackend + Send + Sync>(
     }
 
     Ok(())
-}
-
-// ── Helper functions ──
-
-/// Verify that `result` is `Err(expected_errno)`.
-#[allow(clippy::needless_pass_by_value)]
-fn expect_errno<T>(result: nix::Result<T>, expected: Errno, context: &str) -> nix::Result<()> {
-    match result {
-        Err(e) if e == expected => Ok(()),
-        Err(e) => {
-            tracing::error!(context, expected = %expected, got = %e, "wrong errno");
-            Err(Errno::EIO)
-        }
-        Ok(_) => {
-            tracing::error!(context, expected = %expected, "expected error, got Ok");
-            Err(Errno::EIO)
-        }
-    }
-}
-
-/// Verify that `result` is `Err` with one of the expected errno values.
-#[allow(clippy::needless_pass_by_value)]
-fn expect_errno_one_of<T>(
-    result: nix::Result<T>,
-    expected: &[Errno],
-    context: &str,
-) -> nix::Result<()> {
-    match result {
-        Err(e) if expected.contains(&e) => Ok(()),
-        Err(e) => {
-            tracing::error!(context, expected = ?expected, got = %e, "wrong errno");
-            Err(Errno::EIO)
-        }
-        Ok(_) => {
-            tracing::error!(context, expected = ?expected, "expected error, got Ok");
-            Err(Errno::EIO)
-        }
-    }
 }
 
 #[cfg(test)]
