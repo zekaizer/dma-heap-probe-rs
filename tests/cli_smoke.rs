@@ -128,6 +128,53 @@ fn all_subcommand() {
 }
 
 #[test]
+fn microbench_defaults() {
+    dhp()
+        .args([
+            "microbench",
+            "--ops",
+            "alloc,close",
+            "--sizes",
+            "4096",
+            "--iterations",
+            "5",
+            "--warmup",
+            "1",
+            "--no-env-control",
+        ])
+        .assert()
+        .success();
+}
+
+#[test]
+fn microbench_json_output() {
+    let tmp = tempfile::NamedTempFile::new().unwrap();
+    dhp()
+        .args([
+            "microbench",
+            "--ops",
+            "alloc",
+            "--sizes",
+            "4096",
+            "--iterations",
+            "5",
+            "--warmup",
+            "1",
+            "--no-env-control",
+            "--output",
+            tmp.path().to_str().unwrap(),
+        ])
+        .assert()
+        .success();
+    let json = read_json(tmp.path());
+    // Verify 2-tier environment snapshot is in details.
+    let details = &json["stages"][0]["details"];
+    assert!(details["bench_context"]["timestamp"].is_string());
+    assert!(details["device_identity"]["cpu_arch"].is_string());
+    assert!(details["benchmarks"]["alloc"]["4096"]["avg_us"].is_u64());
+}
+
+#[test]
 fn container_defaults() {
     dhp().arg("container").assert().success();
 }

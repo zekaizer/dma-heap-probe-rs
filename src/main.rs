@@ -342,6 +342,59 @@ fn dispatch_command<
                 start.elapsed(),
             )))
         }
+        Command::Microbench {
+            ops,
+            sizes,
+            iterations,
+            warmup,
+            cpu,
+            no_env_control,
+        } => {
+            let start = Instant::now();
+            let parsed_ops = match ops {
+                Some(s) => cmd::microbench::Op::parse_list(s).map_err(|e| anyhow::anyhow!(e))?,
+                None => cmd::microbench::Op::all(),
+            };
+            let microbench_result = std::cell::RefCell::new(None);
+            let (sub, err) = run_per_heap(heaps, |h| {
+                let mb_cfg = cmd::microbench::MicrobenchConfig {
+                    ops: parsed_ops.clone(),
+                    sizes: sizes.clone(),
+                    iterations: *iterations,
+                    warmup: *warmup,
+                    cpu: *cpu,
+                    env_control: !no_env_control,
+                    heap_w,
+                };
+                let (s, e, r) = cmd::microbench::run(backend, h, &mb_cfg, heaps);
+                if microbench_result.borrow().is_none() {
+                    *microbench_result.borrow_mut() = r;
+                }
+                (s, e)
+            });
+            let microbench_result = microbench_result.into_inner();
+            let mut result =
+                build_single_stage_result("microbench", heaps, &sub, err, start.elapsed());
+            if let (Some(mb), Some(stage)) = (&microbench_result, result.stages.first_mut()) {
+                let mut details = stage.details.take().unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut map) = details {
+                    map.insert(
+                        "bench_context".to_string(),
+                        serde_json::to_value(&mb.bench_context).unwrap_or_default(),
+                    );
+                    map.insert(
+                        "device_identity".to_string(),
+                        serde_json::to_value(&mb.device_identity).unwrap_or_default(),
+                    );
+                    map.insert(
+                        "benchmarks".to_string(),
+                        serde_json::to_value(&mb.benchmarks).unwrap_or_default(),
+                    );
+                }
+                stage.details = Some(details);
+            }
+            Ok(Some(result))
+        }
         Command::Container => {
             let start = Instant::now();
             let (sub, err) = cmd::container::run(backend, heaps, heap_w);
@@ -595,6 +648,18 @@ mod fuzz_tests {
                 "10".into(),
             ]),
             Just(vec!["info".into()]),
+            Just(vec![
+                "microbench".into(),
+                "--ops".into(),
+                "alloc,close".into(),
+                "--sizes".into(),
+                "4096".into(),
+                "--iterations".into(),
+                "2".into(),
+                "--warmup".into(),
+                "1".into(),
+                "--no-env-control".into(),
+            ]),
             Just(vec!["container".into()]),
             (1..3u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string()]),
             (1..3u64).prop_map(|i| vec![

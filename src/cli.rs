@@ -169,6 +169,36 @@ pub enum Command {
         drain_count: Option<u32>,
     },
 
+    /// Micro-benchmark individual DMA heap/buf operations with environment control.
+    Microbench {
+        /// Operations to benchmark (comma-separated, default: all).
+        /// Available: `alloc`, `mmap`, `munmap`, `sync_start_w`, `sync_end_w`,
+        /// `sync_start_r`, `sync_end_r`, `sync_start_rw`, `sync_end_rw`,
+        /// `close`, `dup`, `llseek`, `export_sync_file`, `import_sync_file`, `pipeline`.
+        #[arg(long)]
+        ops: Option<String>,
+
+        /// Allocation sizes, comma-separated (default: 4096,65536,1048576).
+        #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
+        sizes: Vec<u64>,
+
+        /// Measurement iterations per (op, size).
+        #[arg(long, default_value_t = 1000)]
+        iterations: u32,
+
+        /// Warmup iterations (excluded from measurement).
+        #[arg(long, default_value_t = 100)]
+        warmup: u32,
+
+        /// CPU core to pin (default: auto-detect fastest core).
+        #[arg(long)]
+        cpu: Option<u32>,
+
+        /// Disable environment control (CPU freq/affinity/priority).
+        #[arg(long)]
+        no_env_control: bool,
+    },
+
     /// Samsung dma-buf container tests (merge, mask, cross-heap).
     Container,
 
@@ -476,6 +506,7 @@ mod tests {
             "negative",
             "aging",
             "histogram",
+            "microbench",
             "container",
             "all",
             "info",
@@ -489,6 +520,66 @@ mod tests {
     fn verbose_count() {
         let cli = parse(&["dhp", "basic", "-vvv"]);
         assert_eq!(cli.verbose, 3);
+    }
+
+    #[test]
+    fn microbench_defaults() {
+        let cli = parse(&["dhp", "microbench"]);
+        match cli.command {
+            Command::Microbench {
+                ops,
+                sizes,
+                iterations,
+                warmup,
+                cpu,
+                no_env_control,
+            } => {
+                assert!(ops.is_none());
+                assert_eq!(sizes, vec![4096, 65536, 1_048_576]);
+                assert_eq!(iterations, 1000);
+                assert_eq!(warmup, 100);
+                assert!(cpu.is_none());
+                assert!(!no_env_control);
+            }
+            _ => panic!("expected Microbench"),
+        }
+    }
+
+    #[test]
+    fn microbench_custom_ops() {
+        let cli = parse(&[
+            "dhp",
+            "microbench",
+            "--ops",
+            "alloc,mmap,close",
+            "--sizes",
+            "4096",
+            "--iterations",
+            "50",
+            "--warmup",
+            "5",
+            "--cpu",
+            "7",
+            "--no-env-control",
+        ]);
+        match cli.command {
+            Command::Microbench {
+                ops,
+                sizes,
+                iterations,
+                warmup,
+                cpu,
+                no_env_control,
+            } => {
+                assert_eq!(ops, Some("alloc,mmap,close".to_string()));
+                assert_eq!(sizes, vec![4096]);
+                assert_eq!(iterations, 50);
+                assert_eq!(warmup, 5);
+                assert_eq!(cpu, Some(7));
+                assert!(no_env_control);
+            }
+            _ => panic!("expected Microbench"),
+        }
     }
 
     #[test]
