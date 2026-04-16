@@ -4,7 +4,6 @@
 use std::time::Instant;
 
 use crate::backend::{DmaBufBackend, HeapBackend};
-use crate::bench_env::{BenchContext, BenchEnv, BenchEnvConfig, DeviceIdentity};
 use crate::dmabuf::DmaBuf;
 use crate::heap::DmaHeap;
 use crate::ioctl::dma_buf::{
@@ -13,8 +12,6 @@ use crate::ioctl::dma_buf::{
 use crate::ioctl::dma_heap::{DMA_HEAP_ALLOC_FD_FLAGS, DMA_HEAP_VALID_HEAP_FLAGS};
 use crate::runner::SubTestResult;
 use crate::stats::{self, LatencyStats};
-
-use serde::{Deserialize, Serialize};
 
 /// Operations available for micro-benchmarking.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,58 +103,34 @@ impl Op {
     }
 }
 
-/// Micro-benchmark configuration.
+/// Micro-benchmark configuration for a single heap's benchmark run.
+/// Environment control settings live at the dispatch layer and are not
+/// passed through here.
 pub struct MicrobenchConfig {
     pub ops: Vec<Op>,
     pub sizes: Vec<u64>,
     pub iterations: u32,
     pub warmup: u32,
-    pub cpu: Option<u32>,
-    pub env_control: bool,
     pub heap_w: usize,
 }
 
-/// JSON result for the entire microbench run.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct MicrobenchResult {
-    pub bench_context: BenchContext,
-    pub device_identity: DeviceIdentity,
-    pub benchmarks:
-        std::collections::BTreeMap<String, std::collections::BTreeMap<String, LatencyStats>>,
-}
+/// Per-heap benchmark results: op name → size → stats.
+pub type HeapBenchmarks =
+    std::collections::BTreeMap<String, std::collections::BTreeMap<String, LatencyStats>>;
 
-/// Run micro-benchmarks for a single heap.
+/// Run micro-benchmarks for a single heap. Environment setup and snapshot
+/// capture are caller's responsibility (typically done once per session).
 #[allow(clippy::too_many_lines)]
 pub fn run<B: HeapBackend + DmaBufBackend>(
     backend: &B,
     heap_name: &str,
     cfg: &MicrobenchConfig,
-    heaps: &[String],
-) -> (
-    Vec<SubTestResult>,
-    Option<anyhow::Error>,
-    Option<MicrobenchResult>,
-) {
-    let env = BenchEnv::setup(&BenchEnvConfig {
-        cpu: cfg.cpu,
-        enabled: cfg.env_control,
-    });
-
-    let context = env.capture_context();
-    let identity = env.capture_identity(heaps);
-
-    // Print environment headers.
-    identity.print_header();
-    context.print_header();
-
+) -> (Vec<SubTestResult>, Option<anyhow::Error>, HeapBenchmarks) {
     let caps = crate::probe::probe_heap(backend, heap_name);
 
     let mut sub_tests = Vec::new();
     let mut first_err: Option<anyhow::Error> = None;
-    let mut benchmarks: std::collections::BTreeMap<
-        String,
-        std::collections::BTreeMap<String, LatencyStats>,
-    > = std::collections::BTreeMap::new();
+    let mut benchmarks: HeapBenchmarks = std::collections::BTreeMap::new();
 
     for &op in &cfg.ops {
         // Skip ops that require capabilities the heap doesn't support.
@@ -237,13 +210,7 @@ pub fn run<B: HeapBackend + DmaBufBackend>(
         }
     }
 
-    let mb_result = MicrobenchResult {
-        bench_context: context,
-        device_identity: identity,
-        benchmarks,
-    };
-
-    (sub_tests, first_err, Some(mb_result))
+    (sub_tests, first_err, benchmarks)
 }
 
 // ---------------------------------------------------------------------------
@@ -805,19 +772,15 @@ mod tests {
             sizes: vec![4096],
             iterations: 5,
             warmup: 1,
-            cpu: Some(0),
-            env_control: false,
             heap_w: 8,
         };
-        let heaps = vec!["system".to_string()];
-        let (sub, err, result) = run(&backend, "system", &cfg, &heaps);
+        let (sub, err, benchmarks) = run(&backend, "system", &cfg);
         assert!(err.is_none(), "unexpected error: {err:?}");
         assert_eq!(sub.len(), 3);
         assert!(sub.iter().all(|s| s.passed));
-        let mb = result.unwrap();
-        assert!(mb.benchmarks.contains_key("alloc"));
-        assert!(mb.benchmarks.contains_key("close"));
-        assert!(mb.benchmarks.contains_key("pipeline"));
+        assert!(benchmarks.contains_key("alloc"));
+        assert!(benchmarks.contains_key("close"));
+        assert!(benchmarks.contains_key("pipeline"));
     }
 
     #[test]
@@ -829,23 +792,17 @@ mod tests {
     }
 
     #[test]
-    fn microbench_result_serializes() {
+    fn benchmarks_serialize() {
         let backend = MockBackend::new_realistic();
         let cfg = MicrobenchConfig {
             ops: vec![Op::Alloc],
             sizes: vec![4096],
             iterations: 5,
             warmup: 1,
-            cpu: Some(0),
-            env_control: false,
             heap_w: 8,
         };
-        let heaps = vec!["system".to_string()];
-        let (_, _, result) = run(&backend, "system", &cfg, &heaps);
-        let mb = result.unwrap();
-        let json = serde_json::to_value(&mb).unwrap();
-        assert!(json["bench_context"]["timestamp"].is_string());
-        assert!(json["device_identity"]["cpu_arch"].is_string());
-        assert!(json["benchmarks"]["alloc"]["4096"]["avg_us"].is_u64());
+        let (_, _, benchmarks) = run(&backend, "system", &cfg);
+        let json = serde_json::to_value(&benchmarks).unwrap();
+        assert!(json["alloc"]["4096"]["avg_us"].is_u64());
     }
 }

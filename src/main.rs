@@ -355,44 +355,59 @@ fn dispatch_command<
                 Some(s) => cmd::microbench::Op::parse_list(s).map_err(|e| anyhow::anyhow!(e))?,
                 None => cmd::microbench::Op::all(),
             };
-            let microbench_result = std::cell::RefCell::new(None);
+
+            // Set up environment controls once for the entire session.
+            let env = bench_env::BenchEnv::setup(&bench_env::BenchEnvConfig {
+                cpu: *cpu,
+                enabled: !no_env_control,
+            });
+            let context = env.capture_context();
+            let identity = env.capture_identity(heaps);
+            identity.print_header();
+            context.print_header();
+
+            // Per-heap benchmarks collected into a map keyed by heap name.
+            let all_benchmarks = std::cell::RefCell::new(std::collections::BTreeMap::<
+                String,
+                cmd::microbench::HeapBenchmarks,
+            >::new());
             let (sub, err) = run_per_heap(heaps, |h| {
                 let mb_cfg = cmd::microbench::MicrobenchConfig {
                     ops: parsed_ops.clone(),
                     sizes: sizes.clone(),
                     iterations: *iterations,
                     warmup: *warmup,
-                    cpu: *cpu,
-                    env_control: !no_env_control,
                     heap_w,
                 };
-                let (s, e, r) = cmd::microbench::run(backend, h, &mb_cfg, heaps);
-                if microbench_result.borrow().is_none() {
-                    *microbench_result.borrow_mut() = r;
-                }
+                let (s, e, benchmarks) = cmd::microbench::run(backend, h, &mb_cfg);
+                all_benchmarks
+                    .borrow_mut()
+                    .insert(h.to_string(), benchmarks);
                 (s, e)
             });
-            let microbench_result = microbench_result.into_inner();
+            let all_benchmarks = all_benchmarks.into_inner();
             let mut result =
                 build_single_stage_result("microbench", heaps, &sub, err, start.elapsed());
-            if let (Some(mb), Some(stage)) = (&microbench_result, result.stages.first_mut()) {
+            // Merge environment snapshots + per-heap benchmarks into JSON details.
+            if let Some(stage) = result.stages.first_mut() {
                 let mut details = stage.details.take().unwrap_or(serde_json::json!({}));
                 if let serde_json::Value::Object(ref mut map) = details {
                     map.insert(
                         "bench_context".to_string(),
-                        serde_json::to_value(&mb.bench_context).unwrap_or_default(),
+                        serde_json::to_value(&context).unwrap_or_default(),
                     );
                     map.insert(
                         "device_identity".to_string(),
-                        serde_json::to_value(&mb.device_identity).unwrap_or_default(),
+                        serde_json::to_value(&identity).unwrap_or_default(),
                     );
                     map.insert(
                         "benchmarks".to_string(),
-                        serde_json::to_value(&mb.benchmarks).unwrap_or_default(),
+                        serde_json::to_value(&all_benchmarks).unwrap_or_default(),
                     );
                 }
                 stage.details = Some(details);
             }
+            drop(env);
             Ok(Some(result))
         }
         Command::Container => {

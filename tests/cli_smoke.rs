@@ -171,7 +171,14 @@ fn microbench_json_output() {
     let details = &json["stages"][0]["details"];
     assert!(details["bench_context"]["timestamp"].is_string());
     assert!(details["device_identity"]["cpu_arch"].is_string());
-    assert!(details["benchmarks"]["alloc"]["4096"]["avg_us"].is_u64());
+    // Benchmarks are keyed by heap name, then op name, then size.
+    let benchmarks = details["benchmarks"]
+        .as_object()
+        .expect("benchmarks object");
+    assert!(!benchmarks.is_empty(), "at least one heap's benchmarks");
+    for heap_bench in benchmarks.values() {
+        assert!(heap_bench["alloc"]["4096"]["avg_us"].is_u64());
+    }
 }
 
 #[test]
