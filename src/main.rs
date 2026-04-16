@@ -1,5 +1,7 @@
 #[allow(dead_code)]
 mod backend;
+#[allow(dead_code)]
+mod bench_env;
 mod cli;
 mod cmd;
 #[allow(dead_code)]
