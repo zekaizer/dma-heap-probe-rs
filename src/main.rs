@@ -1,5 +1,7 @@
 #[allow(dead_code)]
 mod backend;
+#[allow(dead_code)]
+mod bench_env;
 mod cli;
 mod cmd;
 #[allow(dead_code)]
@@ -340,6 +342,74 @@ fn dispatch_command<
                 start.elapsed(),
             )))
         }
+        Command::Microbench {
+            ops,
+            sizes,
+            iterations,
+            warmup,
+            cpu,
+            no_env_control,
+        } => {
+            let start = Instant::now();
+            let parsed_ops = match ops {
+                Some(s) => cmd::microbench::Op::parse_list(s).map_err(|e| anyhow::anyhow!(e))?,
+                None => cmd::microbench::Op::all(),
+            };
+
+            // Set up environment controls once for the entire session.
+            let env = bench_env::BenchEnv::setup(&bench_env::BenchEnvConfig {
+                cpu: *cpu,
+                enabled: !no_env_control,
+            });
+            let context = env.capture_context();
+            let identity = env.capture_identity(heaps);
+            identity.print_header();
+            context.print_header();
+
+            // Per-heap benchmarks collected into a map keyed by heap name.
+            let all_benchmarks = std::cell::RefCell::new(std::collections::BTreeMap::<
+                String,
+                cmd::microbench::HeapBenchmarks,
+            >::new());
+            let (sub, err) = run_per_heap(heaps, |h| {
+                let mb_cfg = cmd::microbench::MicrobenchConfig {
+                    ops: parsed_ops.clone(),
+                    sizes: sizes.clone(),
+                    iterations: *iterations,
+                    warmup: *warmup,
+                    heap_w,
+                };
+                let (s, e, benchmarks) = cmd::microbench::run(backend, h, &mb_cfg);
+                all_benchmarks
+                    .borrow_mut()
+                    .insert(h.to_string(), benchmarks);
+                (s, e)
+            });
+            let all_benchmarks = all_benchmarks.into_inner();
+            let mut result =
+                build_single_stage_result("microbench", heaps, &sub, err, start.elapsed());
+            // Merge environment snapshots + per-heap benchmarks into JSON details.
+            if let Some(stage) = result.stages.first_mut() {
+                let mut details = stage.details.take().unwrap_or(serde_json::json!({}));
+                if let serde_json::Value::Object(ref mut map) = details {
+                    map.insert(
+                        "bench_context".to_string(),
+                        serde_json::to_value(&context).unwrap_or_default(),
+                    );
+                    map.insert(
+                        "device_identity".to_string(),
+                        serde_json::to_value(&identity).unwrap_or_default(),
+                    );
+                    map.insert(
+                        "benchmarks".to_string(),
+                        serde_json::to_value(&all_benchmarks).unwrap_or_default(),
+                    );
+                }
+                stage.details = Some(details);
+            }
+            drop(env);
+            Ok(Some(result))
+        }
         Command::Container => {
             let start = Instant::now();
             let (sub, err) = cmd::container::run(backend, heaps, heap_w);
@@ -593,6 +663,18 @@ mod fuzz_tests {
                 "10".into(),
             ]),
             Just(vec!["info".into()]),
+            Just(vec![
+                "microbench".into(),
+                "--ops".into(),
+                "alloc,close".into(),
+                "--sizes".into(),
+                "4096".into(),
+                "--iterations".into(),
+                "2".into(),
+                "--warmup".into(),
+                "1".into(),
+                "--no-env-control".into(),
+            ]),
             Just(vec!["container".into()]),
             (1..3u64).prop_map(|i| vec!["aging".into(), "--iterations".into(), i.to_string()]),
             (1..3u64).prop_map(|i| vec![

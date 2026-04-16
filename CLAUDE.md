@@ -19,6 +19,7 @@ cargo ndk -t arm64-v8a -P 35 build --release
 
 - `src/main.rs` — CLI entry point (clap)
 - `src/cli.rs` — subcommand definitions
+- `src/bench_env.rs` — benchmark environment control (CPU affinity/freq/nice) + 2-tier snapshot
 - `src/ioctl/` — DMA_HEAP_IOCTL_ALLOC, DMA_BUF_IOCTL_SYNC, etc.
 - `src/heap.rs` — /dev/dma_heap/<name> open + alloc
 - `src/dmabuf.rs` — mmap, sync, llseek, sync_file, set_name
@@ -27,7 +28,7 @@ cargo ndk -t arm64-v8a -P 35 build --release
 - `src/sysfs.rs` — /sys/kernel/dmabuf/buffers/ parsing
 - `src/procfs.rs` — buddyinfo, pagetypeinfo, meminfo, vmstat parsing
 - `src/runner.rs` — test runner + result aggregation
-- `src/cmd/` — subcommand implementations (basic, perf, pressure, negative, aging, histogram, info)
+- `src/cmd/` — subcommand implementations (basic, perf, pressure, negative, aging, histogram, info, microbench)
 - `src/cmd/aging/` — sustained alloc/free aging tests (mod.rs, worker.rs, fuzz.rs)
 - `tests/cli_smoke.rs` — CLI end-to-end smoke tests (assert_cmd)
 - `tests/cli_fuzz.rs` — CLI argument combination fuzzing (proptest)
