@@ -1557,6 +1557,11 @@ mod tests {
         use super::FUZZ_SIZES;
         for &s in FUZZ_SIZES {
             let base: u64 = if s.is_multiple_of(4096) { 10000 } else { 1 };
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_precision_loss,
+                clippy::cast_sign_loss
+            )]
             let log2 = (s.max(2) as f64).log2() as u64;
             let weight = (base / (log2 * log2).max(1)).max(1);
             assert!(
@@ -1566,7 +1571,7 @@ mod tests {
         }
     }
 
-    /// MergeAndOperate fallback (no container device) must still balance
+    /// `MergeAndOperate` fallback (no container device) must still balance
     /// alloc/free counters.
     #[test]
     fn merge_fallback_counts_free() {
