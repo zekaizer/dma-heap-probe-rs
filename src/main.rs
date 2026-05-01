@@ -147,15 +147,9 @@ fn dispatch_command<
     tracing::info!(command = ?cli.command, ?heaps, "subcommand start");
 
     match &cli.command {
-        Command::Basic {
-            sizes,
-            repeat,
-            threads,
-        } => {
+        Command::Basic { sizes } => {
             let start = Instant::now();
-            let (sub, err) = run_per_heap(heaps, |h| {
-                cmd::basic::run(backend, h, sizes, *repeat, *threads, heap_w)
-            });
+            let (sub, err) = run_per_heap(heaps, |h| cmd::basic::run(backend, h, sizes, heap_w));
             Ok(Some(build_single_stage_result(
                 "basic",
                 heaps,
@@ -492,8 +486,6 @@ fn run_all<
                 backend,
                 heap,
                 &[4096, 65536, 1_048_576],
-                8,
-                4,
                 heap_w,
             ))
         });

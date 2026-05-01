@@ -22,10 +22,7 @@ fn read_json(path: &Path) -> serde_json::Value {
 
 #[test]
 fn basic_defaults() {
-    dhp()
-        .args(["basic", "--sizes", "4096", "--repeat", "2"])
-        .assert()
-        .success();
+    dhp().args(["basic", "--sizes", "4096"]).assert().success();
 }
 
 #[test]
@@ -249,8 +246,6 @@ fn output_basic_json() {
             "basic",
             "--sizes",
             "4096",
-            "--repeat",
-            "2",
         ])
         .assert()
         .success();
@@ -278,8 +273,6 @@ fn output_custom_heaps_json() {
             "basic",
             "--sizes",
             "4096",
-            "--repeat",
-            "2",
         ])
         .assert()
         .success();
@@ -351,14 +344,6 @@ fn error_invalid_sizes_value() {
 }
 
 #[test]
-fn error_invalid_threads_value() {
-    dhp()
-        .args(["basic", "--threads", "notanum"])
-        .assert()
-        .failure();
-}
-
-#[test]
 fn error_unknown_global_option() {
     dhp().args(["--nonexistent", "basic"]).assert().failure();
 }
@@ -366,15 +351,7 @@ fn error_unknown_global_option() {
 #[test]
 fn error_nonexistent_heap() {
     dhp()
-        .args([
-            "--heaps",
-            "nonexistent",
-            "basic",
-            "--sizes",
-            "4096",
-            "--repeat",
-            "1",
-        ])
+        .args(["--heaps", "nonexistent", "basic", "--sizes", "4096"])
         .assert()
         .failure();
 }
@@ -394,9 +371,7 @@ fn error_nonexistent_heap_aging() {
 #[test]
 fn global_all_flags_combined() {
     dhp()
-        .args([
-            "--trace", "--sysfs", "--procfs", "basic", "--sizes", "4096", "--repeat", "1",
-        ])
+        .args(["--trace", "--sysfs", "--procfs", "basic", "--sizes", "4096"])
         .assert()
         .success();
 }
@@ -405,7 +380,7 @@ fn global_all_flags_combined() {
 fn global_options_after_subcommand() {
     dhp()
         .args([
-            "basic", "--heaps", "system", "--trace", "-vv", "--sizes", "4096", "--repeat", "1",
+            "basic", "--heaps", "system", "--trace", "-vv", "--sizes", "4096",
         ])
         .assert()
         .success();
@@ -425,8 +400,6 @@ fn log_file_captures_output() {
             "basic",
             "--sizes",
             "4096",
-            "--repeat",
-            "2",
         ])
         .assert()
         .success()
@@ -456,8 +429,6 @@ fn log_file_with_log_level() {
             "basic",
             "--sizes",
             "4096",
-            "--repeat",
-            "2",
         ])
         .assert()
         .success();

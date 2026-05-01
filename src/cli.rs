@@ -50,20 +50,14 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 pub enum Command {
-    /// Basic deterministic tests (alloc, mmap, sync, llseek, zeroed, repeated,
-    /// `sync_file`, concurrent, dup).
+    /// Basic deterministic smoke tests (alloc, mmap, sync, llseek, zeroed,
+    /// `sync_file`, dup). Sweeps `--sizes` at the suite level: each size runs
+    /// the full suite once. Heavy/repetitive coverage is in `aging` /
+    /// `histogram` / `microbench`.
     Basic {
         /// Allocation sizes, comma-separated (e.g. 4096,65536,1048576).
         #[arg(long, value_delimiter = ',', default_values_t = [4096, 65536, 1_048_576])]
         sizes: Vec<u64>,
-
-        /// Repeat count for repeated alloc test.
-        #[arg(long, default_value_t = 1024)]
-        repeat: u32,
-
-        /// Concurrent alloc threads.
-        #[arg(long, default_value_t = 100)]
-        threads: u32,
     },
 
     /// Performance measurement.
@@ -321,14 +315,8 @@ mod tests {
     fn basic_defaults() {
         let cli = parse(&["dhp", "basic"]);
         match cli.command {
-            Command::Basic {
-                sizes,
-                repeat,
-                threads,
-            } => {
+            Command::Basic { sizes } => {
                 assert_eq!(sizes, vec![4096, 65536, 1_048_576]);
-                assert_eq!(repeat, 1024);
-                assert_eq!(threads, 100);
             }
             _ => panic!("expected Basic"),
         }
@@ -338,19 +326,8 @@ mod tests {
     fn basic_custom_sizes() {
         let cli = parse(&["dhp", "basic", "--sizes", "1024,2048"]);
         match cli.command {
-            Command::Basic { sizes, .. } => {
+            Command::Basic { sizes } => {
                 assert_eq!(sizes, vec![1024, 2048]);
-            }
-            _ => panic!("expected Basic"),
-        }
-    }
-
-    #[test]
-    fn basic_custom_repeat() {
-        let cli = parse(&["dhp", "basic", "--repeat", "10"]);
-        match cli.command {
-            Command::Basic { repeat, .. } => {
-                assert_eq!(repeat, 10);
             }
             _ => panic!("expected Basic"),
         }
@@ -403,15 +380,6 @@ mod tests {
         assert_eq!(cli.log, Some(PathBuf::from("/tmp/dhp.log")));
         assert!(matches!(cli.log_level, LogLevel::Debug));
         assert_eq!(cli.verbose, 2);
-    }
-
-    #[test]
-    fn basic_custom_threads() {
-        let cli = parse(&["dhp", "basic", "--threads", "50"]);
-        match cli.command {
-            Command::Basic { threads, .. } => assert_eq!(threads, 50),
-            _ => panic!("expected Basic"),
-        }
     }
 
     #[test]
