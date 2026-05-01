@@ -133,6 +133,23 @@ pub enum Command {
         #[arg(long, default_value = "32")]
         max_hold: String,
 
+        /// Normal (non-fuzz) mode only: microseconds to sleep after each
+        /// immediate close(fd) to let a deferred dma-buf workqueue drain
+        /// before the next alloc. 0 = no sleep (default).
+        ///
+        /// Needed on Android ACK android15-6.6+: `dma_buf_stats_setup`
+        /// takes `get_dma_buf()` and defers `kobject_init_and_add` to a
+        /// workqueue (`sysfs_add_workfn`). Until that work runs, file
+        /// refcount stays >0, `__fput`/heap `.release` is NOT invoked by
+        /// close(fd). A tight aging loop builds a backlog that can
+        /// exhaust heap pools before release catches up. A small sleep
+        /// (50-200us) lets the workqueue keep pace.
+        ///
+        /// Applies only to the non-hold iter path (see --max-hold). Not
+        /// applied to fuzz mode or hold-pool eviction/drain.
+        #[arg(long, default_value_t = 0)]
+        close_settle_us: u64,
+
         /// Random seed for fuzz mode (auto if omitted).
         #[arg(long)]
         seed: Option<u64>,

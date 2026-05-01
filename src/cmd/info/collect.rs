@@ -475,7 +475,7 @@ pub fn aggregate_process_usage(entries: &[ProcessBufEntry]) -> Vec<ProcessSummar
             total_size_bytes: size,
         })
         .collect();
-    result.sort_by(|a, b| b.total_size_bytes.cmp(&a.total_size_bytes));
+    result.sort_by_key(|r| std::cmp::Reverse(r.total_size_bytes));
     result
 }
 

@@ -127,7 +127,7 @@ pub fn run_follow(interval: std::time::Duration, detail: bool, heaps: &[String])
             if buf_diff == 0 && size_diff == 0 {
                 "  (no change)".to_string()
             } else {
-                format!("  ({:+} bufs, {})", buf_diff, format_size_signed(size_diff),)
+                format!("  ({:+} bufs, {})", buf_diff, format_size_signed(size_diff))
             }
         } else {
             String::new()

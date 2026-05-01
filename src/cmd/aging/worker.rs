@@ -38,6 +38,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
     iterations: Option<u64>,
     per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
+    close_settle_us: u64,
 ) {
     let heap_caps = crate::probe::discover_and_probe(backend, Some(heaps));
     if heap_caps.is_empty() {
@@ -91,6 +92,7 @@ pub(crate) fn run_workers<B: HeapBackend + DmaBufBackend + ContainerBackend + Se
                     iterations,
                     per_thread_max,
                     per_thread_max_bytes,
+                    close_settle_us,
                     worker_id,
                 );
             });
@@ -113,6 +115,7 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
     max_iters: Option<u64>,
     per_thread_max: Option<usize>,
     per_thread_max_bytes: u64,
+    close_settle_us: u64,
     worker_id: u32,
 ) {
     let mut local_index: usize = 0;
@@ -197,7 +200,16 @@ fn worker_loop<B: HeapBackend + DmaBufBackend>(
             state.total_frees.fetch_add(1, Relaxed);
         }
 
+        // End-of-iter latency captured BEFORE the optional settle sleep so
+        // pacing doesn't contaminate reporter avg/p99 and the baseline/trend
+        // ratio. The sleep only runs on the immediate-drop path (max_hold=0
+        // or non-hold iter); hold-pool eviction/drain paths are covered by
+        // the heap driver's own bookkeeping and not the primary target of
+        // this knob.
         let latency_us = start.elapsed().as_micros() as u64;
+        if close_settle_us > 0 {
+            std::thread::sleep(Duration::from_micros(close_settle_us));
+        }
         state.interval_latencies.lock().unwrap().push(latency_us);
         state.total_iters.fetch_add(1, Relaxed);
         tracing::trace!(
@@ -225,7 +237,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(8), 0);
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(8), 0, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);
@@ -237,7 +249,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), Some(8), 0);
+        super::run_workers(&b, &heaps, 4096, 2, &state, None, Some(20), Some(8), 0, 0);
         assert_eq!(b.buffer_count(), 0, "all buffers should be freed");
     }
 
@@ -256,6 +268,7 @@ mod tests {
             None,
             Some(8),
             0,
+            0,
         );
         assert_eq!(b.buffer_count(), 0);
     }
@@ -266,7 +279,7 @@ mod tests {
         let b = MockBackend::new();
         let heaps = vec!["system".to_string()];
         let state = AgingState::new(HoldLimit::Count(1000), &heaps);
-        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(0), 0);
+        super::run_workers(&b, &heaps, 4096, 1, &state, None, Some(20), Some(0), 0, 0);
         assert_eq!(b.buffer_count(), 0);
         let allocs = state.total_allocs.load(Relaxed);
         let frees = state.total_frees.load(Relaxed);

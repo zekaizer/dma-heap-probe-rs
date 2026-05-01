@@ -227,7 +227,7 @@ pub(crate) fn detect_bimodal(sorted: &[u64]) -> Option<BimodalInfo> {
     }
 
     // Sort peaks by count (descending) and take top 2.
-    peaks.sort_by(|a, b| b.1.cmp(&a.1));
+    peaks.sort_by_key(|p| std::cmp::Reverse(p.1));
     let (idx1, cnt1) = peaks[0];
     let (idx2, cnt2) = peaks[1];
     let (lo_idx, hi_idx) = if idx1 < idx2 {

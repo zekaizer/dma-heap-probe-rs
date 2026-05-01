@@ -144,7 +144,8 @@ impl BenchEnv {
             .cpu
             .unwrap_or_else(|| detect_fastest_core().unwrap_or(0));
 
-        let env_control = EnvControlStatus {
+        #[cfg_attr(not(target_os = "linux"), allow(unused_mut))]
+        let mut env_control = EnvControlStatus {
             affinity_applied: false,
             governor_applied: false,
             governor_original: None,
@@ -170,9 +171,12 @@ impl BenchEnv {
 
                 // CPU frequency governor
                 original_governor = read_governor(bench_cpu);
-                env_control.governor_original = original_governor.clone();
+                env_control.governor_original.clone_from(&original_governor);
                 if let Some(ref orig) = original_governor {
-                    if orig != "performance" {
+                    if orig == "performance" {
+                        // Already performance — mark as applied.
+                        env_control.governor_applied = true;
+                    } else {
                         env_control.governor_applied = write_governor(bench_cpu, "performance");
                         if !env_control.governor_applied {
                             tracing::warn!(
@@ -180,9 +184,6 @@ impl BenchEnv {
                                 "failed to set performance governor (need root?)"
                             );
                         }
-                    } else {
-                        // Already performance — mark as applied.
-                        env_control.governor_applied = true;
                     }
                 }
 
@@ -195,7 +196,7 @@ impl BenchEnv {
                 }
             } else {
                 original_governor = read_governor(bench_cpu);
-                env_control.governor_original = original_governor.clone();
+                env_control.governor_original.clone_from(&original_governor);
                 env_control.nice_value = original_nice;
             }
         }
@@ -277,12 +278,11 @@ impl Drop for BenchEnv {
         #[cfg(target_os = "linux")]
         {
             // Restore governor.
-            if self.env_control.governor_applied {
-                if let Some(ref orig) = self.original_governor {
-                    if orig != "performance" {
-                        let _ = write_governor(self.bench_cpu, orig);
-                    }
-                }
+            if self.env_control.governor_applied
+                && let Some(ref orig) = self.original_governor
+                && orig != "performance"
+            {
+                let _ = write_governor(self.bench_cpu, orig);
             }
 
             // Restore nice.

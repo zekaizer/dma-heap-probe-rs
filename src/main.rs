@@ -279,6 +279,7 @@ fn dispatch_command<
             report_interval,
             fuzz,
             max_hold,
+            close_settle_us,
             seed,
         } => {
             let dur = duration.map(std::time::Duration::from_secs);
@@ -301,6 +302,7 @@ fn dispatch_command<
                 interval,
                 *fuzz,
                 hold_limit,
+                *close_settle_us,
                 *seed,
                 heap_w,
             );

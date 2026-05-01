@@ -259,12 +259,10 @@ impl OpLatency {
 
     /// Average latency in microseconds.
     pub fn avg_us(&self) -> u64 {
-        let c = self.count.load(Relaxed);
-        if c == 0 {
-            0
-        } else {
-            self.sum_us.load(Relaxed) / c
-        }
+        self.sum_us
+            .load(Relaxed)
+            .checked_div(self.count.load(Relaxed))
+            .unwrap_or(0)
     }
 
     /// Normalized latency per 4K bytes.
@@ -414,11 +412,11 @@ impl AgingState {
             if tick >= BASELINE_INTERVALS {
                 self.baseline_ready.store(true, Relaxed);
                 let sample_count = self.baseline_count.load(Relaxed);
-                let avg = if sample_count > 0 {
-                    self.baseline_sum.load(Relaxed) / sample_count
-                } else {
-                    0
-                };
+                let avg = self
+                    .baseline_sum
+                    .load(Relaxed)
+                    .checked_div(sample_count)
+                    .unwrap_or(0);
                 tracing::info!(
                     baseline_avg_us = avg,
                     intervals = tick,
@@ -456,7 +454,7 @@ impl AgingState {
             cv_pct: 0.0,        // not tracked in running stats
             trimmed_avg_us: avg,
             outlier_count: 0,
-            throughput_ops: if avg > 0 { 1_000_000 / avg } else { 0 },
+            throughput_ops: 1_000_000_u64.checked_div(avg).unwrap_or(0),
             ci95_us: 0,
             mad_us: 0,
         })
@@ -872,7 +870,7 @@ fn build_result(
     let baseline_avg = if state.baseline_ready.load(Relaxed) {
         let sum = state.baseline_sum.load(Relaxed);
         let count = state.baseline_count.load(Relaxed);
-        if count > 0 { Some(sum / count) } else { None }
+        sum.checked_div(count)
     } else {
         None
     };
@@ -1198,6 +1196,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
     report_interval: Duration,
     fuzz_mode: bool,
     hold_limit: HoldLimit,
+    close_settle_us: u64,
     seed: Option<u64>,
     heap_w: usize,
 ) -> (
@@ -1220,6 +1219,13 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
 
     if let (true, Some(max)) = (fuzz_mode, size) {
         tracing::info!(max_size = max, "fuzz mode: capping sizes at --size");
+    }
+
+    if fuzz_mode && close_settle_us > 0 {
+        tracing::warn!(
+            close_settle_us,
+            "--close-settle-us is ignored in fuzz mode (normal mode only)"
+        );
     }
 
     let (pt_max_count, pt_max_bytes) = per_thread_pool_limits(hold_limit, threads);
@@ -1257,6 +1263,7 @@ pub fn run<B: HeapBackend + DmaBufBackend + ContainerBackend + Send + Sync>(
                     iterations,
                     pt_max_count,
                     pt_max_bytes,
+                    close_settle_us,
                 );
             }
         },
@@ -1317,6 +1324,7 @@ mod tests {
             Duration::from_secs(60),
             false,
             HoldLimit::Count(32),
+            0,
             None,
             6,
         );
@@ -1343,6 +1351,7 @@ mod tests {
             Duration::from_secs(60),
             true,
             HoldLimit::Count(8),
+            0,
             Some(42),
             6,
         );
@@ -1367,6 +1376,7 @@ mod tests {
             Duration::from_secs(60),
             true,
             HoldLimit::Count(8),
+            0,
             Some(42),
             6,
         );
@@ -1451,6 +1461,7 @@ mod tests {
             Duration::from_secs(60),
             false,
             HoldLimit::Count(8),
+            0,
             None,
             6,
         );
@@ -1480,6 +1491,7 @@ mod tests {
             Duration::from_secs(60),
             false,
             HoldLimit::Count(8),
+            0,
             None,
             6,
         );
@@ -1507,6 +1519,7 @@ mod tests {
             Duration::from_secs(60),
             true,
             HoldLimit::Count(8),
+            0,
             Some(42),
             6,
         );
@@ -1575,6 +1588,7 @@ mod tests {
             Duration::from_secs(60),
             false,
             HoldLimit::Count(16),
+            0,
             None,
             6,
         );
